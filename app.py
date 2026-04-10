@@ -46,6 +46,10 @@ VENUES = [
 ]
 
 
+def log(msg):
+    print(f"[DEBUG] {msg}", flush=True)
+
+
 def jst_now():
     return datetime.now(timezone(timedelta(hours=9)))
 
@@ -86,9 +90,11 @@ def init_db():
 
 
 def fetch_html(url):
+    log(f"fetch_html start: {url}")
     r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     r.encoding = r.apparent_encoding
+    log(f"fetch_html ok: {url} status={r.status_code} len={len(r.text)}")
     return r.text
 
 
@@ -118,6 +124,7 @@ def normalize_lines(html):
 
 
 def parse_official_deadlines(official_url):
+    log(f"parse_official_deadlines start: {official_url}")
     html = fetch_html(official_url)
     lines = normalize_lines(html)
     deadlines = {}
@@ -131,11 +138,14 @@ def parse_official_deadlines(official_url):
                     deadlines[idx] = t
                 break
 
+    log(f"parse_official_deadlines result: count={len(deadlines)} values={deadlines}")
     return deadlines
 
 
 def parse_venue_page(venue_slug, venue_name):
     url = f"{BASE_URL}/{venue_slug}/{today_str()}.html"
+    log(f"parse_venue_page start: {venue_name} {url}")
+
     html = fetch_html(url)
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines(html)
@@ -146,6 +156,11 @@ def parse_venue_page(venue_slug, venue_name):
         if "boatrace.jp/owpc/pc/race/pcexpect" in href:
             official_url = href
             break
+
+    if official_url:
+        log(f"{venue_name} official_url found: {official_url}")
+    else:
+        log(f"{venue_name} official_url not found")
 
     rows = []
     i = 0
@@ -167,6 +182,7 @@ def parse_venue_page(venue_slug, venue_name):
                     break
 
             if confidence_idx is None:
+                log(f"{venue_name} {race_no}R confidence_idx not found")
                 i += 1
                 continue
 
@@ -189,69 +205,109 @@ def parse_venue_page(venue_slug, venue_name):
 
         i += 1
 
+    log(f"parse_venue_page result: {venue_name} rows={len(rows)}")
+    preview = rows[:3]
+    if preview:
+        log(f"{venue_name} preview={preview}")
     return rows
 
 
 def build_candidates():
     results = []
+    now = jst_now()
     current_minutes = now_minutes()
 
+    log("========== build_candidates start ==========")
+    log(f"jst_now={now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    log(f"today_str={today_str()} today_text={today_text()} current_minutes={current_minutes}")
+    log(f"venue_count={len(VENUES)}")
+
     for venue_slug, venue_name in VENUES:
+        log(f"---- venue start: {venue_name} ----")
         try:
             rows = parse_venue_page(venue_slug, venue_name)
         except Exception as e:
-            print(f"[WARN] {venue_name} の取得失敗: {e}")
+            log(f"{venue_name} parse_venue_page error: {e}")
             continue
 
         if not rows:
+            log(f"{venue_name} rows=0")
             continue
 
         official_url = rows[0].get("official_url")
         if not official_url:
+            log(f"{venue_name} official_url missing")
             continue
 
         try:
             deadlines = parse_official_deadlines(official_url)
         except Exception as e:
-            print(f"[WARN] {venue_name} 公式時刻の取得失敗: {e}")
+            log(f"{venue_name} parse_official_deadlines error: {e}")
             continue
 
+        if not deadlines:
+            log(f"{venue_name} deadlines=0")
+            continue
+
+        venue_added = 0
+
         for row in rows:
-            if row["rating"] not in VALID_RATINGS:
-                continue
-            if not row["selection"]:
+            race_no = row["race_no"]
+            rating = row["rating"]
+            selection = row["selection"]
+            t = deadlines.get(race_no)
+
+            if rating not in VALID_RATINGS:
+                log(f"{venue_name} {race_no}R skip: rating={rating}")
                 continue
 
-            t = deadlines.get(row["race_no"])
+            if not selection:
+                log(f"{venue_name} {race_no}R skip: selection empty")
+                continue
+
             if not t:
-                continue
-            if to_minutes(t) < current_minutes:
+                log(f"{venue_name} {race_no}R skip: deadline missing")
                 continue
 
-            results.append(
-                {
-                    "race_date": today_text(),
-                    "time": t,
-                    "venue": row["venue"],
-                    "race_no": f'{row["race_no"]}R',
-                    "race_no_num": row["race_no"],
-                    "rating": row["rating"],
-                    "bet_type": BET_TYPE,
-                    "selection": row["selection"],
-                    "amount": BET_AMOUNT,
-                }
-            )
+            if to_minutes(t) < current_minutes:
+                log(f"{venue_name} {race_no}R skip: past deadline t={t}")
+                continue
+
+            candidate = {
+                "race_date": today_text(),
+                "time": t,
+                "venue": row["venue"],
+                "race_no": f'{row["race_no"]}R',
+                "race_no_num": row["race_no"],
+                "rating": row["rating"],
+                "bet_type": BET_TYPE,
+                "selection": row["selection"],
+                "amount": BET_AMOUNT,
+            }
+            results.append(candidate)
+            venue_added += 1
+            log(f"{venue_name} {race_no}R add: {candidate}")
+
+        log(f"{venue_name} added_count={venue_added}")
 
     results.sort(key=lambda x: (to_minutes(x["time"]), x["venue"], x["race_no_num"]))
+    log(f"build_candidates final_count={len(results)}")
+    if results:
+        log(f"build_candidates preview={results[:10]}")
+    log("========== build_candidates end ==========")
     return results
 
 
 def upsert_candidates(races):
     if not races:
+        log("upsert_candidates: no races")
         return
 
     conn = db_connect()
     cur = conn.cursor()
+
+    inserted = 0
+    ignored = 0
 
     for r in races:
         cur.execute(
@@ -260,6 +316,7 @@ def upsert_candidates(races):
             (race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (race_date, venue, race_no, selection) DO NOTHING
+            RETURNING id
             """,
             (
                 r["race_date"],
@@ -273,10 +330,16 @@ def upsert_candidates(races):
                 r["amount"],
             ),
         )
+        row = cur.fetchone()
+        if row:
+            inserted += 1
+        else:
+            ignored += 1
 
     conn.commit()
     cur.close()
     conn.close()
+    log(f"upsert_candidates inserted={inserted} ignored={ignored}")
 
 
 def get_races_by_date(race_date):
@@ -315,6 +378,7 @@ def update_race_result(race_id, purchased, hit, payout, memo):
     conn.commit()
     cur.close()
     conn.close()
+    log(f"update_race_result race_id={race_id} purchased={purchased} hit={hit} payout={payout} memo={memo}")
 
 
 def get_summary_by_date(race_date):
@@ -900,6 +964,7 @@ def index():
 
 @app.route("/refresh")
 def refresh():
+    log("manual refresh called")
     races = build_candidates()
     upsert_candidates(races)
     return redirect("/")
@@ -947,11 +1012,15 @@ init_db()
 def ensure_today_candidates():
     if request.path in {"/", "/stats"}:
         today_rows = get_today_races()
+        log(f"before_request path={request.path} today_rows={len(today_rows)}")
         if not today_rows:
+            log("today_rows is empty, auto build start")
             races = build_candidates()
             upsert_candidates(races)
+            log("today_rows auto build end")
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    log(f"app start port={port}")
     app.run(host="0.0.0.0", port=port, debug=False)
