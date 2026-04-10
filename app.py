@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 import re
 
@@ -46,6 +46,10 @@ VENUES = [
 ]
 
 
+def jst_now():
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
 def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
@@ -89,15 +93,15 @@ def fetch_html(url):
 
 
 def today_str():
-    return datetime.now().strftime("%Y%m%d")
+    return jst_now().strftime("%Y%m%d")
 
 
 def today_text():
-    return datetime.now().strftime("%Y-%m-%d")
+    return jst_now().strftime("%Y-%m-%d")
 
 
 def now_minutes():
-    now = datetime.now()
+    now = jst_now()
     return now.hour * 60 + now.minute
 
 
@@ -612,7 +616,7 @@ def render_layout(title, content_html):
 
 
 def render_home(races, summary):
-    updated_str = datetime.now().strftime("%H:%M")
+    updated_str = jst_now().strftime("%H:%M")
 
     if not races:
         cards_html = '<div class="empty">条件に合うレースはありません</div>'
@@ -937,6 +941,7 @@ def history_detail(race_date):
 
 
 init_db()
+
 
 @app.before_request
 def ensure_today_candidates():
