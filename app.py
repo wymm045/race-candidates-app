@@ -14,8 +14,21 @@ BASE_URL = "https://demedas.kyotei24.jp"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "").strip()
 
+JST = timezone(timedelta(hours=9))
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://www.google.com/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 VALID_RATINGS = {"★★★★☆", "★★★★★"}
@@ -47,11 +60,15 @@ VENUES = [
 
 
 def log(msg):
-    print(f"[DEBUG] {msg}", flush=True)
+    print(f"[DEBUG][{jst_now_str()}] {msg}", flush=True)
 
 
 def jst_now():
-    return datetime.now(timezone(timedelta(hours=9)))
+    return datetime.now(JST)
+
+
+def jst_now_str():
+    return jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
 
 
 def db_connect():
@@ -91,9 +108,14 @@ def init_db():
 
 def fetch_html(url):
     log(f"fetch_html start: {url}")
-    r = requests.get(url, headers=HEADERS, timeout=20)
+
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    r = session.get(url, timeout=20)
     r.raise_for_status()
     r.encoding = r.apparent_encoding
+
     log(f"fetch_html ok: {url} status={r.status_code} len={len(r.text)}")
     return r.text
 
@@ -131,10 +153,10 @@ def parse_official_deadlines(official_url):
 
     for i, line in enumerate(lines):
         if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 8])
+            block = " ".join(lines[i:i + 20])
             times = re.findall(r"\d{2}:\d{2}", block)
             if times:
-                for idx, t in enumerate(times, start=1):
+                for idx, t in enumerate(times[:12], start=1):
                     deadlines[idx] = t
                 break
 
@@ -218,7 +240,7 @@ def build_candidates():
     current_minutes = now_minutes()
 
     log("========== build_candidates start ==========")
-    log(f"jst_now={now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    log(f"jst_now={now.strftime('%Y-%m-%d %H:%M:%S JST')}")
     log(f"today_str={today_str()} today_text={today_text()} current_minutes={current_minutes}")
     log(f"venue_count={len(VENUES)}")
 
@@ -680,7 +702,7 @@ def render_layout(title, content_html):
 
 
 def render_home(races, summary):
-    updated_str = jst_now().strftime("%H:%M")
+    updated_str = jst_now().strftime("%Y-%m-%d %H:%M JST")
 
     if not races:
         cards_html = '<div class="empty">条件に合うレースはありません</div>'
@@ -1022,5 +1044,4 @@ def ensure_today_candidates():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    log(f"app start port={port}")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=True)
