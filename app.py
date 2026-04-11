@@ -759,6 +759,11 @@ def is_valid_import_token(req):
 def healthz():
     return "ok", 200
 
+@app.route("/reset_today")
+def reset_today():
+    delete_today_races()
+    return redirect("/")
+
 @app.route("/")
 def index():
     races = get_today_races()
