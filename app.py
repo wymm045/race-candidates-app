@@ -349,6 +349,14 @@ def render_layout(title, content_html):
       box-shadow: 0 8px 24px rgba(0,0,0,.08);
       margin-bottom: 10px;
     }}
+    .card-purchased {{
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+    }}
+    .card-hit {{
+      background: #ecfdf5;
+      border: 1px solid #86efac;
+    }}
     .title {{
       font-size: 22px;
       font-weight: 700;
@@ -422,9 +430,13 @@ def render_layout(title, content_html):
     }}
     .selection-value {{
       text-align: right;
-      line-height: 1.5;
+      line-height: 1.32;
       word-break: break-word;
-      font-weight: 500;
+      font-weight: 600;
+      letter-spacing: .2px;
+    }}
+    .selection-value br {{
+      line-height: 1.1;
     }}
     .rating {{
       display: inline-block;
@@ -436,15 +448,26 @@ def render_layout(title, content_html):
       font-size: 13px;
       margin-bottom: 8px;
     }}
+    .status-wrap {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }}
     .status-badge {{
       display: inline-block;
-      margin-top: 8px;
       padding: 5px 10px;
       border-radius: 999px;
-      background: #dcfce7;
-      color: #166534;
       font-size: 12px;
       font-weight: 700;
+    }}
+    .status-badge-saved {{
+      background: #dbeafe;
+      color: #1d4ed8;
+    }}
+    .status-badge-hit {{
+      background: #dcfce7;
+      color: #166534;
     }}
     .message {{
       border-radius: 14px;
@@ -466,7 +489,7 @@ def render_layout(title, content_html):
       padding-top: 8px;
       border-top: 1px solid #e5e7eb;
       display: grid;
-      gap: 2px;
+      gap: 1px;
     }}
     .form {{
       margin-top: 10px;
@@ -506,11 +529,8 @@ def render_layout(title, content_html):
       font-size: 15px;
       font-weight: 700;
     }}
-    .save-btn:disabled {{
-      opacity: .6;
-    }}
     .detail-box {{
-      background: #f9fafb;
+      background: rgba(255,255,255,.65);
       border-radius: 12px;
       padding: 10px;
       display: grid;
@@ -585,6 +605,9 @@ def render_layout(title, content_html):
       .summary-value {{
         font-size: 16px;
       }}
+      .selection-value {{
+        line-height: 1.24;
+      }}
     }}
   </style>
 </head>
@@ -639,8 +662,8 @@ def render_home(races, summary, message_type="", message_text=""):
 
     message_html = ""
     if message_text:
-      css_class = "message-success" if message_type == "success" else "message-error"
-      message_html = f'<div class="message {css_class}">{message_text}</div>'
+        css_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {css_class}">{message_text}</div>'
 
     if not races:
         cards_html = '<div class="empty">条件に合うレースはありません</div>'
@@ -654,12 +677,25 @@ def render_home(races, summary, message_type="", message_text=""):
             selection_html = r["selection"].replace(" / ", "<br>")
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
-            status_html = ""
+
+            card_class = "card"
+            if r["hit"] == 1:
+                card_class += " card-hit"
+            elif r["purchased"] == 1:
+                card_class += " card-purchased"
+
+            status_parts = []
             if r["purchased"] == 1:
-                status_html = '<div class="status-badge">保存済み</div>'
+                status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
+            if r["hit"] == 1:
+                status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+
+            status_html = ""
+            if status_parts:
+                status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>'
 
             cards_html += f"""
-            <div class="card">
+            <div class="{card_class}">
               <div class="time">{r['time']}</div>
               <div class="rating">{r['rating']}</div>
 
@@ -951,7 +987,7 @@ def render_history_detail_page(race_date, races, summary):
     </div>
     {body}
     """
-    return render_layout("過去データ詳細", content)
+    return render_layout("今日の買い候補", content)
 
 
 def is_valid_import_token(req):
