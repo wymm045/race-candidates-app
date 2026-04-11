@@ -150,6 +150,19 @@ def get_races_by_date(race_date):
 def get_today_races():
     return get_races_by_date(today_text())
 
+def delete_today_races():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM races
+        WHERE race_date = %s
+        """,
+        (today_text(),),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def update_race_result(race_id, purchased, hit, payout, memo):
     conn = db_connect()
@@ -745,6 +758,12 @@ def is_valid_import_token(req):
 @app.route("/healthz")
 def healthz():
     return "ok", 200
+
+@app.route("/")
+def index():
+    races = get_today_races()
+    summary = get_summary_by_date(today_text())
+    return render_home(races, summary)
 
 
 @app.route("/")
