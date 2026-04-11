@@ -496,6 +496,7 @@ def render_home(races, summary):
             checked_hit = "checked" if r["hit"] == 1 else ""
             payout_value = r["payout"] if r["payout"] else ""
             memo_value = r["memo"] if r["memo"] else ""
+            selection_html = r["selection"].replace(" / ", "<br>")
 
             cards_html += f"""
             <div class="card">
@@ -503,7 +504,7 @@ def render_home(races, summary):
               <div class="rating">{r['rating']}</div>
               <div class="row"><span class="label">会場・R</span><span>{r['venue']} {r['race_no']}</span></div>
               <div class="row"><span class="label">券種</span><span>{r['bet_type']}</span></div>
-              <div class="row"><span class="label">買い目</span><span>{r['selection']}</span></div>
+              <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
               <div class="row"><span class="label">金額</span><span>{r['amount']}円</span></div>
 
               <form method="post" action="/save" class="form">
