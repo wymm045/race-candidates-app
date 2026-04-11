@@ -378,6 +378,10 @@ def render_layout(title, content_html):
     .label {{
       color: #6b7280;
     }}
+    .selection-value {
+  text-align: right;
+  line-height: 1.6;
+}
     .rating {{
       display: inline-block;
       padding: 4px 10px;
