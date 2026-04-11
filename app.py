@@ -74,6 +74,7 @@ def init_db():
     cur.close()
     conn.close()
 
+
 def upsert_candidates(races):
     if not races:
         log("upsert_candidates: no races")
@@ -151,6 +152,7 @@ def get_races_by_date(race_date):
 def get_today_races():
     return get_races_by_date(today_text())
 
+
 def delete_today_races():
     conn = db_connect()
     cur = conn.cursor()
@@ -164,6 +166,7 @@ def delete_today_races():
     conn.commit()
     cur.close()
     conn.close()
+
 
 def update_race_result(race_id, purchased, hit, payout, memo):
     conn = db_connect()
@@ -179,7 +182,9 @@ def update_race_result(race_id, purchased, hit, payout, memo):
     conn.commit()
     cur.close()
     conn.close()
-    log(f"update_race_result race_id={race_id} purchased={purchased} hit={hit} payout={payout} memo={memo}")
+    log(
+        f"update_race_result race_id={race_id} purchased={purchased} hit={hit} payout={payout} memo={memo}"
+    )
 
 
 def get_summary_by_date(race_date):
@@ -192,9 +197,11 @@ def get_summary_by_date(race_date):
             COALESCE(SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END), 0) AS total_bets,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN amount ELSE 0 END), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits
+            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
         FROM races
         WHERE race_date = %s
+          AND venue <> 'テスト会場'
         """,
         (race_date,),
     )
@@ -207,6 +214,8 @@ def get_summary_by_date(race_date):
     total_investment = row["total_investment"] or 0
     total_payout = row["total_payout"] or 0
     total_hits = row["total_hits"] or 0
+    last_imported_at = row["last_imported_at"] or ""
+
     total_profit = total_payout - total_investment
     hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
     roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
@@ -220,9 +229,10 @@ def get_summary_by_date(race_date):
         "total_hits": total_hits,
         "hit_rate": hit_rate,
         "roi": roi,
-        "last_imported_at": "",
+        "last_imported_at": last_imported_at,
     }
-    
+
+
 def get_group_summary(race_date, group_key):
     if group_key not in {"rating", "venue"}:
         return []
@@ -238,6 +248,7 @@ def get_group_summary(race_date, group_key):
             COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout
         FROM races
         WHERE race_date = %s
+          AND venue <> 'テスト会場'
         GROUP BY {group_key}
         ORDER BY {group_key} ASC
     """
@@ -279,6 +290,7 @@ def get_history_dates():
         """
         SELECT DISTINCT race_date
         FROM races
+        WHERE venue <> 'テスト会場'
         ORDER BY race_date DESC
         """
     )
@@ -369,18 +381,23 @@ def render_layout(title, content_html):
       margin-bottom: 8px;
     }}
     .row {{
-      display: flex;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: 90px 1fr;
       gap: 8px;
-      margin: 6px 0;
+      margin: 8px 0;
       font-size: 15px;
+      align-items: start;
     }}
-      .label {{
+    .label {{
       color: #6b7280;
+    }}
+    .value {{
+      text-align: right;
     }}
     .selection-value {{
       text-align: right;
       line-height: 1.6;
+      word-break: break-word;
     }}
     .rating {{
       display: inline-block;
@@ -473,6 +490,9 @@ def render_layout(title, content_html):
       table {{
         font-size: 12px;
       }}
+      .row {{
+        grid-template-columns: 80px 1fr;
+      }}
     }}
   </style>
 </head>
@@ -502,10 +522,10 @@ def render_home(races, summary):
             <div class="card">
               <div class="time">{r['time']}</div>
               <div class="rating">{r['rating']}</div>
-              <div class="row"><span class="label">会場・R</span><span>{r['venue']} {r['race_no']}</span></div>
-              <div class="row"><span class="label">券種</span><span>{r['bet_type']}</span></div>
+              <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
+              <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
               <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
-              <div class="row"><span class="label">金額</span><span>{r['amount']}円</span></div>
+              <div class="row"><span class="label">金額</span><span class="value">{r['amount']}円</span></div>
 
               <form method="post" action="/save" class="form">
                 <input type="hidden" name="race_id" value="{r['id']}">
@@ -622,6 +642,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue):
     <div class="header">
       <div class="title">集計</div>
       <div class="sub">対象日: {race_date}</div>
+      <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
       <div class="nav">
         <a href="/">今日の候補</a>
         <a href="/history">過去データ</a>
@@ -728,6 +749,7 @@ def render_history_detail_page(race_date, races, summary):
     <div class="header">
       <div class="title">過去データ詳細</div>
       <div class="sub">対象日: {race_date}</div>
+      <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
       <div class="nav">
         <a href="/history">過去データ一覧</a>
         <a href="/">今日の候補</a>
@@ -765,16 +787,19 @@ def is_valid_import_token(req):
 def healthz():
     return "ok", 200
 
+
 @app.route("/reset_today")
 def reset_today():
     delete_today_races()
     return redirect("/")
+
 
 @app.route("/")
 def index():
     races = get_today_races()
     summary = get_summary_by_date(today_text())
     return render_home(races, summary)
+
 
 @app.route("/save", methods=["POST"])
 def save():
