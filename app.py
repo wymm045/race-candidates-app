@@ -137,6 +137,7 @@ def get_races_by_date(race_date):
         SELECT *
         FROM races
         WHERE race_date = %s
+          AND venue <> 'テスト会場'
         ORDER BY time ASC, venue ASC, race_no_num ASC
         """,
         (race_date,),
@@ -769,14 +770,6 @@ def index():
     races = get_today_races()
     summary = get_summary_by_date(today_text())
     return render_home(races, summary)
-
-
-@app.route("/")
-def index():
-    races = get_today_races()
-    summary = get_summary_by_date(today_text())
-    return render_home(races, summary)
-
 
 @app.route("/save", methods=["POST"])
 def save():
