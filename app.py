@@ -75,31 +75,33 @@ def init_db():
     conn.close()
 
 
-def upsert_candidates(races):
+def replace_today_candidates(races):
     if not races:
-        log("upsert_candidates: no races")
-        return {"inserted": 0, "ignored": 0}
+        log("replace_today_candidates: no races")
+        return {"inserted": 0, "deleted": 0}
+
+    race_date = str(races[0]["race_date"]).strip()
+    imported_at = jst_now_str()
 
     conn = db_connect()
     cur = conn.cursor()
 
-    inserted = 0
-    ignored = 0
-    imported_at = jst_now_str()
+    cur.execute(
+        """
+        DELETE FROM races
+        WHERE race_date = %s
+        """,
+        (race_date,),
+    )
+    deleted = cur.rowcount
 
+    inserted = 0
     for r in races:
         cur.execute(
             """
             INSERT INTO races
             (race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount, imported_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (race_date, venue, race_no, selection)
-            DO UPDATE SET
-                time = EXCLUDED.time,
-                rating = EXCLUDED.rating,
-                bet_type = EXCLUDED.bet_type,
-                amount = EXCLUDED.amount,
-                imported_at = EXCLUDED.imported_at
             RETURNING id
             """,
             (
@@ -115,19 +117,16 @@ def upsert_candidates(races):
                 imported_at,
             ),
         )
-
         row = cur.fetchone()
         if row:
             inserted += 1
-        else:
-            ignored += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    log(f"upsert_candidates inserted_or_updated={inserted} ignored={ignored}")
-    return {"inserted": inserted, "ignored": ignored}
+    log(f"replace_today_candidates race_date={race_date} deleted={deleted} inserted={inserted}")
+    return {"inserted": inserted, "deleted": deleted}
 
 
 def get_races_by_date(race_date):
@@ -882,14 +881,21 @@ def import_candidates():
             }
         )
 
-    result = upsert_candidates(cleaned)
+    if not cleaned:
+        return jsonify({"ok": False, "error": "races is empty"}), 400
+
+    race_dates = sorted(set(r["race_date"] for r in cleaned))
+    if len(race_dates) != 1:
+        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+
+    result = replace_today_candidates(cleaned)
     log(f"import api success count={len(cleaned)}")
     return jsonify(
         {
             "ok": True,
             "received": len(cleaned),
             "inserted_or_updated": result["inserted"],
-            "ignored": result["ignored"],
+            "deleted_today_rows": result["deleted"],
             "imported_at": jst_now_str(),
         }
     )
