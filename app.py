@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import os
+import json
 from urllib.parse import quote
 
 import psycopg2
@@ -63,6 +64,20 @@ def get_total_amount(race):
     return int(race["amount"]) * get_point_count(race["selection"])
 
 
+def parse_json_array_text(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+    return []
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -85,6 +100,15 @@ def init_db():
             payout INTEGER DEFAULT 0,
             memo TEXT DEFAULT '',
             imported_at TEXT DEFAULT '',
+            ai_score REAL DEFAULT 0,
+            ai_rating TEXT DEFAULT '',
+            ai_label TEXT DEFAULT '',
+            final_rank TEXT DEFAULT '',
+            ai_reasons TEXT DEFAULT '[]',
+            exhibition TEXT DEFAULT '[]',
+            exhibition_rank TEXT DEFAULT '',
+            motor_rank TEXT DEFAULT '',
+            ai_detail TEXT DEFAULT '',
             UNIQUE(race_date, venue, race_no, selection)
         )
         """
@@ -94,6 +118,60 @@ def init_db():
         """
         ALTER TABLE races
         ADD COLUMN IF NOT EXISTS imported_at TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS ai_score REAL DEFAULT 0
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS ai_rating TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS ai_label TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS final_rank TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS ai_reasons TEXT DEFAULT '[]'
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS exhibition TEXT DEFAULT '[]'
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS exhibition_rank TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS motor_rank TEXT DEFAULT ''
+        """
+    )
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS ai_detail TEXT DEFAULT ''
         """
     )
 
@@ -127,8 +205,12 @@ def replace_today_candidates(races):
         cur.execute(
             """
             INSERT INTO races
-            (race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount, imported_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (
+                race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount,
+                imported_at, ai_score, ai_rating, ai_label, final_rank, ai_reasons,
+                exhibition, exhibition_rank, motor_rank, ai_detail
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -142,6 +224,15 @@ def replace_today_candidates(races):
                 r["selection"],
                 r["amount"],
                 imported_at,
+                float(r.get("ai_score", 0)),
+                str(r.get("ai_rating", "")).strip(),
+                str(r.get("ai_label", "")).strip(),
+                str(r.get("final_rank", "")).strip(),
+                json.dumps(r.get("ai_reasons", []), ensure_ascii=False),
+                json.dumps(r.get("exhibition", []), ensure_ascii=False),
+                str(r.get("exhibition_rank", "")).strip(),
+                str(r.get("motor_rank", "")).strip(),
+                str(r.get("ai_detail", "")).strip(),
             ),
         )
         row = cur.fetchone()
@@ -270,7 +361,7 @@ def get_summary_by_date(race_date):
 
 
 def get_group_summary(race_date, group_key):
-    if group_key not in {"rating", "venue"}:
+    if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
         return []
 
     conn = db_connect()
@@ -310,7 +401,7 @@ def get_group_summary(race_date, group_key):
 
         results.append(
             {
-                "group_name": row["group_name"],
+                "group_name": row["group_name"] or "(空白)",
                 "total_bets": total_bets,
                 "total_hits": total_hits,
                 "total_investment": total_investment,
@@ -473,6 +564,28 @@ def render_layout(title, content_html):
       font-weight: 700;
       font-size: 13px;
       margin-bottom: 8px;
+      margin-right: 6px;
+    }}
+    .ai-rating {{
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #ede9fe;
+      color: #6d28d9;
+      font-weight: 700;
+      font-size: 13px;
+      margin-bottom: 8px;
+      margin-right: 6px;
+    }}
+    .final-rank {{
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #ecfeff;
+      color: #155e75;
+      font-weight: 700;
+      font-size: 13px;
+      margin-bottom: 8px;
     }}
     .status-wrap {{
       display: flex;
@@ -569,6 +682,16 @@ def render_layout(title, content_html):
       text-align: center;
       box-shadow: 0 8px 24px rgba(0,0,0,.08);
       color: #6b7280;
+    }}
+    .reason-list {{
+      margin: 6px 0 0;
+      padding-left: 18px;
+      color: #4b5563;
+      font-size: 13px;
+      line-height: 1.45;
+    }}
+    .reason-list li {{
+      margin-bottom: 2px;
     }}
     table {{
       width: 100%;
@@ -723,10 +846,35 @@ def render_home(races, summary, message_type="", message_text=""):
             if status_parts:
                 status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>'
 
+            ai_reasons = parse_json_array_text(r.get("ai_reasons", "[]"))
+            exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+
+            ai_reason_html = ""
+            if ai_reasons:
+                items = "".join([f"<li>{x}</li>" for x in ai_reasons])
+                ai_reason_html = f"""
+                <div class="row">
+                  <span class="label">補正理由</span>
+                  <span class="value" style="text-align:left;">
+                    <ul class="reason-list">{items}</ul>
+                  </span>
+                </div>
+                """
+
+            exhibition_text = " / ".join(exhibition) if exhibition else "-"
+            exhibition_rank_text = r.get("exhibition_rank") or "-"
+            motor_rank_text = r.get("motor_rank") or "-"
+            ai_detail_text = r.get("ai_detail") or "-"
+            ai_score_text = r.get("ai_score") if r.get("ai_score") is not None else 0
+
             cards_html += f"""
             <div class="{card_class}">
               <div class="time">{r['time']}</div>
-              <div class="rating">{r['rating']}</div>
+              <div>
+                <span class="rating">{r['rating']}</span>
+                <span class="ai-rating">{r.get('ai_rating') or 'AI評価なし'}</span>
+                <span class="final-rank">{r.get('final_rank') or '判定なし'}</span>
+              </div>
 
               <div class="info-box">
                 <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
@@ -735,6 +883,13 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
+                <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
+                <div class="row"><span class="label">AIラベル</span><span class="value">{r.get('ai_label') or '-'}</span></div>
+                <div class="row"><span class="label">展示</span><span class="value">{exhibition_text}</span></div>
+                <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_text}</span></div>
+                <div class="row"><span class="label">モーター</span><span class="value">{motor_rank_text}</span></div>
+                <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
+                {ai_reason_html}
               </div>
 
               {status_html}
@@ -833,7 +988,7 @@ def render_home(races, summary, message_type="", message_text=""):
     return render_layout("今日の買い候補", content)
 
 
-def render_stats_page(race_date, summary, by_rating, by_venue):
+def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
     def make_table(rows):
         if not rows:
             return '<div class="empty">データがありません</div>'
@@ -933,8 +1088,14 @@ def render_stats_page(race_date, summary, by_rating, by_venue):
       </div>
     </div>
 
-    <div class="header"><div class="section-title">星別集計</div></div>
+    <div class="header"><div class="section-title">公式星別集計</div></div>
     {make_table(by_rating)}
+
+    <div class="header"><div class="section-title">AI補正星別集計</div></div>
+    {make_table(by_ai_rating)}
+
+    <div class="header"><div class="section-title">最終判定別集計</div></div>
+    {make_table(by_final_rank)}
 
     <div class="header"><div class="section-title">会場別集計</div></div>
     {make_table(by_venue)}
@@ -977,13 +1138,19 @@ def render_history_detail_page(race_date, races, summary):
         for r in races:
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
+            exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+            exhibition_text = " / ".join(exhibition) if exhibition else "-"
             rows_html += f"""
             <tr>
               <td>{r['time']}</td>
               <td>{r['venue']}</td>
               <td>{r['race_no']}</td>
               <td>{r['rating']}</td>
+              <td>{r.get('ai_rating') or '-'}</td>
+              <td>{r.get('final_rank') or '-'}</td>
               <td>{r['selection']}</td>
+              <td>{exhibition_text}</td>
+              <td>{r.get('motor_rank') or '-'}</td>
               <td>{point_count}点 / {total_amount}円</td>
               <td>{'買い' if r['purchased'] == 1 else '見送り'}</td>
               <td>{'的中' if r['hit'] == 1 else '-'}</td>
@@ -999,8 +1166,12 @@ def render_history_detail_page(race_date, races, summary):
                 <th>時刻</th>
                 <th>会場</th>
                 <th>R</th>
-                <th>評価</th>
+                <th>公式</th>
+                <th>AI</th>
+                <th>判定</th>
                 <th>買い目</th>
+                <th>展示</th>
+                <th>モーター</th>
                 <th>点数/投資</th>
                 <th>購入</th>
                 <th>的中</th>
@@ -1099,7 +1270,9 @@ def stats():
     summary = get_summary_by_date(race_date)
     by_rating = get_group_summary(race_date, "rating")
     by_venue = get_group_summary(race_date, "venue")
-    return render_stats_page(race_date, summary, by_rating, by_venue)
+    by_ai_rating = get_group_summary(race_date, "ai_rating")
+    by_final_rank = get_group_summary(race_date, "final_rank")
+    return render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank)
 
 
 @app.route("/history")
@@ -1158,6 +1331,15 @@ def import_candidates():
                 "bet_type": str(r["bet_type"]).strip(),
                 "selection": str(r["selection"]).strip(),
                 "amount": int(r["amount"]),
+                "ai_score": float(r.get("ai_score", 0)),
+                "ai_rating": str(r.get("ai_rating", "")).strip(),
+                "ai_label": str(r.get("ai_label", "")).strip(),
+                "final_rank": str(r.get("final_rank", "")).strip(),
+                "ai_reasons": r.get("ai_reasons", []),
+                "exhibition": r.get("exhibition", []),
+                "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
+                "motor_rank": str(r.get("motor_rank", "")).strip(),
+                "ai_detail": str(r.get("ai_detail", "")).strip(),
             }
         )
 
