@@ -694,7 +694,7 @@ def render_home(races, summary, message_type="", message_text=""):
 
     content = f"""
     <div class="header">
-      <div class="title">今日の買い候補</div>
+      <div class="title">今日の買い候補 v3</div>
       <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 1点100円 / 1レース4点 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
       {external_line}
