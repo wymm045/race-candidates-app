@@ -63,10 +63,16 @@ def init_db():
         """
     )
 
+    cur.execute(
+        """
+        ALTER TABLE races
+        ADD COLUMN IF NOT EXISTS imported_at TEXT DEFAULT ''
+        """
+    )
+
     conn.commit()
     cur.close()
     conn.close()
-
 
 def upsert_candidates(races):
     if not races:
@@ -172,8 +178,7 @@ def get_summary_by_date(race_date):
             COALESCE(SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END), 0) AS total_bets,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN amount ELSE 0 END), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            MAX(imported_at) AS last_imported_at
+            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits
         FROM races
         WHERE race_date = %s
         """,
@@ -191,7 +196,6 @@ def get_summary_by_date(race_date):
     total_profit = total_payout - total_investment
     hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
     roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
-    last_imported_at = row["last_imported_at"] or ""
 
     return {
         "total_rows": total_rows,
@@ -202,10 +206,10 @@ def get_summary_by_date(race_date):
         "total_hits": total_hits,
         "hit_rate": hit_rate,
         "roi": roi,
-        "last_imported_at": last_imported_at,
+        "last_imported_at": "",
     }
 
-
+    
 def get_group_summary(race_date, group_key):
     if group_key not in {"rating", "venue"}:
         return []
