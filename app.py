@@ -31,6 +31,22 @@ def today_text():
     return jst_now().strftime("%Y-%m-%d")
 
 
+def current_hhmm():
+    return jst_now().strftime("%H:%M")
+
+
+def hhmm_to_minutes(hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return h * 60 + m
+
+
+def is_not_started(time_str):
+    try:
+        return hhmm_to_minutes(time_str) >= hhmm_to_minutes(current_hhmm())
+    except Exception:
+        return True
+
+
 def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
@@ -161,6 +177,11 @@ def get_races_by_date(race_date):
 
 def get_today_races():
     return get_races_by_date(today_text())
+
+
+def get_visible_today_races():
+    rows = get_today_races()
+    return [r for r in rows if is_not_started(r["time"])]
 
 
 def delete_today_races():
@@ -362,6 +383,11 @@ def render_layout(title, content_html):
       font-weight: 700;
       margin: 0 0 8px;
     }}
+    .section-title {{
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
+    }}
     .sub {{
       font-size: 14px;
       color: #6b7280;
@@ -389,6 +415,9 @@ def render_layout(title, content_html):
       grid-template-columns: repeat(4,1fr);
       gap: 8px;
       margin-top: 12px;
+    }}
+    .summary.six {{
+      grid-template-columns: repeat(3,1fr);
     }}
     .summary-box {{
       background: #f9fafb;
@@ -434,9 +463,6 @@ def render_layout(title, content_html):
       word-break: break-word;
       font-weight: 600;
       letter-spacing: .2px;
-    }}
-    .selection-value br {{
-      line-height: 1.1;
     }}
     .rating {{
       display: inline-block;
@@ -591,6 +617,9 @@ def render_layout(title, content_html):
       .summary {{
         grid-template-columns: repeat(2,1fr);
       }}
+      .summary.six {{
+        grid-template-columns: repeat(2,1fr);
+      }}
       table {{
         font-size: 12px;
       }}
@@ -666,7 +695,7 @@ def render_home(races, summary, message_type="", message_text=""):
         message_html = f'<div class="message {css_class}">{message_text}</div>'
 
     if not races:
-        cards_html = '<div class="empty">条件に合うレースはありません</div>'
+        cards_html = '<div class="empty">締切前の条件に合うレースはありません</div>'
     else:
         cards_html = ""
         for r in races:
@@ -781,8 +810,8 @@ def render_home(races, summary, message_type="", message_text=""):
 
       <div class="summary">
         <div class="summary-box">
-          <div class="summary-label">候補数</div>
-          <div class="summary-value">{summary['total_rows']}</div>
+          <div class="summary-label">表示中候補</div>
+          <div class="summary-value">{len(races)}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">購入数</div>
@@ -847,17 +876,19 @@ def render_stats_page(race_date, summary, by_rating, by_venue):
 
     content = f"""
     <div class="header">
-      <div class="title">集計</div>
+      <div class="title">今日の集計</div>
       <div class="sub">対象日: {race_date}</div>
       <div class="sub">ルール: 1点100円 / 1レース4点買い</div>
       <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+
       <div class="nav">
         <a href="/">今日の候補</a>
         <a href="/history">過去データ</a>
       </div>
-      <div class="summary">
+
+      <div class="summary six">
         <div class="summary-box">
-          <div class="summary-label">候補数</div>
+          <div class="summary-label">全候補数</div>
           <div class="summary-value">{summary['total_rows']}</div>
         </div>
         <div class="summary-box">
@@ -865,23 +896,50 @@ def render_stats_page(race_date, summary, by_rating, by_venue):
           <div class="summary-value">{summary['total_bets']}</div>
         </div>
         <div class="summary-box">
+          <div class="summary-label">的中数</div>
+          <div class="summary-value">{summary['total_hits']}</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-label">投資額</div>
+          <div class="summary-value">{summary['total_investment']}円</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-label">払戻額</div>
+          <div class="summary-value">{summary['total_payout']}円</div>
+        </div>
+        <div class="summary-box">
           <div class="summary-label">収支</div>
           <div class="summary-value">{summary['total_profit']}円</div>
+        </div>
+      </div>
+
+      <div class="summary" style="margin-top:8px;">
+        <div class="summary-box">
+          <div class="summary-label">的中率</div>
+          <div class="summary-value">{summary['hit_rate']}%</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">回収率</div>
           <div class="summary-value">{summary['roi']}%</div>
         </div>
+        <div class="summary-box">
+          <div class="summary-label">1件あたり平均投資</div>
+          <div class="summary-value">{round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0}円</div>
+        </div>
+        <div class="summary-box">
+          <div class="summary-label">1件あたり平均払戻</div>
+          <div class="summary-value">{round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0}円</div>
+        </div>
       </div>
     </div>
 
-    <div class="header"><div class="title">星別集計</div></div>
+    <div class="header"><div class="section-title">星別集計</div></div>
     {make_table(by_rating)}
 
-    <div class="header"><div class="title">会場別集計</div></div>
+    <div class="header"><div class="section-title">会場別集計</div></div>
     {make_table(by_venue)}
     """
-    return render_layout("集計", content)
+    return render_layout("今日の集計", content)
 
 
 def render_history_page(dates):
@@ -987,7 +1045,7 @@ def render_history_detail_page(race_date, races, summary):
     </div>
     {body}
     """
-    return render_layout("今日の買い候補", content)
+    return render_layout("過去データ詳細", content)
 
 
 def is_valid_import_token(req):
@@ -1008,7 +1066,7 @@ def reset_today():
 
 @app.route("/")
 def index():
-    races = get_today_races()
+    races = get_visible_today_races()
     summary = get_summary_by_date(today_text())
     message_type = request.args.get("type", "").strip()
     message_text = request.args.get("msg", "").strip()
