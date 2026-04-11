@@ -340,32 +340,32 @@ def render_layout(title, content_html):
     .container {{
       max-width: 900px;
       margin: 0 auto;
-      padding: 16px;
+      padding: 12px;
     }}
     .header, .card, .table-wrap {{
       background: #fff;
       border-radius: 18px;
-      padding: 16px;
+      padding: 14px;
       box-shadow: 0 8px 24px rgba(0,0,0,.08);
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }}
     .title {{
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 700;
       margin: 0 0 8px;
     }}
     .sub {{
       font-size: 14px;
       color: #6b7280;
-      line-height: 1.6;
-      margin-bottom: 10px;
+      line-height: 1.5;
+      margin-bottom: 8px;
       word-break: break-all;
     }}
     .nav {{
       display: flex;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
-      margin-top: 12px;
+      margin-top: 10px;
     }}
     .nav a {{
       text-decoration: none;
@@ -374,12 +374,13 @@ def render_layout(title, content_html):
       padding: 10px 14px;
       border-radius: 12px;
       font-size: 14px;
+      font-weight: 700;
     }}
     .summary {{
       display: grid;
       grid-template-columns: repeat(4,1fr);
-      gap: 10px;
-      margin-top: 14px;
+      gap: 8px;
+      margin-top: 12px;
     }}
     .summary-box {{
       background: #f9fafb;
@@ -390,53 +391,59 @@ def render_layout(title, content_html):
     .summary-label {{
       font-size: 12px;
       color: #6b7280;
+      margin-bottom: 2px;
     }}
     .summary-value {{
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 700;
+      line-height: 1.2;
     }}
     .time {{
-      font-size: 24px;
+      font-size: 18px;
       font-weight: 700;
       margin-bottom: 8px;
     }}
     .row {{
       display: grid;
-      grid-template-columns: 96px 1fr;
+      grid-template-columns: 84px 1fr;
       gap: 8px;
-      margin: 8px 0;
-      font-size: 15px;
+      margin: 4px 0;
+      font-size: 14px;
       align-items: start;
     }}
     .label {{
       color: #6b7280;
+      line-height: 1.45;
     }}
     .value {{
       text-align: right;
+      line-height: 1.45;
+      font-weight: 500;
     }}
     .selection-value {{
       text-align: right;
-      line-height: 1.6;
+      line-height: 1.5;
       word-break: break-word;
+      font-weight: 500;
     }}
     .rating {{
       display: inline-block;
-      padding: 4px 10px;
+      padding: 3px 10px;
       border-radius: 999px;
       background: #fef3c7;
       color: #92400e;
       font-weight: 700;
-      font-size: 14px;
-      margin-bottom: 10px;
+      font-size: 13px;
+      margin-bottom: 8px;
     }}
     .status-badge {{
       display: inline-block;
       margin-top: 8px;
-      padding: 6px 10px;
+      padding: 5px 10px;
       border-radius: 999px;
       background: #dcfce7;
       color: #166534;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
     }}
     .message {{
@@ -444,7 +451,7 @@ def render_layout(title, content_html):
       padding: 12px 14px;
       margin-bottom: 12px;
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.5;
     }}
     .message-success {{
       background: #dcfce7;
@@ -454,26 +461,34 @@ def render_layout(title, content_html):
       background: #fee2e2;
       color: #991b1b;
     }}
-    .form {{
-      margin-top: 14px;
-      padding-top: 12px;
+    .info-box {{
+      margin-top: 8px;
+      padding-top: 8px;
       border-top: 1px solid #e5e7eb;
       display: grid;
-      gap: 10px;
+      gap: 2px;
+    }}
+    .form {{
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+      display: grid;
+      gap: 8px;
     }}
     .checkline {{
       font-size: 15px;
+      line-height: 1.4;
     }}
     .checkline input {{
-      transform: scale(1.15);
+      transform: scale(1.08);
       margin-right: 6px;
     }}
     .input-row {{
       display: grid;
-      gap: 6px;
+      gap: 4px;
     }}
     .input-row label {{
-      font-size: 14px;
+      font-size: 13px;
       color: #6b7280;
     }}
     .input-row input {{
@@ -497,9 +512,9 @@ def render_layout(title, content_html):
     .detail-box {{
       background: #f9fafb;
       border-radius: 12px;
-      padding: 12px;
+      padding: 10px;
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }}
     .empty {{
       background: #fff;
@@ -543,6 +558,16 @@ def render_layout(title, content_html):
       font-weight: 700;
     }}
     @media (max-width: 720px) {{
+      .container {{
+        padding: 10px;
+      }}
+      .header, .card, .table-wrap {{
+        padding: 12px;
+        border-radius: 16px;
+      }}
+      .title {{
+        font-size: 20px;
+      }}
       .summary {{
         grid-template-columns: repeat(2,1fr);
       }}
@@ -550,7 +575,15 @@ def render_layout(title, content_html):
         font-size: 12px;
       }}
       .row {{
-        grid-template-columns: 86px 1fr;
+        grid-template-columns: 78px 1fr;
+        gap: 6px;
+        margin: 3px 0;
+      }}
+      .time {{
+        font-size: 16px;
+      }}
+      .summary-value {{
+        font-size: 16px;
       }}
     }}
   </style>
@@ -606,8 +639,8 @@ def render_home(races, summary, message_type="", message_text=""):
 
     message_html = ""
     if message_text:
-        css_class = "message-success" if message_type == "success" else "message-error"
-        message_html = f'<div class="message {css_class}">{message_text}</div>'
+      css_class = "message-success" if message_type == "success" else "message-error"
+      message_html = f'<div class="message {css_class}">{message_text}</div>'
 
     if not races:
         cards_html = '<div class="empty">条件に合うレースはありません</div>'
@@ -629,12 +662,16 @@ def render_home(races, summary, message_type="", message_text=""):
             <div class="card">
               <div class="time">{r['time']}</div>
               <div class="rating">{r['rating']}</div>
-              <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
-              <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
-              <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
-              <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
-              <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
-              <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
+
+              <div class="info-box">
+                <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
+                <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
+                <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
+                <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
+                <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
+                <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
+              </div>
+
               {status_html}
 
               <form method="post" action="/save" class="form" data-race-id="{r['id']}">
@@ -694,7 +731,7 @@ def render_home(races, summary, message_type="", message_text=""):
 
     content = f"""
     <div class="header">
-      <div class="title">今日の買い候補 v3</div>
+      <div class="title">今日の買い候補</div>
       <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 1点100円 / 1レース4点 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
       {external_line}
