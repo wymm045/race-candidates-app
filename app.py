@@ -375,13 +375,13 @@ def render_layout(title, content_html):
       margin: 6px 0;
       font-size: 15px;
     }}
-    .label {{
+      .label {{
       color: #6b7280;
     }}
-.selection-value {{
-  text-align: right;
-  line-height: 1.6;
-}}
+    .selection-value {{
+      text-align: right;
+      line-height: 1.6;
+    }}
     .rating {{
       display: inline-block;
       padding: 4px 10px;
