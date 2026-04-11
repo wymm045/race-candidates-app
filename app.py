@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import os
+from urllib.parse import quote
 
 import psycopg2
 import psycopg2.extras
@@ -34,6 +35,16 @@ def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
     return psycopg2.connect(DATABASE_URL)
+
+
+def get_point_count(selection):
+    if not selection:
+        return 0
+    return len([x for x in str(selection).split(" / ") if x.strip()])
+
+
+def get_total_amount(race):
+    return int(race["amount"]) * get_point_count(race["selection"])
 
 
 def init_db():
@@ -194,7 +205,12 @@ def get_summary_by_date(race_date):
         SELECT
             COUNT(*) AS total_rows,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END), 0) AS total_bets,
-            COALESCE(SUM(CASE WHEN purchased = 1 THEN amount ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(
+                CASE
+                    WHEN purchased = 1 THEN amount * COALESCE(array_length(string_to_array(selection, ' / '), 1), 0)
+                    ELSE 0
+                END
+            ), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout,
             COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
@@ -243,7 +259,12 @@ def get_group_summary(race_date, group_key):
             {group_key} AS group_name,
             COUNT(CASE WHEN purchased = 1 THEN 1 END) AS total_bets,
             COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            COALESCE(SUM(CASE WHEN purchased = 1 THEN amount ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(
+                CASE
+                    WHEN purchased = 1 THEN amount * COALESCE(array_length(string_to_array(selection, ' / '), 1), 0)
+                    ELSE 0
+                END
+            ), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout
         FROM races
         WHERE race_date = %s
@@ -381,7 +402,7 @@ def render_layout(title, content_html):
     }}
     .row {{
       display: grid;
-      grid-template-columns: 90px 1fr;
+      grid-template-columns: 96px 1fr;
       gap: 8px;
       margin: 8px 0;
       font-size: 15px;
@@ -408,6 +429,31 @@ def render_layout(title, content_html):
       font-size: 14px;
       margin-bottom: 10px;
     }}
+    .status-badge {{
+      display: inline-block;
+      margin-top: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #dcfce7;
+      color: #166534;
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .message {{
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+    }}
+    .message-success {{
+      background: #dcfce7;
+      color: #166534;
+    }}
+    .message-error {{
+      background: #fee2e2;
+      color: #991b1b;
+    }}
     .form {{
       margin-top: 14px;
       padding-top: 12px;
@@ -417,6 +463,10 @@ def render_layout(title, content_html):
     }}
     .checkline {{
       font-size: 15px;
+    }}
+    .checkline input {{
+      transform: scale(1.15);
+      margin-right: 6px;
     }}
     .input-row {{
       display: grid;
@@ -440,6 +490,16 @@ def render_layout(title, content_html):
       border-radius: 12px;
       font-size: 15px;
       font-weight: 700;
+    }}
+    .save-btn:disabled {{
+      opacity: .6;
+    }}
+    .detail-box {{
+      background: #f9fafb;
+      border-radius: 12px;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
     }}
     .empty {{
       background: #fff;
@@ -490,7 +550,7 @@ def render_layout(title, content_html):
         font-size: 12px;
       }}
       .row {{
-        grid-template-columns: 80px 1fr;
+        grid-template-columns: 86px 1fr;
       }}
     }}
   </style>
@@ -499,12 +559,55 @@ def render_layout(title, content_html):
   <div class="container">
     {content_html}
   </div>
+
+  <script>
+    function toggleFormState(raceId) {{
+      const purchased = document.getElementById(`purchased-${{raceId}}`);
+      const hit = document.getElementById(`hit-${{raceId}}`);
+      const payout = document.getElementById(`payout-${{raceId}}`);
+      const detail = document.getElementById(`detail-${{raceId}}`);
+
+      if (!purchased || !hit || !payout || !detail) return;
+
+      if (purchased.checked) {{
+        detail.style.display = "grid";
+        hit.disabled = false;
+        payout.disabled = !hit.checked;
+      }} else {{
+        detail.style.display = "none";
+        hit.checked = false;
+        hit.disabled = true;
+        payout.value = "";
+        payout.disabled = true;
+      }}
+
+      if (hit.checked && purchased.checked) {{
+        payout.disabled = false;
+      }} else {{
+        payout.disabled = true;
+        if (!hit.checked) {{
+          payout.value = "";
+        }}
+      }}
+    }}
+
+    document.addEventListener("DOMContentLoaded", function() {{
+      document.querySelectorAll("[data-race-id]").forEach(function(el) {{
+        toggleFormState(el.getAttribute("data-race-id"));
+      }});
+    }});
+  </script>
 </body>
 </html>"""
 
 
-def render_home(races, summary):
+def render_home(races, summary, message_type="", message_text=""):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
+
+    message_html = ""
+    if message_text:
+        css_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {css_class}">{message_text}</div>'
 
     if not races:
         cards_html = '<div class="empty">条件に合うレースはありません</div>'
@@ -516,6 +619,11 @@ def render_home(races, summary):
             payout_value = r["payout"] if r["payout"] else ""
             memo_value = r["memo"] if r["memo"] else ""
             selection_html = r["selection"].replace(" / ", "<br>")
+            point_count = get_point_count(r["selection"])
+            total_amount = get_total_amount(r)
+            status_html = ""
+            if r["purchased"] == 1:
+                status_html = '<div class="status-badge">保存済み</div>'
 
             cards_html += f"""
             <div class="card">
@@ -524,29 +632,55 @@ def render_home(races, summary):
               <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
               <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
               <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
-              <div class="row"><span class="label">金額</span><span class="value">{r['amount']}円</span></div>
+              <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
+              <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
+              <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
+              {status_html}
 
-              <form method="post" action="/save" class="form">
+              <form method="post" action="/save" class="form" data-race-id="{r['id']}">
                 <input type="hidden" name="race_id" value="{r['id']}">
 
                 <label class="checkline">
-                  <input type="checkbox" name="purchased" value="1" {checked_purchased}>
-                  買った
+                  <input
+                    type="checkbox"
+                    id="purchased-{r['id']}"
+                    name="purchased"
+                    value="1"
+                    {checked_purchased}
+                    onchange="toggleFormState('{r['id']}')"
+                  >
+                  このレースを4点まとめて買った
                 </label>
 
-                <label class="checkline">
-                  <input type="checkbox" name="hit" value="1" {checked_hit}>
-                  的中
-                </label>
+                <div id="detail-{r['id']}" class="detail-box">
+                  <label class="checkline">
+                    <input
+                      type="checkbox"
+                      id="hit-{r['id']}"
+                      name="hit"
+                      value="1"
+                      {checked_hit}
+                      onchange="toggleFormState('{r['id']}')"
+                    >
+                    的中した
+                  </label>
 
-                <div class="input-row">
-                  <label>払戻額</label>
-                  <input type="number" name="payout" value="{payout_value}" placeholder="0">
-                </div>
+                  <div class="input-row">
+                    <label>払戻額（レース全体の合計）</label>
+                    <input
+                      type="number"
+                      id="payout-{r['id']}"
+                      name="payout"
+                      value="{payout_value}"
+                      placeholder="例: 870"
+                      min="0"
+                    >
+                  </div>
 
-                <div class="input-row">
-                  <label>メモ</label>
-                  <input type="text" name="memo" value="{memo_value}" placeholder="見送りなど">
+                  <div class="input-row">
+                    <label>メモ</label>
+                    <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
+                  </div>
                 </div>
 
                 <button type="submit" class="save-btn">保存</button>
@@ -561,9 +695,10 @@ def render_home(races, summary):
     content = f"""
     <div class="header">
       <div class="title">今日の買い候補</div>
-      <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 各レース100円 / 今日これから始まるレース / 締切予定時刻が早い順</div>
+      <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 1点100円 / 1レース4点 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
       {external_line}
+      {message_html}
 
       <div class="nav">
         <a href="/">今日の候補</a>
@@ -641,6 +776,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue):
     <div class="header">
       <div class="title">集計</div>
       <div class="sub">対象日: {race_date}</div>
+      <div class="sub">ルール: 1点100円 / 1レース4点買い</div>
       <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
       <div class="nav">
         <a href="/">今日の候補</a>
@@ -708,6 +844,8 @@ def render_history_detail_page(race_date, races, summary):
     else:
         rows_html = ""
         for r in races:
+            point_count = get_point_count(r["selection"])
+            total_amount = get_total_amount(r)
             rows_html += f"""
             <tr>
               <td>{r['time']}</td>
@@ -715,6 +853,7 @@ def render_history_detail_page(race_date, races, summary):
               <td>{r['race_no']}</td>
               <td>{r['rating']}</td>
               <td>{r['selection']}</td>
+              <td>{point_count}点 / {total_amount}円</td>
               <td>{'買い' if r['purchased'] == 1 else '見送り'}</td>
               <td>{'的中' if r['hit'] == 1 else '-'}</td>
               <td>{r['payout']}円</td>
@@ -731,6 +870,7 @@ def render_history_detail_page(race_date, races, summary):
                 <th>R</th>
                 <th>評価</th>
                 <th>買い目</th>
+                <th>点数/投資</th>
                 <th>購入</th>
                 <th>的中</th>
                 <th>払戻</th>
@@ -797,7 +937,9 @@ def reset_today():
 def index():
     races = get_today_races()
     summary = get_summary_by_date(today_text())
-    return render_home(races, summary)
+    message_type = request.args.get("type", "").strip()
+    message_text = request.args.get("msg", "").strip()
+    return render_home(races, summary, message_type, message_text)
 
 
 @app.route("/save", methods=["POST"])
@@ -809,8 +951,15 @@ def save():
     payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
 
+    if purchased == 0:
+        hit = 0
+        payout = 0
+
+    if purchased == 1 and hit == 1 and payout <= 0:
+        return redirect("/?type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+
     update_race_result(race_id, purchased, hit, payout, memo)
-    return redirect("/")
+    return redirect("/?type=success&msg=" + quote("保存しました"))
 
 
 @app.route("/stats")
