@@ -208,7 +208,6 @@ def get_summary_by_date(race_date):
         "roi": roi,
         "last_imported_at": "",
     }
-
     
 def get_group_summary(race_date, group_key):
     if group_key not in {"rating", "venue"}:
