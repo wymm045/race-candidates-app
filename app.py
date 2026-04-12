@@ -117,6 +117,20 @@ def final_rank_class(rank_text):
     return "final-rank final-rank-watch"
 
 
+def yen(n):
+    try:
+        return f"{int(n):,}円"
+    except Exception:
+        return "0円"
+
+
+def percent(n):
+    try:
+        return f"{float(n):.1f}%"
+    except Exception:
+        return "0%"
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -425,6 +439,20 @@ def get_history_dates():
     return [row[0] for row in rows]
 
 
+def get_history_date_summaries():
+    dates = get_history_dates()
+    results = []
+    for d in dates:
+        s = get_summary_by_date(d)
+        results.append(
+            {
+                "race_date": d,
+                "summary": s,
+            }
+        )
+    return results
+
+
 def render_layout(title, content_html):
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -443,7 +471,7 @@ def render_layout(title, content_html):
       color: #1f2937;
     }}
     .container {{
-      max-width: 900px;
+      max-width: 960px;
       margin: 0 auto;
       padding: 12px;
     }}
@@ -455,12 +483,13 @@ def render_layout(title, content_html):
       margin-bottom: 10px;
     }}
     .card-purchased {{
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
+      background: #eaf3ff;
+      border: 2px solid #93c5fd;
     }}
     .card-hit {{
       background: #ecfdf5;
-      border: 1px solid #86efac;
+      border: 2px solid #4ade80;
+      box-shadow: 0 10px 26px rgba(34,197,94,.15);
     }}
     .title {{
       font-size: 22px;
@@ -701,6 +730,58 @@ def render_layout(title, content_html):
     .reason-list li {{
       margin-bottom: 2px;
     }}
+    .stats-grid {{
+      display: grid;
+      grid-template-columns: repeat(2,1fr);
+      gap: 10px;
+    }}
+    .history-list {{
+      display: grid;
+      gap: 10px;
+    }}
+    .history-item {{
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #fff;
+    }}
+    .history-top {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }}
+    .history-date {{
+      font-weight: 700;
+      font-size: 16px;
+    }}
+    .history-link {{
+      text-decoration: none;
+      color: #2563eb;
+      font-weight: 700;
+    }}
+    .history-mini {{
+      display: grid;
+      grid-template-columns: repeat(4,1fr);
+      gap: 8px;
+    }}
+    .history-mini-box {{
+      background: #f9fafb;
+      border-radius: 10px;
+      padding: 8px;
+      text-align: center;
+    }}
+    .history-mini-label {{
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 2px;
+    }}
+    .history-mini-value {{
+      font-size: 14px;
+      font-weight: 700;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -715,23 +796,20 @@ def render_layout(title, content_html):
     th {{
       color: #6b7280;
       font-weight: 700;
+      background: #f9fafb;
+      position: sticky;
+      top: 0;
     }}
-    .history-list {{
-      display: grid;
-      gap: 10px;
+    .profit-plus {{
+      color: #166534;
+      font-weight: 700;
     }}
-    .history-item {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      padding: 12px;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
+    .profit-minus {{
+      color: #991b1b;
+      font-weight: 700;
     }}
-    .history-item a {{
-      text-decoration: none;
-      color: #2563eb;
+    .profit-zero {{
+      color: #374151;
       font-weight: 700;
     }}
     @media (max-width: 720px) {{
@@ -749,6 +827,12 @@ def render_layout(title, content_html):
         grid-template-columns: repeat(2,1fr);
       }}
       .summary.six {{
+        grid-template-columns: repeat(2,1fr);
+      }}
+      .stats-grid {{
+        grid-template-columns: 1fr;
+      }}
+      .history-mini {{
         grid-template-columns: repeat(2,1fr);
       }}
       table {{
@@ -815,6 +899,18 @@ def render_layout(title, content_html):
   </script>
 </body>
 </html>"""
+
+
+def profit_class(value):
+    try:
+        v = int(value)
+    except Exception:
+        v = 0
+    if v > 0:
+        return "profit-plus"
+    if v < 0:
+        return "profit-minus"
+    return "profit-zero"
 
 
 def render_home(races, summary, message_type="", message_text=""):
@@ -888,8 +984,8 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
                 <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
-                <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
-                <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
+                <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+                <div class="row"><span class="label">合計金額</span><span class="value">{yen(total_amount)}</span></div>
                 <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
                 <div class="row"><span class="label">展示</span><span class="value">{exhibition_text}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_text}</span></div>
@@ -979,11 +1075,11 @@ def render_home(races, summary, message_type="", message_text=""):
         </div>
         <div class="summary-box">
           <div class="summary-label">収支</div>
-          <div class="summary-value">{summary['total_profit']}円</div>
+          <div class="summary-value" class="{profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">回収率</div>
-          <div class="summary-value">{summary['roi']}%</div>
+          <div class="summary-value">{percent(summary['roi'])}</div>
         </div>
       </div>
     </div>
@@ -1005,11 +1101,11 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
               <td>{r['group_name']}</td>
               <td>{r['total_bets']}</td>
               <td>{r['total_hits']}</td>
-              <td>{r['total_investment']}円</td>
-              <td>{r['total_payout']}円</td>
-              <td>{r['total_profit']}円</td>
-              <td>{r['hit_rate']}%</td>
-              <td>{r['roi']}%</td>
+              <td>{yen(r['total_investment'])}</td>
+              <td>{yen(r['total_payout'])}</td>
+              <td class="{profit_class(r['total_profit'])}">{yen(r['total_profit'])}</td>
+              <td>{percent(r['hit_rate'])}</td>
+              <td>{percent(r['roi'])}</td>
             </tr>
             """
         return f"""
@@ -1061,63 +1157,98 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         </div>
         <div class="summary-box">
           <div class="summary-label">投資額</div>
-          <div class="summary-value">{summary['total_investment']}円</div>
+          <div class="summary-value">{yen(summary['total_investment'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">払戻額</div>
-          <div class="summary-value">{summary['total_payout']}円</div>
+          <div class="summary-value">{yen(summary['total_payout'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">収支</div>
-          <div class="summary-value">{summary['total_profit']}円</div>
+          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
         </div>
       </div>
 
       <div class="summary" style="margin-top:8px;">
         <div class="summary-box">
           <div class="summary-label">的中率</div>
-          <div class="summary-value">{summary['hit_rate']}%</div>
+          <div class="summary-value">{percent(summary['hit_rate'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">回収率</div>
-          <div class="summary-value">{summary['roi']}%</div>
+          <div class="summary-value">{percent(summary['roi'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">1件あたり平均投資</div>
-          <div class="summary-value">{round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0}円</div>
+          <div class="summary-value">{yen(round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0)}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">1件あたり平均払戻</div>
-          <div class="summary-value">{round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0}円</div>
+          <div class="summary-value">{yen(round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0)}</div>
         </div>
       </div>
     </div>
 
-    <div class="header"><div class="section-title">公式星別集計</div></div>
-    {make_table(by_rating)}
+    <div class="stats-grid">
+      <div>
+        <div class="header"><div class="section-title">公式星別集計</div></div>
+        {make_table(by_rating)}
+      </div>
 
-    <div class="header"><div class="section-title">AI補正星別集計</div></div>
-    {make_table(by_ai_rating)}
+      <div>
+        <div class="header"><div class="section-title">AI補正星別集計</div></div>
+        {make_table(by_ai_rating)}
+      </div>
+    </div>
 
-    <div class="header"><div class="section-title">最終判定別集計</div></div>
-    {make_table(by_final_rank)}
+    <div class="stats-grid">
+      <div>
+        <div class="header"><div class="section-title">最終判定別集計</div></div>
+        {make_table(by_final_rank)}
+      </div>
 
-    <div class="header"><div class="section-title">会場別集計</div></div>
-    {make_table(by_venue)}
+      <div>
+        <div class="header"><div class="section-title">会場別集計</div></div>
+        {make_table(by_venue)}
+      </div>
+    </div>
     """
     return render_layout("今日の集計", content)
 
 
-def render_history_page(dates):
-    if not dates:
+def render_history_page(date_summaries):
+    if not date_summaries:
         list_html = '<div class="empty">過去データはありません</div>'
     else:
         items = ""
-        for d in dates:
+        for item in date_summaries:
+            d = item["race_date"]
+            s = item["summary"]
             items += f"""
             <div class="history-item">
-              <div>{d}</div>
-              <div><a href="/history/{d}">結果を見る</a></div>
+              <div class="history-top">
+                <div class="history-date">{d}</div>
+                <a class="history-link" href="/history/{d}">結果を見る</a>
+              </div>
+
+              <div class="history-mini">
+                <div class="history-mini-box">
+                  <div class="history-mini-label">候補数</div>
+                  <div class="history-mini-value">{s['total_rows']}</div>
+                </div>
+                <div class="history-mini-box">
+                  <div class="history-mini-label">購入数</div>
+                  <div class="history-mini-value">{s['total_bets']}</div>
+                </div>
+                <div class="history-mini-box">
+                  <div class="history-mini-label">収支</div>
+                  <div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div>
+                </div>
+                <div class="history-mini-box">
+                  <div class="history-mini-label">回収率</div>
+                  <div class="history-mini-value">{percent(s['roi'])}</div>
+                </div>
+              </div>
             </div>
             """
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
@@ -1156,10 +1287,10 @@ def render_history_detail_page(race_date, races, summary):
               <td>{display_text(r.get('final_rank'), '未設定')}</td>
               <td>{r['selection']}</td>
               <td>{exhibition_text}</td>
-              <td>{point_count}点 / {total_amount}円</td>
+              <td>{point_count}点 / {yen(total_amount)}</td>
               <td>{'買い' if r['purchased'] == 1 else '見送り'}</td>
               <td>{'的中' if r['hit'] == 1 else '-'}</td>
-              <td>{r['payout']}円</td>
+              <td>{yen(r['payout'])}</td>
               <td>{r['memo'] or ''}</td>
             </tr>
             """
@@ -1210,11 +1341,11 @@ def render_history_detail_page(race_date, races, summary):
         </div>
         <div class="summary-box">
           <div class="summary-label">収支</div>
-          <div class="summary-value">{summary['total_profit']}円</div>
+          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">回収率</div>
-          <div class="summary-value">{summary['roi']}%</div>
+          <div class="summary-value">{percent(summary['roi'])}</div>
         </div>
       </div>
     </div>
@@ -1281,8 +1412,8 @@ def stats():
 
 @app.route("/history")
 def history():
-    dates = get_history_dates()
-    return render_history_page(dates)
+    date_summaries = get_history_date_summaries()
+    return render_history_page(date_summaries)
 
 
 @app.route("/history/<race_date>")
