@@ -104,6 +104,19 @@ def normalize_ai_detail(raw_detail, exhibition_list):
     return detail
 
 
+def final_rank_class(rank_text):
+    rank = (rank_text or "").strip()
+    if rank == "買い強め":
+        return "final-rank final-rank-strong"
+    if rank == "買い":
+        return "final-rank final-rank-buy"
+    if rank == "様子見":
+        return "final-rank final-rank-watch"
+    if rank == "見送り寄り":
+        return "final-rank final-rank-skip"
+    return "final-rank final-rank-watch"
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -562,11 +575,25 @@ def render_layout(title, content_html):
       display: inline-block;
       padding: 3px 10px;
       border-radius: 999px;
-      background: #ecfeff;
-      color: #155e75;
       font-weight: 700;
       font-size: 13px;
       margin-bottom: 8px;
+    }}
+    .final-rank-strong {{
+      background: #dbeafe;
+      color: #1d4ed8;
+    }}
+    .final-rank-buy {{
+      background: #ecfeff;
+      color: #155e75;
+    }}
+    .final-rank-watch {{
+      background: #f3f4f6;
+      color: #4b5563;
+    }}
+    .final-rank-skip {{
+      background: #fee2e2;
+      color: #991b1b;
     }}
     .status-wrap {{
       display: flex;
@@ -853,7 +880,7 @@ def render_home(races, summary, message_type="", message_text=""):
               <div>
                 <span class="rating">{r.get('rating') or '公式評価なし'}</span>
                 <span class="ai-rating">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
-                <span class="final-rank">{display_text(r.get('final_rank'), '判定なし')}</span>
+                <span class="{final_rank_class(r.get('final_rank'))}">{display_text(r.get('final_rank'), '判定なし')}</span>
               </div>
 
               <div class="info-box">
