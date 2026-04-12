@@ -551,6 +551,28 @@ def delete_race(race_id):
     return deleted
 
 
+def delete_races_bulk(race_ids):
+    race_ids = [int(x) for x in race_ids if str(x).strip().isdigit()]
+    if not race_ids:
+        return 0
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM races
+        WHERE id = ANY(%s)
+        """,
+        (race_ids,),
+    )
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_races_bulk race_ids={race_ids} deleted={deleted}")
+    return deleted
+
+
 def get_summary_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -838,64 +860,78 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
 
     content = f"""
-    <div class="header hero">
-      <div class="title">今日の買い候補</div>
-      <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
-      <div class="sub">最終取込時刻: {updated_str}</div>
-      <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
-      {external_line}
-      {message_html}
-
-      <form method="get" action="/" class="filter-box">
-        <div class="filter-grid">
-          <div class="filter-item filter-item-wide">
-            <label class="filter-check">
-              <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
-              締切後も表示する
-            </label>
-          </div>
-
-          <div class="filter-item">
-            <label for="ai_rating">AI評価で絞る</label>
-            <select name="ai_rating" id="ai_rating">
-              {ai_rating_options_html}
-            </select>
-          </div>
-
-          <div class="filter-actions">
-            <button type="submit" class="filter-btn">フィルター適用</button>
-            <a href="/" class="filter-reset">解除</a>
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">🏁</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">ボートレース候補アプリ</div>
           </div>
         </div>
-      </form>
-
-      <div class="nav">
-        <a href="/">今日の候補</a>
-        <a href="/stats">今日の集計</a>
-        <a href="/history">過去データ</a>
+        <div class="topbar-status">
+          <span class="top-pill">最終取込: {updated_str}</span>
+        </div>
       </div>
 
-      <div class="summary">
-        <div class="summary-box">
-          <div class="summary-label">表示中候補</div>
-          <div class="summary-value">{len(races)}</div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の買い候補</div>
+        <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
+        {external_line}
+        {message_html}
+
+        <form method="get" action="/" class="filter-box">
+          <div class="filter-grid">
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
+                締切後も表示する
+              </label>
+            </div>
+
+            <div class="filter-item">
+              <label for="ai_rating">AI評価で絞る</label>
+              <select name="ai_rating" id="ai_rating">
+                {ai_rating_options_html}
+              </select>
+            </div>
+
+            <div class="filter-actions">
+              <button type="submit" class="filter-btn">フィルター適用</button>
+              <a href="/" class="filter-reset">解除</a>
+            </div>
+          </div>
+        </form>
+
+        <div class="nav nav-app">
+          <a href="/" class="nav-card active">今日の候補</a>
+          <a href="/stats" class="nav-card">今日の集計</a>
+          <a href="/history" class="nav-card">過去データ</a>
         </div>
-        <div class="summary-box">
-          <div class="summary-label">購入数</div>
-          <div class="summary-value">{summary['total_bets']}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">収支</div>
-          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">回収率</div>
-          <div class="summary-value">{percent(summary['roi'])}</div>
+
+        <div class="summary">
+          <div class="summary-box">
+            <div class="summary-label">表示中候補</div>
+            <div class="summary-value">{len(races)}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">購入数</div>
+            <div class="summary-value">{summary['total_bets']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">収支</div>
+            <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">回収率</div>
+            <div class="summary-value">{percent(summary['roi'])}</div>
+          </div>
         </div>
       </div>
+
+      {cards_html}
     </div>
-
-    {cards_html}
     """
     return render_layout("今日の買い候補", content)
 
@@ -942,85 +978,100 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         """
 
     content = f"""
-    <div class="header hero">
-      <div class="title">今日の集計</div>
-      <div class="sub">対象日: {race_date}</div>
-      <div class="sub">表示は★★★★★候補が中心</div>
-      <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
-
-      <div class="nav">
-        <a href="/">今日の候補</a>
-        <a href="/history">過去データ</a>
-      </div>
-
-      <div class="summary six">
-        <div class="summary-box">
-          <div class="summary-label">全候補数</div>
-          <div class="summary-value">{summary['total_rows']}</div>
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">📊</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">今日の集計</div>
+          </div>
         </div>
-        <div class="summary-box">
-          <div class="summary-label">購入数</div>
-          <div class="summary-value">{summary['total_bets']}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">的中数</div>
-          <div class="summary-value">{summary['total_hits']}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">投資額</div>
-          <div class="summary-value">{yen(summary['total_investment'])}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">払戻額</div>
-          <div class="summary-value">{yen(summary['total_payout'])}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">収支</div>
-          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
+        <div class="topbar-status">
+          <span class="top-pill">対象日: {race_date}</span>
         </div>
       </div>
 
-      <div class="summary" style="margin-top:8px;">
-        <div class="summary-box">
-          <div class="summary-label">的中率</div>
-          <div class="summary-value">{percent(summary['hit_rate'])}</div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の集計</div>
+        <div class="sub">対象日: {race_date}</div>
+        <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+
+        <div class="nav nav-app">
+          <a href="/" class="nav-card">今日の候補</a>
+          <a href="/stats" class="nav-card active">今日の集計</a>
+          <a href="/history" class="nav-card">過去データ</a>
         </div>
-        <div class="summary-box">
-          <div class="summary-label">回収率</div>
-          <div class="summary-value">{percent(summary['roi'])}</div>
+
+        <div class="summary six">
+          <div class="summary-box">
+            <div class="summary-label">全候補数</div>
+            <div class="summary-value">{summary['total_rows']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">購入数</div>
+            <div class="summary-value">{summary['total_bets']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">的中数</div>
+            <div class="summary-value">{summary['total_hits']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">投資額</div>
+            <div class="summary-value">{yen(summary['total_investment'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">払戻額</div>
+            <div class="summary-value">{yen(summary['total_payout'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">収支</div>
+            <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
+          </div>
         </div>
-        <div class="summary-box">
-          <div class="summary-label">1件あたり平均投資</div>
-          <div class="summary-value">{yen(round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0)}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">1件あたり平均払戻</div>
-          <div class="summary-value">{yen(round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0)}</div>
+
+        <div class="summary" style="margin-top:8px;">
+          <div class="summary-box">
+            <div class="summary-label">的中率</div>
+            <div class="summary-value">{percent(summary['hit_rate'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">回収率</div>
+            <div class="summary-value">{percent(summary['roi'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">1件あたり平均投資</div>
+            <div class="summary-value">{yen(round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0)}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">1件あたり平均払戻</div>
+            <div class="summary-value">{yen(round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0)}</div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="stats-grid">
-      <div>
-        <div class="header"><div class="section-title">公式星別集計</div></div>
-        {make_table(by_rating)}
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">公式星別集計</div></div>
+          {make_table(by_rating)}
+        </div>
+
+        <div>
+          <div class="header"><div class="section-title">AI補正星別集計</div></div>
+          {make_table(by_ai_rating)}
+        </div>
       </div>
 
-      <div>
-        <div class="header"><div class="section-title">AI補正星別集計</div></div>
-        {make_table(by_ai_rating)}
-      </div>
-    </div>
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">最終判定別集計</div></div>
+          {make_table(by_final_rank)}
+        </div>
 
-    <div class="stats-grid">
-      <div>
-        <div class="header"><div class="section-title">最終判定別集計</div></div>
-        {make_table(by_final_rank)}
-      </div>
-
-      <div>
-        <div class="header"><div class="section-title">会場別集計</div></div>
-        {make_table(by_venue)}
+        <div>
+          <div class="header"><div class="section-title">会場別集計</div></div>
+          {make_table(by_venue)}
+        </div>
       </div>
     </div>
     """
@@ -1065,14 +1116,28 @@ def render_history_page(date_summaries):
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
 
     content = f"""
-    <div class="header hero">
-      <div class="title">過去データ</div>
-      <div class="nav">
-        <a href="/">今日の候補</a>
-        <a href="/stats">今日の集計</a>
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">🗂️</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">過去データ一覧</div>
+          </div>
+        </div>
       </div>
+
+      <div class="header hero hero-strong">
+        <div class="title">過去データ</div>
+        <div class="nav nav-app">
+          <a href="/" class="nav-card">今日の候補</a>
+          <a href="/stats" class="nav-card">今日の集計</a>
+          <a href="/history" class="nav-card active">過去データ</a>
+        </div>
+      </div>
+
+      {list_html}
     </div>
-    {list_html}
     """
     return render_layout("過去データ", content)
 
@@ -1119,6 +1184,17 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
 
             cards_html += f"""
             <div class="{card_class}">
+              <div class="multi-check-wrap">
+                <input
+                  type="checkbox"
+                  class="bulk-checkbox"
+                  name="race_ids"
+                  value="{r['id']}"
+                  form="bulk-delete-form"
+                  onchange="updateBulkDeleteCount()"
+                >
+              </div>
+
               <div class="card-top">
                 <div>
                   <div class="time">{r['time']}</div>
@@ -1199,43 +1275,77 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
               <form method="post" action="/delete_record" class="delete-form" onsubmit="return confirm('この過去データを削除しますか？');">
                 <input type="hidden" name="race_id" value="{r['id']}">
                 <input type="hidden" name="redirect_to" value="{redirect_to}">
-                <button type="submit" class="delete-btn">削除</button>
+                <button type="submit" class="delete-btn">この1件を削除</button>
               </form>
             </div>
             """
 
-        body = cards_html
+        body = f"""
+        <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();">
+          <input type="hidden" name="redirect_to" value="/history/{race_date}">
+        </form>
+
+        <div class="bulk-toolbar">
+          <div class="bulk-toolbar-left">
+            <button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button>
+            <button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button>
+          </div>
+          <div class="bulk-toolbar-right">
+            <span class="bulk-count" id="bulk-delete-count">0件選択中</span>
+            <button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button>
+          </div>
+        </div>
+
+        {cards_html}
+        """
 
     content = f"""
-    <div class="header hero">
-      <div class="title">過去データ詳細</div>
-      <div class="sub">対象日: {race_date}</div>
-      <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
-      {message_html}
-      <div class="nav">
-        <a href="/history">過去データ一覧</a>
-        <a href="/">今日の候補</a>
-      </div>
-      <div class="summary">
-        <div class="summary-box">
-          <div class="summary-label">候補数</div>
-          <div class="summary-value">{summary['total_rows']}</div>
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">🧾</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">過去データ詳細</div>
+          </div>
         </div>
-        <div class="summary-box">
-          <div class="summary-label">購入数</div>
-          <div class="summary-value">{summary['total_bets']}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">収支</div>
-          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
-        </div>
-        <div class="summary-box">
-          <div class="summary-label">回収率</div>
-          <div class="summary-value">{percent(summary['roi'])}</div>
+        <div class="topbar-status">
+          <span class="top-pill">対象日: {race_date}</span>
         </div>
       </div>
+
+      <div class="header hero hero-strong">
+        <div class="title">過去データ詳細</div>
+        <div class="sub">対象日: {race_date}</div>
+        <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+        {message_html}
+        <div class="nav nav-app">
+          <a href="/history" class="nav-card">過去データ一覧</a>
+          <a href="/" class="nav-card">今日の候補</a>
+          <a href="/history/{race_date}" class="nav-card active">この日の詳細</a>
+        </div>
+        <div class="summary">
+          <div class="summary-box">
+            <div class="summary-label">候補数</div>
+            <div class="summary-value">{summary['total_rows']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">購入数</div>
+            <div class="summary-value">{summary['total_bets']}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">収支</div>
+            <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
+          </div>
+          <div class="summary-box">
+            <div class="summary-label">回収率</div>
+            <div class="summary-value">{percent(summary['roi'])}</div>
+          </div>
+        </div>
+      </div>
+
+      {body}
     </div>
-    {body}
     """
     return render_layout("過去データ詳細", content)
 
@@ -1256,8 +1366,9 @@ def render_layout(title, body_html):
         body {{
           margin: 0;
           background:
-            radial-gradient(circle at top left, rgba(59,130,246,0.10), transparent 22%),
-            linear-gradient(180deg, #f8fbff 0%, #f3f6fb 100%);
+            radial-gradient(circle at top left, rgba(59,130,246,0.12), transparent 22%),
+            radial-gradient(circle at top right, rgba(14,165,233,0.10), transparent 18%),
+            linear-gradient(180deg, #eef4ff 0%, #f7faff 42%, #f3f6fb 100%);
           color: #172033;
           font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
           line-height: 1.5;
@@ -1269,31 +1380,112 @@ def render_layout(title, body_html):
         }}
 
         .container {{
-          max-width: 980px;
+          max-width: 1020px;
           margin: 0 auto;
           padding: 16px;
         }}
 
-        .header {{
-          background: rgba(255,255,255,0.90);
+        .app-shell {{
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }}
+
+        .topbar {{
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          padding: 14px 18px;
+          border-radius: 22px;
+          background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 52%, #38bdf8 100%);
+          color: #ffffff;
+          box-shadow: 0 20px 44px rgba(29,78,216,0.22);
+        }}
+
+        .brand {{
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }}
+
+        .brand-logo {{
+          width: 46px;
+          height: 46px;
+          border-radius: 14px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(255,255,255,0.16);
           backdrop-filter: blur(8px);
-          border: 1px solid rgba(255,255,255,0.7);
-          border-radius: 20px;
-          padding: 18px;
-          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07);
-          margin-bottom: 16px;
+          font-size: 24px;
+        }}
+
+        .brand-title {{
+          font-size: 18px;
+          font-weight: 900;
+          line-height: 1.1;
+        }}
+
+        .brand-sub {{
+          font-size: 12px;
+          opacity: 0.86;
+          margin-top: 3px;
+        }}
+
+        .topbar-status {{
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }}
+
+        .top-pill {{
+          display: inline-flex;
+          align-items: center;
+          padding: 8px 12px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.16);
+          border: 1px solid rgba(255,255,255,0.18);
+          font-size: 12px;
+          font-weight: 900;
+          backdrop-filter: blur(8px);
+        }}
+
+        .header {{
+          background: rgba(255,255,255,0.88);
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255,255,255,0.68);
+          border-radius: 24px;
+          padding: 20px;
+          box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+          margin-bottom: 0;
         }}
 
         .hero {{
           background:
-            linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.90));
+            linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,255,255,0.90));
+        }}
+
+        .hero-strong {{
+          position: relative;
+          overflow: hidden;
+        }}
+
+        .hero-strong::before {{
+          content: "";
+          position: absolute;
+          inset: 0 0 auto 0;
+          height: 5px;
+          background: linear-gradient(90deg, #2563eb, #38bdf8, #6366f1);
         }}
 
         .title {{
-          font-size: 28px;
+          font-size: 30px;
           font-weight: 900;
           margin-bottom: 8px;
           letter-spacing: 0.01em;
+          color: #0f172a;
         }}
 
         .sub {{
@@ -1310,8 +1502,9 @@ def render_layout(title, body_html):
           margin-top: 16px;
           background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
           border: 1px solid #dce7f7;
-          border-radius: 16px;
+          border-radius: 18px;
           padding: 14px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
         }}
 
         .filter-grid {{
@@ -1371,7 +1564,7 @@ def render_layout(title, body_html):
 
         .filter-btn {{
           border: none;
-          background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
           color: #ffffff;
           border-radius: 12px;
           padding: 11px 14px;
@@ -1379,6 +1572,7 @@ def render_layout(title, body_html):
           font-weight: 900;
           cursor: pointer;
           white-space: nowrap;
+          box-shadow: 0 10px 18px rgba(37,99,235,0.16);
         }}
 
         .filter-reset {{
@@ -1402,18 +1596,29 @@ def render_layout(title, body_html):
           margin-top: 16px;
         }}
 
-        .nav a {{
+        .nav-app {{
+          gap: 12px;
+        }}
+
+        .nav-card {{
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding: 10px 14px;
-          background: linear-gradient(180deg, #eef4ff 0%, #e5edff 100%);
+          min-width: 120px;
+          padding: 12px 15px;
+          background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
           color: #2743b4;
-          border-radius: 12px;
+          border-radius: 16px;
           font-size: 14px;
-          font-weight: 800;
+          font-weight: 900;
           border: 1px solid #d7e2ff;
-          box-shadow: 0 4px 10px rgba(59,130,246,0.08);
+          box-shadow: 0 8px 18px rgba(59,130,246,0.09);
+        }}
+
+        .nav-card.active {{
+          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+          color: #ffffff;
+          border-color: #2563eb;
         }}
 
         .summary {{
@@ -1430,9 +1635,11 @@ def render_layout(title, body_html):
         .summary-box {{
           background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
           border: 1px solid #dce7f7;
-          border-radius: 16px;
+          border-radius: 18px;
           padding: 14px;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.8),
+            0 8px 18px rgba(15,23,42,0.04);
         }}
 
         .summary-label {{
@@ -1442,7 +1649,7 @@ def render_layout(title, body_html):
         }}
 
         .summary-value {{
-          font-size: 20px;
+          font-size: 21px;
           font-weight: 900;
         }}
 
@@ -1461,7 +1668,7 @@ def render_layout(title, body_html):
         .message {{
           margin-top: 12px;
           padding: 12px 14px;
-          border-radius: 12px;
+          border-radius: 14px;
           font-size: 14px;
           font-weight: 800;
         }}
@@ -1480,7 +1687,7 @@ def render_layout(title, body_html):
 
         .empty {{
           background: rgba(255,255,255,0.92);
-          border-radius: 18px;
+          border-radius: 20px;
           padding: 18px;
           color: #6b7280;
           box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
@@ -1489,10 +1696,10 @@ def render_layout(title, body_html):
 
         .card {{
           background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,252,255,0.96) 100%);
-          border-radius: 22px;
+          border-radius: 24px;
           padding: 18px;
           margin-bottom: 18px;
-          box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
           border: 1px solid #e4ebf5;
           position: relative;
           overflow: hidden;
@@ -1515,7 +1722,7 @@ def render_layout(title, body_html):
         }}
 
         .card-purchased::before {{
-          opacity: 0.8;
+          opacity: 0.85;
         }}
 
         .card-hit {{
@@ -1529,7 +1736,19 @@ def render_layout(title, body_html):
         }}
 
         .history-edit-card {{
-          padding-bottom: 14px;
+          padding-top: 26px;
+        }}
+
+        .multi-check-wrap {{
+          position: absolute;
+          top: 12px;
+          right: 14px;
+          z-index: 2;
+        }}
+
+        .multi-check-wrap input[type="checkbox"] {{
+          width: 20px;
+          height: 20px;
         }}
 
         .card-top {{
@@ -1607,7 +1826,7 @@ def render_layout(title, body_html):
         .info-box {{
           background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
           border: 1px solid #e2e8f0;
-          border-radius: 16px;
+          border-radius: 18px;
           padding: 12px 14px;
         }}
 
@@ -1789,7 +2008,7 @@ def render_layout(title, body_html):
           width: 100%;
           margin-top: 12px;
           border: none;
-          background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
           color: #ffffff;
           border-radius: 14px;
           padding: 13px 14px;
@@ -1826,6 +2045,68 @@ def render_layout(title, body_html):
 
         .delete-btn:hover {{
           opacity: 0.94;
+        }}
+
+        .bulk-toolbar {{
+          position: sticky;
+          top: 10px;
+          z-index: 20;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-bottom: 14px;
+          padding: 14px 16px;
+          border-radius: 18px;
+          background: rgba(255,255,255,0.92);
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(226,232,240,0.95);
+          box-shadow: 0 14px 30px rgba(15,23,42,0.08);
+        }}
+
+        .bulk-toolbar-left,
+        .bulk-toolbar-right {{
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }}
+
+        .toolbar-btn {{
+          border: none;
+          background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
+          color: #1d4ed8;
+          border-radius: 12px;
+          padding: 10px 13px;
+          font-size: 13px;
+          font-weight: 900;
+          cursor: pointer;
+          border: 1px solid #bfdbfe;
+        }}
+
+        .toolbar-btn-muted {{
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          color: #475569;
+          border-color: #e2e8f0;
+        }}
+
+        .bulk-count {{
+          font-size: 13px;
+          font-weight: 900;
+          color: #334155;
+        }}
+
+        .toolbar-delete-btn {{
+          border: none;
+          background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+          color: #ffffff;
+          border-radius: 12px;
+          padding: 11px 14px;
+          font-size: 13px;
+          font-weight: 900;
+          cursor: pointer;
+          box-shadow: 0 10px 20px rgba(220,38,38,0.14);
         }}
 
         .table-wrap {{
@@ -1877,7 +2158,7 @@ def render_layout(title, body_html):
         .history-item {{
           background: rgba(255,255,255,0.94);
           border: 1px solid #e5e7eb;
-          border-radius: 18px;
+          border-radius: 20px;
           padding: 14px;
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
         }}
@@ -1897,7 +2178,7 @@ def render_layout(title, body_html):
 
         .history-link {{
           display: inline-block;
-          padding: 8px 12px;
+          padding: 9px 12px;
           border-radius: 12px;
           background: linear-gradient(180deg, #eef4ff 0%, #e5edff 100%);
           color: #3730a3;
@@ -2059,6 +2340,15 @@ def render_layout(title, body_html):
             grid-template-columns: 1fr;
             align-items: stretch;
           }}
+
+          .topbar {{
+            flex-direction: column;
+            align-items: flex-start;
+          }}
+
+          .bulk-toolbar {{
+            top: 6px;
+          }}
         }}
 
         @media (max-width: 560px) {{
@@ -2099,6 +2389,17 @@ def render_layout(title, body_html):
             font-size: 20px;
             min-height: 40px;
           }}
+
+          .bulk-toolbar {{
+            flex-direction: column;
+            align-items: stretch;
+          }}
+
+          .bulk-toolbar-left,
+          .bulk-toolbar-right {{
+            width: 100%;
+            justify-content: space-between;
+          }}
         }}
       </style>
     </head>
@@ -2125,11 +2426,36 @@ def render_layout(title, body_html):
           }}
         }}
 
+        function updateBulkDeleteCount() {{
+          const checked = document.querySelectorAll(".bulk-checkbox:checked").length;
+          const target = document.getElementById("bulk-delete-count");
+          if (target) {{
+            target.textContent = `${{checked}}件選択中`;
+          }}
+        }}
+
+        function toggleAllBulk(checked) {{
+          document.querySelectorAll(".bulk-checkbox").forEach(function(el) {{
+            el.checked = checked;
+          }});
+          updateBulkDeleteCount();
+        }}
+
+        function confirmBulkDelete() {{
+          const checked = document.querySelectorAll(".bulk-checkbox:checked").length;
+          if (checked <= 0) {{
+            alert("削除するデータを選んでください");
+            return false;
+          }}
+          return confirm(`${{checked}}件を削除しますか？`);
+        }}
+
         document.addEventListener("DOMContentLoaded", function() {{
           document.querySelectorAll("[data-race-id]").forEach(function(form) {{
             const raceId = form.getAttribute("data-race-id");
             toggleFormState(raceId);
           }});
+          updateBulkDeleteCount();
         }});
       </script>
     </body>
@@ -2232,6 +2558,18 @@ def delete_record():
 
     delete_race(race_id)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("削除しました"))
+
+
+@app.route("/delete_records_bulk", methods=["POST"])
+def delete_records_bulk():
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    race_ids = request.form.getlist("race_ids")
+
+    deleted = delete_races_bulk(race_ids)
+    if deleted <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除するデータを選んでください"))
+
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote(f"{deleted}件削除しました"))
 
 
 @app.route("/stats")
