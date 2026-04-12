@@ -297,23 +297,23 @@ def avg_stat(stats_list, key):
 
 
 def score_to_ai_rating(score):
-    if score >= 3.2:
+    if score >= 2.0:
         return "AI★★★★★"
-    if score >= 2.1:
+    if score >= 1.2:
         return "AI★★★★☆"
-    if score >= 1.0:
+    if score >= 0.5:
         return "AI★★★☆☆"
-    if score >= 0.0:
+    if score >= -0.2:
         return "AI★★☆☆☆"
     return "AI★☆☆☆☆"
 
 
 def decide_final_rank(official_rating, ai_score):
-    if official_rating == "★★★★★" and ai_score >= 2.1:
+    if official_rating == "★★★★★" and ai_score >= 1.2:
         return "買い強め"
-    if official_rating == "★★★★★" and ai_score >= 1.0:
+    if official_rating == "★★★★★" and ai_score >= 0.5:
         return "買い"
-    if ai_score >= 0.0:
+    if ai_score >= -0.2:
         return "様子見"
     return "見送り寄り"
 
