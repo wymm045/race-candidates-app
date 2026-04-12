@@ -1547,6 +1547,7 @@ def import_candidates():
             "received": len(cleaned),
             "inserted": result["inserted"],
             "updated": result["updated"],
+            "deleted": result["deleted"],
             "imported_at": jst_now_str(),
         }
     )
