@@ -864,7 +864,6 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
                 <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
-                <div class="row"><span class="label">AIラベル</span><span class="value">{display_text(r.get('ai_label'), '未設定')}</span></div>
                 <div class="row"><span class="label">展示</span><span class="value">{exhibition_text}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_text}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
