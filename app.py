@@ -87,6 +87,23 @@ def display_text(value, empty_text="未取得"):
     return s
 
 
+def normalize_ai_detail(raw_detail, exhibition_list):
+    detail = (raw_detail or "").strip()
+    has_exhibition = bool(exhibition_list)
+
+    if has_exhibition:
+        return "展示反映"
+
+    if not detail:
+        return "基本補正のみ"
+
+    ng_words = ["モーター反映", "展示反映"]
+    if detail in ng_words:
+        return "展示補正なし"
+
+    return detail
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -513,13 +530,11 @@ def render_layout(title, content_html):
     }}
     .selection-value {{
       text-align: right;
-      line-height: 1.32;
+      line-height: 1.45;
       word-break: break-word;
       font-weight: 600;
       letter-spacing: .2px;
-    }}
-    .muted {{
-      color: #9ca3af;
+      white-space: pre-line;
     }}
     .rating {{
       display: inline-block;
@@ -724,7 +739,7 @@ def render_layout(title, content_html):
         font-size: 16px;
       }}
       .selection-value {{
-        line-height: 1.24;
+        line-height: 1.3;
       }}
     }}
   </style>
@@ -792,7 +807,7 @@ def render_home(races, summary, message_type="", message_text=""):
             checked_hit = "checked" if r["hit"] == 1 else ""
             payout_value = r["payout"] if r["payout"] else ""
             memo_value = r["memo"] if r["memo"] else ""
-            selection_html = r["selection"].replace(" / ", "<br>")
+            selection_html = r["selection"].replace(" / ", "\n")
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
 
@@ -829,7 +844,7 @@ def render_home(races, summary, message_type="", message_text=""):
 
             exhibition_text = " / ".join(exhibition) if exhibition else "未取得"
             exhibition_rank_text = display_text(r.get("exhibition_rank"), "未取得")
-            ai_detail_text = display_text(r.get("ai_detail"), "補正なし")
+            ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_text = r.get("ai_score") if r.get("ai_score") is not None else 0
 
             cards_html += f"""
