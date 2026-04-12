@@ -36,6 +36,10 @@ def current_hhmm():
     return jst_now().strftime("%H:%M")
 
 
+def is_star5_only(race):
+    return str(race.get("rating", "")).strip() == "★★★★★"
+
+
 def hhmm_to_minutes(hhmm):
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
@@ -428,6 +432,7 @@ def get_today_races():
 
 def get_visible_today_races():
     rows = get_today_races()
+    rows = [r for r in rows if is_star5_only(r)]
     return [r for r in rows if is_not_started(r["time"])]
 
 
@@ -611,7 +616,7 @@ def render_home(races, summary, message_type="", message_text=""):
         message_html = f'<div class="message {css_class}">{message_text}</div>'
 
     if not races:
-        cards_html = '<div class="empty">締切前の条件に合うレースはありません</div>'
+        cards_html = '<div class="empty">締切前の★★★★★候補はありません</div>'
     else:
         cards_html = ""
         for r in races:
@@ -699,7 +704,7 @@ def render_home(races, summary, message_type="", message_text=""):
                     {checked_purchased}
                     onchange="toggleFormState('{r['id']}')"
                   >
-                  このレースを4点まとめて買った
+                  このレースをまとめて買った
                 </label>
 
                 <div id="detail-{r['id']}" class="detail-box">
@@ -745,7 +750,7 @@ def render_home(races, summary, message_type="", message_text=""):
     content = f"""
     <div class="header hero">
       <div class="title">今日の買い候補</div>
-      <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 1点100円 / 1レース4点 / 締切予定時刻が早い順</div>
+      <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
       {external_line}
       {message_html}
@@ -826,7 +831,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
     <div class="header hero">
       <div class="title">今日の集計</div>
       <div class="sub">対象日: {race_date}</div>
-      <div class="sub">ルール: 1点100円 / 1レース4点買い</div>
+      <div class="sub">表示は★★★★★候補が中心</div>
       <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
 
       <div class="nav">
