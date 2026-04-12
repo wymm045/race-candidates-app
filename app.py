@@ -259,6 +259,15 @@ def render_ai_rating_filter_options(current_value):
     return html
 
 
+def safe_redirect_path(path, default="/"):
+    s = str(path or "").strip()
+    if not s.startswith("/"):
+        return default
+    if s.startswith("//"):
+        return default
+    return s
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -456,6 +465,23 @@ def get_races_by_date(race_date):
     return rows
 
 
+def get_race_by_id(race_id):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT *
+        FROM races
+        WHERE id = %s
+        """,
+        (race_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
 def get_today_races():
     return get_races_by_date(today_text())
 
@@ -505,6 +531,24 @@ def update_race_result(race_id, purchased, hit, payout, memo):
     log(
         f"update_race_result race_id={race_id} purchased={purchased} hit={hit} payout={payout} memo={memo}"
     )
+
+
+def delete_race(race_id):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM races
+        WHERE id = %s
+        """,
+        (race_id,),
+    )
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_race race_id={race_id} deleted={deleted}")
+    return deleted
 
 
 def get_summary_by_date(race_date):
@@ -1033,66 +1077,141 @@ def render_history_page(date_summaries):
     return render_layout("過去データ", content)
 
 
-def render_history_detail_page(race_date, races, summary):
+def render_history_detail_page(race_date, races, summary, message_type="", message_text=""):
+    message_html = ""
+    if message_text:
+        css_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {css_class}">{message_text}</div>'
+
     if not races:
         body = '<div class="empty">データがありません</div>'
     else:
-        rows_html = ""
+        cards_html = ""
         for r in races:
+            checked_purchased = "checked" if r["purchased"] == 1 else ""
+            checked_hit = "checked" if r["hit"] == 1 else ""
+            payout_value = r["payout"] if r["payout"] else ""
+            memo_value = r["memo"] if r["memo"] else ""
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
-            exhibition = parse_json_array_text(r.get("exhibition", "[]"))
-            exhibition_text = " / ".join(exhibition) if exhibition else "未取得"
 
-            rows_html += f"""
-            <tr>
-              <td>{r['time']}</td>
-              <td>{r['venue']}</td>
-              <td>{r['race_no']}</td>
-              <td>{display_text(r.get('rating'), '未設定')}</td>
-              <td>{display_text(r.get('ai_rating'), '未設定')}</td>
-              <td>{display_text(r.get('final_rank'), '未設定')}</td>
-              <td>{r['selection']}</td>
-              <td>{exhibition_text}</td>
-              <td>{point_count}点 / {yen(total_amount)}</td>
-              <td>{'買い' if r['purchased'] == 1 else '見送り'}</td>
-              <td>{'的中' if r['hit'] == 1 else '-'}</td>
-              <td>{yen(r['payout'])}</td>
-              <td>{r['memo'] or ''}</td>
-            </tr>
+            exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+            exhibition_time_html = render_exhibition_time_chips(exhibition)
+            exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
+            selection_html = render_selection_chips(r.get("selection", ""))
+            ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
+            ai_score_value = safe_float(r.get("ai_score"), 0)
+            final_rank_html = final_rank_badge(r.get("final_rank"))
+            redirect_to = f"/history/{race_date}"
+
+            card_class = "card history-edit-card"
+            if r["hit"] == 1:
+                card_class += " card-hit"
+            elif r["purchased"] == 1:
+                card_class += " card-purchased"
+
+            status_parts = []
+            if r["purchased"] == 1:
+                status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
+            if r["hit"] == 1:
+                status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+            status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>' if status_parts else ""
+
+            cards_html += f"""
+            <div class="{card_class}">
+              <div class="card-top">
+                <div>
+                  <div class="time">{r['time']}</div>
+                  <div class="sub history-subline">{r['venue']} {r['race_no']}</div>
+                </div>
+                {status_html}
+              </div>
+
+              <div class="badge-row">
+                <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
+                <span class="ai-rating">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
+                {final_rank_html}
+              </div>
+
+              <div class="info-box">
+                <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
+                <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
+                <div class="row"><span class="label">合計金額</span><span class="value total-amount">{yen(total_amount)}</span></div>
+                <div class="row"><span class="label">AI補正点</span><span class="value ai-score-value">{round(ai_score_value, 2)}</span></div>
+                <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+                <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+                <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
+              </div>
+
+              <form method="post" action="/update_record" class="form history-form" data-race-id="history-{r['id']}">
+                <input type="hidden" name="race_id" value="{r['id']}">
+                <input type="hidden" name="redirect_to" value="{redirect_to}">
+
+                <label class="checkline purchase-line">
+                  <input
+                    type="checkbox"
+                    id="purchased-history-{r['id']}"
+                    name="purchased"
+                    value="1"
+                    {checked_purchased}
+                    onchange="toggleFormState('history-{r['id']}')"
+                  >
+                  このレースを買った
+                </label>
+
+                <div id="detail-history-{r['id']}" class="detail-box">
+                  <label class="checkline">
+                    <input
+                      type="checkbox"
+                      id="hit-history-{r['id']}"
+                      name="hit"
+                      value="1"
+                      {checked_hit}
+                      onchange="toggleFormState('history-{r['id']}')"
+                    >
+                    的中した
+                  </label>
+
+                  <div class="input-row">
+                    <label>払戻額</label>
+                    <input
+                      type="number"
+                      id="payout-history-{r['id']}"
+                      name="payout"
+                      value="{payout_value}"
+                      placeholder="例: 870"
+                      min="0"
+                    >
+                  </div>
+
+                  <div class="input-row">
+                    <label>メモ</label>
+                    <input type="text" name="memo" value="{memo_value}" placeholder="自由にメモ">
+                  </div>
+                </div>
+
+                <div class="action-row">
+                  <button type="submit" class="save-btn half-btn">保存</button>
+                </div>
+              </form>
+
+              <form method="post" action="/delete_record" class="delete-form" onsubmit="return confirm('この過去データを削除しますか？');">
+                <input type="hidden" name="race_id" value="{r['id']}">
+                <input type="hidden" name="redirect_to" value="{redirect_to}">
+                <button type="submit" class="delete-btn">削除</button>
+              </form>
+            </div>
             """
-        body = f"""
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>時刻</th>
-                <th>会場</th>
-                <th>R</th>
-                <th>公式</th>
-                <th>AI</th>
-                <th>判定</th>
-                <th>買い目</th>
-                <th>展示</th>
-                <th>点数/投資</th>
-                <th>購入</th>
-                <th>的中</th>
-                <th>払戻</th>
-                <th>メモ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows_html}
-            </tbody>
-          </table>
-        </div>
-        """
+
+        body = cards_html
 
     content = f"""
     <div class="header hero">
       <div class="title">過去データ詳細</div>
       <div class="sub">対象日: {race_date}</div>
       <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+      {message_html}
       <div class="nav">
         <a href="/history">過去データ一覧</a>
         <a href="/">今日の候補</a>
@@ -1181,6 +1300,10 @@ def render_layout(title, body_html):
           font-size: 13px;
           color: #64748b;
           margin-top: 4px;
+        }}
+
+        .history-subline {{
+          margin-top: 6px;
         }}
 
         .filter-box {{
@@ -1405,6 +1528,10 @@ def render_layout(title, body_html):
           opacity: 0.95;
         }}
 
+        .history-edit-card {{
+          padding-bottom: 14px;
+        }}
+
         .card-top {{
           display: flex;
           justify-content: space-between;
@@ -1601,6 +1728,10 @@ def render_layout(title, body_html):
           padding: 14px;
         }}
 
+        .history-form {{
+          margin-bottom: 10px;
+        }}
+
         .purchase-line {{
           font-weight: 900;
           color: #0f172a;
@@ -1648,6 +1779,12 @@ def render_layout(title, body_html):
           box-shadow: 0 0 0 4px rgba(147,197,253,0.18);
         }}
 
+        .action-row {{
+          display: flex;
+          gap: 10px;
+          margin-top: 12px;
+        }}
+
         .save-btn {{
           width: 100%;
           margin-top: 12px;
@@ -1663,6 +1800,31 @@ def render_layout(title, body_html):
         }}
 
         .save-btn:hover {{
+          opacity: 0.94;
+        }}
+
+        .half-btn {{
+          margin-top: 0;
+        }}
+
+        .delete-form {{
+          margin-top: 0;
+        }}
+
+        .delete-btn {{
+          width: 100%;
+          border: none;
+          background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+          color: #ffffff;
+          border-radius: 14px;
+          padding: 13px 14px;
+          font-size: 15px;
+          font-weight: 900;
+          cursor: pointer;
+          box-shadow: 0 10px 20px rgba(220,38,38,0.14);
+        }}
+
+        .delete-btn:hover {{
           opacity: 0.94;
         }}
 
@@ -2033,6 +2195,45 @@ def save():
     return redirect("/?type=success&msg=" + quote("保存しました"))
 
 
+@app.route("/update_record", methods=["POST"])
+def update_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
+
+    purchased = 1 if request.form.get("purchased") == "1" else 0
+    hit = 1 if request.form.get("hit") == "1" else 0
+    payout_raw = request.form.get("payout", "").strip()
+    payout = int(payout_raw) if payout_raw else 0
+    memo = request.form.get("memo", "").strip()
+
+    if purchased == 0:
+        hit = 0
+        payout = 0
+
+    if purchased == 1 and hit == 1 and payout <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+
+    update_race_result(race_id, purchased, hit, payout, memo)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
+
+
+@app.route("/delete_record", methods=["POST"])
+def delete_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除対象が見つかりません"))
+
+    delete_race(race_id)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("削除しました"))
+
+
 @app.route("/stats")
 def stats():
     race_date = today_text()
@@ -2054,7 +2255,9 @@ def history():
 def history_detail(race_date):
     races = get_races_by_date(race_date)
     summary = get_summary_by_date(race_date)
-    return render_history_detail_page(race_date, races, summary)
+    message_type = request.args.get("type", "").strip()
+    message_text = request.args.get("msg", "").strip()
+    return render_history_detail_page(race_date, races, summary, message_type, message_text)
 
 
 @app.route("/api/import_candidates", methods=["POST"])
