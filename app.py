@@ -61,6 +61,26 @@ def is_not_started(time_str):
         return True
 
 
+def minutes_until_start(time_str):
+    try:
+        return hhmm_to_minutes(time_str) - hhmm_to_minutes(current_hhmm())
+    except Exception:
+        return None
+
+
+def render_countdown_badge(time_str):
+    diff = minutes_until_start(time_str)
+    if diff is None:
+        return '<span class="countdown-badge countdown-normal">時刻不明</span>'
+    if diff < 0:
+        return '<span class="countdown-badge countdown-closed">締切後</span>'
+    if diff <= 10:
+        return f'<span class="countdown-badge countdown-soon">まもなく締切</span>'
+    if diff <= 30:
+        return f'<span class="countdown-badge countdown-warning">あと{diff}分</span>'
+    return f'<span class="countdown-badge countdown-normal">あと{diff}分</span>'
+
+
 def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
@@ -744,8 +764,6 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
                 status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
             if r["hit"] == 1:
                 status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
-            if not is_not_started(r["time"]):
-                status_parts.append('<span class="status-badge status-badge-closed">締切後</span>')
 
             status_html = ""
             if status_parts:
@@ -772,12 +790,16 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
             final_rank_html = final_rank_badge(r.get("final_rank"))
+            countdown_html = render_countdown_badge(r["time"])
 
             cards_html += f"""
             <div class="{card_class}">
               <div class="card-top card-top-main">
                 <div class="card-top-left">
-                  <div class="time">{r['time']}</div>
+                  <div class="time-line">
+                    <div class="time">{r['time']}</div>
+                    {countdown_html}
+                  </div>
                   <div class="race-mainline">
                     <span class="race-spot race-spot-main">
                       <span class="race-venue">{r['venue']}</span>
@@ -814,7 +836,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
               </div>
 
               <div class="info-box">
-                <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
@@ -1218,7 +1240,9 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
 
               <div class="card-top card-top-main">
                 <div class="card-top-left">
-                  <div class="time">{r['time']}</div>
+                  <div class="time-line">
+                    <div class="time">{r['time']}</div>
+                  </div>
                   <div class="race-mainline">
                     <span class="race-spot race-spot-main">
                       <span class="race-venue">{r['venue']}</span>
@@ -1255,7 +1279,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
               </div>
 
               <div class="info-box">
-                <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
@@ -1848,6 +1872,13 @@ def render_layout(title, body_html):
           min-width: 0;
         }}
 
+        .time-line {{
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }}
+
         .time {{
           font-size: 36px;
           font-weight: 900;
@@ -1855,6 +1886,46 @@ def render_layout(title, body_html):
           letter-spacing: 0.01em;
           color: #13294b;
           text-shadow: 0 1px 0 rgba(255,255,255,0.6);
+        }}
+
+        .countdown-badge {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 32px;
+          padding: 7px 12px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 900;
+          letter-spacing: 0.01em;
+          border: 1px solid transparent;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.8),
+            0 6px 14px rgba(15,23,42,0.05);
+        }}
+
+        .countdown-normal {{
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+          color: #1d4ed8;
+          border-color: #bfdbfe;
+        }}
+
+        .countdown-warning {{
+          background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+          color: #92400e;
+          border-color: #fde68a;
+        }}
+
+        .countdown-soon {{
+          background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
+          color: #be123c;
+          border-color: #fecdd3;
+        }}
+
+        .countdown-closed {{
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          color: #475569;
+          border-color: #e2e8f0;
         }}
 
         .race-mainline {{
@@ -1992,6 +2063,17 @@ def render_layout(title, body_html):
           border-bottom: none;
         }}
 
+        .row-selection-highlight {{
+          padding-top: 12px;
+          padding-bottom: 12px;
+          background: linear-gradient(180deg, rgba(239,246,255,0.72) 0%, rgba(219,234,254,0.46) 100%);
+          border-radius: 14px;
+          padding-left: 10px;
+          padding-right: 10px;
+          margin-bottom: 4px;
+          border-bottom: none;
+        }}
+
         .label {{
           font-size: 13px;
           color: #64748b;
@@ -2094,16 +2176,6 @@ def render_layout(title, body_html):
         .selection-chip-empty {{
           font-size: 13px;
           color: #6b7280;
-        }}
-
-        .total-amount {{
-          font-size: 16px;
-          color: #0f172a;
-        }}
-
-        .ai-score-value {{
-          font-size: 16px;
-          color: #1d4ed8;
         }}
 
         .reason-list {{
