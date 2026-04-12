@@ -744,7 +744,6 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
                 status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
             if r["hit"] == 1:
                 status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
-
             if not is_not_started(r["time"]):
                 status_parts.append('<span class="status-badge status-badge-closed">締切後</span>')
 
@@ -866,7 +865,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
           <div class="brand-logo">🏁</div>
           <div>
             <div class="brand-title">Race Candidates</div>
-            <div class="brand-sub">ボートレース候補アプリ</div>
+            <div class="brand-sub">ボートレース買い候補</div>
           </div>
         </div>
         <div class="topbar-status">
@@ -1351,6 +1350,27 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
 
 
 def render_layout(title, body_html):
+    home_active = "active" if title == "今日の買い候補" else ""
+    stats_active = "active" if title == "今日の集計" else ""
+    history_active = "active" if title in ["過去データ", "過去データ詳細"] else ""
+
+    bottom_nav_html = f"""
+    <nav class="bottom-nav">
+      <a href="/" class="bottom-nav-item {home_active}">
+        <span class="bottom-nav-icon">🏁</span>
+        <span class="bottom-nav-label">候補</span>
+      </a>
+      <a href="/stats" class="bottom-nav-item {stats_active}">
+        <span class="bottom-nav-icon">📊</span>
+        <span class="bottom-nav-label">集計</span>
+      </a>
+      <a href="/history" class="bottom-nav-item {history_active}">
+        <span class="bottom-nav-icon">🗂️</span>
+        <span class="bottom-nav-label">過去</span>
+      </a>
+    </nav>
+    """
+
     return f"""
     <!doctype html>
     <html lang="ja">
@@ -1382,7 +1402,7 @@ def render_layout(title, body_html):
         .container {{
           max-width: 1020px;
           margin: 0 auto;
-          padding: 16px;
+          padding: 16px 16px 92px;
         }}
 
         .app-shell {{
@@ -2306,6 +2326,58 @@ def render_layout(title, body_html):
           color: #0f172a;
         }}
 
+        .bottom-nav {{
+          position: fixed;
+          left: 50%;
+          bottom: 12px;
+          transform: translateX(-50%);
+          width: calc(100% - 24px);
+          max-width: 560px;
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 10px;
+          padding: 10px;
+          border-radius: 22px;
+          background: rgba(255,255,255,0.92);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(226,232,240,0.95);
+          box-shadow: 0 18px 40px rgba(15,23,42,0.16);
+          z-index: 999;
+        }}
+
+        .bottom-nav-item {{
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          min-height: 58px;
+          border-radius: 16px;
+          background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+          color: #334155;
+          font-size: 12px;
+          font-weight: 900;
+          border: 1px solid #dbe7fb;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+        }}
+
+        .bottom-nav-item.active {{
+          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+          color: #ffffff;
+          border-color: #2563eb;
+          box-shadow: 0 12px 24px rgba(37,99,235,0.24);
+        }}
+
+        .bottom-nav-icon {{
+          font-size: 18px;
+          line-height: 1;
+        }}
+
+        .bottom-nav-label {{
+          font-size: 12px;
+          line-height: 1;
+        }}
+
         @media (max-width: 820px) {{
           .summary,
           .summary.six,
@@ -2353,7 +2425,7 @@ def render_layout(title, body_html):
 
         @media (max-width: 560px) {{
           .container {{
-            padding: 12px;
+            padding: 12px 12px 92px;
           }}
 
           .title {{
@@ -2407,6 +2479,8 @@ def render_layout(title, body_html):
       <div class="container">
         {body_html}
       </div>
+
+      {bottom_nav_html}
 
       <script>
         function toggleFormState(raceId) {{
