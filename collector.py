@@ -331,13 +331,11 @@ def extract_direct_digit_texts(tag):
 def extract_digits_from_cell(cell):
     digits = []
 
-    # まず要素単位で 1〜6 を拾う
     for el in cell.find_all(True):
         txt = el.get_text(strip=True)
         if re.fullmatch(r"[1-6]", txt):
             digits.append(txt)
 
-    # 足りない時は text 全体からも拾う
     if len(digits) < 18:
         full_text = cell.get_text(" ", strip=True)
         for d in re.findall(r"\b([1-6])\b", full_text):
@@ -458,8 +456,6 @@ def extract_triplets_from_digit_lines(lines, start_idx):
         if re.fullmatch(r"[1-6]", lines[i]):
             digits.append(lines[i])
 
-    # 結果欄 8個を飛ばす
-    # 3連単=3個, 2連単=2個, 3連複=3個
     if len(digits) >= 26:
         digits = digits[8:26]
 
@@ -662,27 +658,31 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         head_boat = avg_stat(head_stats, "boat2")
 
         second_national = avg_stat(second_stats, "national_win")
+        second_local = avg_stat(second_stats, "local_win")
         second_motor = avg_stat(second_stats, "motor2")
+
         third_national = avg_stat(third_stats, "national_win")
+        third_local = avg_stat(third_stats, "local_win")
+        third_motor = avg_stat(third_stats, "motor2")
 
         if head_national is not None:
             details.append(f"1着全国勝率平均{round(head_national, 2)}")
-            if head_national >= 6.5:
+            if head_national >= 6.2:
                 score += 0.9
-                reasons.append("1着候補の全国勝率が高い")
-            elif head_national >= 6.0:
+                reasons.append("1着候補の全国勝率がかなり高い")
+            elif head_national >= 5.5:
                 score += 0.5
-                reasons.append("1着候補の全国勝率がまずまず高い")
+                reasons.append("1着候補の全国勝率が高い")
             elif head_national < 4.8:
                 score -= 0.5
                 reasons.append("1着候補の全国勝率が低い")
 
         if head_local is not None:
             details.append(f"1着当地勝率平均{round(head_local, 2)}")
-            if head_local >= 6.2:
+            if head_local >= 6.0:
                 score += 0.5
                 reasons.append("1着候補の当地勝率が高い")
-            elif head_local >= 5.6:
+            elif head_local >= 5.5:
                 score += 0.3
                 reasons.append("1着候補の当地勝率がまずまず高い")
             elif head_local < 4.8:
@@ -691,10 +691,10 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
         if head_motor is not None:
             details.append(f"1着モーター2連率平均{round(head_motor, 1)}")
-            if head_motor >= 45:
+            if head_motor >= 42:
                 score += 0.6
                 reasons.append("1着候補のモーター気配が良い")
-            elif head_motor >= 38:
+            elif head_motor >= 35:
                 score += 0.3
                 reasons.append("1着候補のモーターがまずまず")
             elif head_motor < 30:
@@ -703,7 +703,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
         if head_boat is not None:
             details.append(f"1着ボート2連率平均{round(head_boat, 1)}")
-            if head_boat >= 40:
+            if head_boat >= 38:
                 score += 0.2
                 reasons.append("1着候補のボート気配が良い")
             elif head_boat < 30:
@@ -720,22 +720,49 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
         if second_national is not None:
             details.append(f"2着全国勝率平均{round(second_national, 2)}")
-            if second_national >= 5.8:
-                score += 0.2
-                reasons.append("2着候補の地力もある")
-            elif second_national < 4.5:
+            if second_national >= 5.4:
+                score += 0.25
+                reasons.append("2着候補の全国勝率が高い")
+            elif second_national >= 4.8:
+                score += 0.1
+            elif second_national < 4.2:
                 score -= 0.2
-                reasons.append("2着候補の地力が弱い")
+                reasons.append("2着候補の全国勝率が弱い")
+
+        if second_local is not None:
+            details.append(f"2着当地勝率平均{round(second_local, 2)}")
+            if second_local >= 5.2:
+                score += 0.15
+            elif second_local < 4.2:
+                score -= 0.1
 
         if second_motor is not None:
             details.append(f"2着モーター2連率平均{round(second_motor, 1)}")
-            if second_motor >= 40:
-                score += 0.1
+            if second_motor >= 38:
+                score += 0.15
+            elif second_motor < 28:
+                score -= 0.1
 
         if third_national is not None:
             details.append(f"3着全国勝率平均{round(third_national, 2)}")
-            if third_national < 4.2:
+            if third_national >= 5.0:
+                score += 0.1
+            elif third_national < 4.0:
                 score -= 0.1
+
+        if third_local is not None:
+            details.append(f"3着当地勝率平均{round(third_local, 2)}")
+            if third_local >= 4.8:
+                score += 0.08
+            elif third_local < 4.0:
+                score -= 0.08
+
+        if third_motor is not None:
+            details.append(f"3着モーター2連率平均{round(third_motor, 1)}")
+            if third_motor >= 35:
+                score += 0.08
+            elif third_motor < 26:
+                score -= 0.08
 
     ai_rating = score_to_ai_rating(score)
     final_rank = decide_final_rank(official_rating, score)
