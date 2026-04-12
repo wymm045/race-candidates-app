@@ -116,19 +116,6 @@ def normalize_ai_detail(raw_detail, exhibition_list):
     return detail
 
 
-def final_rank_class(rank_text):
-    rank = (rank_text or "").strip()
-    if rank == "買い強め":
-        return "final-rank final-rank-strong"
-    if rank == "買い":
-        return "final-rank final-rank-buy"
-    if rank == "様子見":
-        return "final-rank final-rank-watch"
-    if rank == "見送り寄り":
-        return "final-rank final-rank-skip"
-    return "final-rank final-rank-watch"
-
-
 def yen(n):
     try:
         return f"{int(n):,}円"
@@ -203,7 +190,7 @@ def render_exhibition_rank_boxes(rank_text):
         rank_display = "-" if rank is None else str(rank)
         boxes += f"""
         <div class="{exhibition_rank_class(rank)}">
-          <div class="ex-lane">{lane}</div>
+          <div class="ex-lane">{lane}号艇</div>
           <div class="ex-rank">{rank_display}</div>
         </div>
         """
@@ -661,7 +648,7 @@ def render_home(races, summary, message_type="", message_text=""):
                 ai_reason_html = f"""
                 <div class="row">
                   <span class="label">補正理由</span>
-                  <span class="value" style="text-align:left;">
+                  <span class="value text-left">
                     <ul class="reason-list">{items}</ul>
                   </span>
                 </div>
@@ -675,7 +662,10 @@ def render_home(races, summary, message_type="", message_text=""):
 
             cards_html += f"""
             <div class="{card_class}">
-              <div class="time">{r['time']}</div>
+              <div class="card-top">
+                <div class="time">{r['time']}</div>
+                {status_html}
+              </div>
 
               <div class="badge-row">
                 <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
@@ -689,20 +679,18 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
-                <div class="row"><span class="label">合計金額</span><span class="value">{yen(total_amount)}</span></div>
-                <div class="row"><span class="label">AI補正点</span><span class="value">{round(ai_score_value, 2)}</span></div>
+                <div class="row"><span class="label">合計金額</span><span class="value total-amount">{yen(total_amount)}</span></div>
+                <div class="row"><span class="label">AI補正点</span><span class="value ai-score-value">{round(ai_score_value, 2)}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
                 {ai_reason_html}
               </div>
 
-              {status_html}
-
               <form method="post" action="/save" class="form" data-race-id="{r['id']}">
                 <input type="hidden" name="race_id" value="{r['id']}">
 
-                <label class="checkline">
+                <label class="checkline purchase-line">
                   <input
                     type="checkbox"
                     id="purchased-{r['id']}"
@@ -755,7 +743,7 @@ def render_home(races, summary, message_type="", message_text=""):
         external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>'
 
     content = f"""
-    <div class="header">
+    <div class="header hero">
       <div class="title">今日の買い候補</div>
       <div class="sub">評価：★★★★☆・★★★★★ / 券種：2連単 / 1点100円 / 1レース4点 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
@@ -835,7 +823,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         """
 
     content = f"""
-    <div class="header">
+    <div class="header hero">
       <div class="title">今日の集計</div>
       <div class="sub">対象日: {race_date}</div>
       <div class="sub">ルール: 1点100円 / 1レース4点買い</div>
@@ -958,7 +946,7 @@ def render_history_page(date_summaries):
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
 
     content = f"""
-    <div class="header">
+    <div class="header hero">
       <div class="title">過去データ</div>
       <div class="nav">
         <a href="/">今日の候補</a>
@@ -1026,7 +1014,7 @@ def render_history_detail_page(race_date, races, summary):
         """
 
     content = f"""
-    <div class="header">
+    <div class="header hero">
       <div class="title">過去データ詳細</div>
       <div class="sub">対象日: {race_date}</div>
       <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
@@ -1070,294 +1058,437 @@ def render_layout(title, body_html):
         * {{
           box-sizing: border-box;
         }}
+
         body {{
           margin: 0;
-          background: #f5f7fb;
-          color: #1f2937;
+          background:
+            radial-gradient(circle at top left, rgba(59,130,246,0.10), transparent 22%),
+            linear-gradient(180deg, #f8fbff 0%, #f3f6fb 100%);
+          color: #172033;
           font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
           line-height: 1.5;
         }}
+
         a {{
           color: #2563eb;
           text-decoration: none;
         }}
+
         .container {{
           max-width: 980px;
           margin: 0 auto;
           padding: 16px;
         }}
+
         .header {{
-          background: #ffffff;
-          border-radius: 16px;
-          padding: 16px;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+          background: rgba(255,255,255,0.90);
+          backdrop-filter: blur(8px);
+          border: 1px solid rgba(255,255,255,0.7);
+          border-radius: 20px;
+          padding: 18px;
+          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.07);
           margin-bottom: 16px;
         }}
-        .title {{
-          font-size: 24px;
-          font-weight: 800;
-          margin-bottom: 8px;
+
+        .hero {{
+          background:
+            linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.90));
         }}
+
+        .title {{
+          font-size: 28px;
+          font-weight: 900;
+          margin-bottom: 8px;
+          letter-spacing: 0.01em;
+        }}
+
         .sub {{
           font-size: 13px;
-          color: #6b7280;
+          color: #64748b;
           margin-top: 4px;
         }}
+
         .nav {{
           display: flex;
           gap: 10px;
           flex-wrap: wrap;
-          margin-top: 14px;
+          margin-top: 16px;
         }}
+
         .nav a {{
-          display: inline-block;
-          padding: 9px 12px;
-          background: #eef2ff;
-          color: #3730a3;
-          border-radius: 10px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 14px;
+          background: linear-gradient(180deg, #eef4ff 0%, #e5edff 100%);
+          color: #2743b4;
+          border-radius: 12px;
           font-size: 14px;
-          font-weight: 700;
+          font-weight: 800;
+          border: 1px solid #d7e2ff;
+          box-shadow: 0 4px 10px rgba(59,130,246,0.08);
         }}
+
         .summary {{
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 10px;
-          margin-top: 16px;
+          gap: 12px;
+          margin-top: 18px;
         }}
+
         .summary.six {{
           grid-template-columns: repeat(6, minmax(0, 1fr));
         }}
+
         .summary-box {{
-          background: #f8fafc;
-          border: 1px solid #e5e7eb;
-          border-radius: 14px;
-          padding: 12px;
+          background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+          border: 1px solid #dce7f7;
+          border-radius: 16px;
+          padding: 14px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
         }}
+
         .summary-label {{
           font-size: 12px;
-          color: #6b7280;
+          color: #64748b;
           margin-bottom: 6px;
         }}
+
         .summary-value {{
           font-size: 20px;
-          font-weight: 800;
+          font-weight: 900;
         }}
+
         .profit-plus {{
           color: #16a34a;
         }}
+
         .profit-minus {{
           color: #dc2626;
         }}
+
         .profit-zero {{
-          color: #374151;
+          color: #334155;
         }}
+
         .message {{
           margin-top: 12px;
           padding: 12px 14px;
           border-radius: 12px;
           font-size: 14px;
-          font-weight: 700;
+          font-weight: 800;
         }}
+
         .message-success {{
           background: #ecfdf5;
           color: #166534;
           border: 1px solid #bbf7d0;
         }}
+
         .message-error {{
           background: #fef2f2;
           color: #991b1b;
           border: 1px solid #fecaca;
         }}
+
         .empty {{
-          background: #ffffff;
-          border-radius: 16px;
+          background: rgba(255,255,255,0.92);
+          border-radius: 18px;
           padding: 18px;
           color: #6b7280;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
-        }}
-        .card {{
-          background: #ffffff;
-          border-radius: 18px;
-          padding: 16px;
-          margin-bottom: 16px;
-          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
           border: 1px solid #e5e7eb;
         }}
+
+        .card {{
+          background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,252,255,0.96) 100%);
+          border-radius: 22px;
+          padding: 18px;
+          margin-bottom: 18px;
+          box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+          border: 1px solid #e4ebf5;
+          position: relative;
+          overflow: hidden;
+        }}
+
+        .card::before {{
+          content: "";
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          height: 5px;
+          background: linear-gradient(90deg, #60a5fa, #818cf8);
+          opacity: 0.35;
+        }}
+
         .card-purchased {{
-          border: 1px solid #bfdbfe;
-          background: #f8fbff;
+          border-color: #b8d4ff;
+          background: linear-gradient(180deg, #fbfdff 0%, #f1f7ff 100%);
         }}
+
+        .card-purchased::before {{
+          opacity: 0.8;
+        }}
+
         .card-hit {{
-          border: 1px solid #bbf7d0;
-          background: #f0fdf4;
+          border-color: #a7f3d0;
+          background: linear-gradient(180deg, #f6fffa 0%, #ecfdf5 100%);
         }}
-        .time {{
-          font-size: 22px;
-          font-weight: 800;
+
+        .card-hit::before {{
+          background: linear-gradient(90deg, #22c55e, #34d399);
+          opacity: 0.95;
+        }}
+
+        .card-top {{
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 12px;
           margin-bottom: 10px;
         }}
+
+        .time {{
+          font-size: 34px;
+          font-weight: 900;
+          line-height: 1.0;
+          letter-spacing: 0.01em;
+          color: #13294b;
+        }}
+
         .badge-row {{
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          margin-bottom: 12px;
+          margin-bottom: 14px;
         }}
+
         .rating,
         .ai-rating,
         .final-rank {{
           display: inline-flex;
           align-items: center;
-          padding: 6px 10px;
+          padding: 7px 12px;
           border-radius: 999px;
           font-size: 12px;
-          font-weight: 800;
+          font-weight: 900;
+          letter-spacing: 0.02em;
+          border: 1px solid transparent;
         }}
+
         .rating {{
-          background: #fff7ed;
+          background: linear-gradient(180deg, #fff4e8 0%, #ffedd5 100%);
           color: #c2410c;
+          border-color: #fed7aa;
         }}
+
         .ai-rating {{
-          background: #eff6ff;
+          background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
           color: #1d4ed8;
+          border-color: #bfdbfe;
         }}
+
         .final-rank-strong {{
-          background: #dcfce7;
+          background: linear-gradient(180deg, #ecfdf5 0%, #dcfce7 100%);
           color: #166534;
+          border-color: #bbf7d0;
         }}
+
         .final-rank-buy {{
-          background: #dbeafe;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
           color: #1d4ed8;
+          border-color: #bfdbfe;
         }}
+
         .final-rank-watch {{
-          background: #fef3c7;
+          background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
           color: #92400e;
+          border-color: #fde68a;
         }}
+
         .final-rank-skip {{
-          background: #f3f4f6;
-          color: #4b5563;
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+          color: #475569;
+          border-color: #e2e8f0;
         }}
+
         .info-box {{
-          background: #f8fafc;
-          border: 1px solid #e5e7eb;
-          border-radius: 14px;
-          padding: 12px;
+          background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 12px 14px;
         }}
+
         .row {{
           display: grid;
-          grid-template-columns: 110px 1fr;
-          gap: 10px;
-          padding: 8px 0;
-          border-bottom: 1px solid #e5e7eb;
+          grid-template-columns: 112px 1fr;
+          gap: 12px;
+          padding: 10px 0;
+          border-bottom: 1px solid #edf2f7;
         }}
+
         .row:last-child {{
           border-bottom: none;
         }}
+
         .label {{
           font-size: 13px;
-          color: #6b7280;
-          font-weight: 700;
+          color: #64748b;
+          font-weight: 800;
         }}
+
         .value {{
           font-size: 14px;
-          font-weight: 700;
-          white-space: pre-wrap;
-          word-break: break-word;
-        }}
-        .selection-value {{
-          font-size: 16px;
           font-weight: 800;
           white-space: pre-wrap;
           word-break: break-word;
-          line-height: 1.7;
         }}
+
+        .text-left {{
+          text-align: left;
+        }}
+
+        .selection-value {{
+          font-size: 17px;
+          font-weight: 900;
+          white-space: pre-wrap;
+          word-break: break-word;
+          line-height: 1.85;
+          color: #0f172a;
+        }}
+
+        .total-amount {{
+          font-size: 16px;
+          color: #0f172a;
+        }}
+
+        .ai-score-value {{
+          font-size: 16px;
+          color: #1d4ed8;
+        }}
+
         .reason-list {{
           margin: 0;
           padding-left: 18px;
         }}
+
         .status-wrap {{
           display: flex;
           gap: 8px;
-          margin-top: 12px;
           flex-wrap: wrap;
+          justify-content: flex-end;
         }}
+
         .status-badge {{
-          display: inline-block;
-          padding: 6px 10px;
+          display: inline-flex;
+          align-items: center;
+          padding: 7px 11px;
           border-radius: 999px;
           font-size: 12px;
-          font-weight: 800;
+          font-weight: 900;
+          box-shadow: 0 4px 10px rgba(15,23,42,0.06);
         }}
+
         .status-badge-saved {{
-          background: #dbeafe;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
           color: #1d4ed8;
+          border: 1px solid #bfdbfe;
         }}
+
         .status-badge-hit {{
-          background: #dcfce7;
+          background: linear-gradient(180deg, #ecfdf5 0%, #dcfce7 100%);
           color: #166534;
+          border: 1px solid #bbf7d0;
         }}
+
         .form {{
           margin-top: 14px;
-          background: #fcfcfd;
-          border: 1px solid #e5e7eb;
-          border-radius: 14px;
-          padding: 12px;
+          background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 14px;
         }}
+
+        .purchase-line {{
+          font-weight: 900;
+          color: #0f172a;
+        }}
+
         .checkline {{
           display: flex;
           align-items: center;
           gap: 8px;
           font-size: 14px;
-          font-weight: 700;
           margin-bottom: 10px;
         }}
+
         .detail-box {{
           margin-top: 8px;
         }}
+
         .input-row {{
           margin-top: 10px;
         }}
+
         .input-row label {{
           display: block;
           font-size: 13px;
-          color: #6b7280;
+          color: #64748b;
           margin-bottom: 6px;
-          font-weight: 700;
+          font-weight: 800;
         }}
+
         input[type="number"],
         input[type="text"] {{
           width: 100%;
-          padding: 10px 12px;
-          border: 1px solid #d1d5db;
-          border-radius: 10px;
+          padding: 11px 12px;
+          border: 1px solid #cfd8e3;
+          border-radius: 12px;
           font-size: 16px;
           background: #ffffff;
+          color: #0f172a;
         }}
+
+        input[type="number"]:focus,
+        input[type="text"]:focus {{
+          outline: none;
+          border-color: #93c5fd;
+          box-shadow: 0 0 0 4px rgba(147,197,253,0.18);
+        }}
+
         .save-btn {{
           width: 100%;
           margin-top: 12px;
           border: none;
-          background: #2563eb;
+          background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
           color: #ffffff;
-          border-radius: 12px;
-          padding: 12px 14px;
+          border-radius: 14px;
+          padding: 13px 14px;
           font-size: 15px;
-          font-weight: 800;
+          font-weight: 900;
           cursor: pointer;
+          box-shadow: 0 10px 20px rgba(37,99,235,0.18);
         }}
+
         .save-btn:hover {{
-          opacity: 0.92;
+          opacity: 0.94;
         }}
+
         .table-wrap {{
           overflow-x: auto;
-          background: #ffffff;
-          border-radius: 16px;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+          background: rgba(255,255,255,0.94);
+          border-radius: 18px;
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+          border: 1px solid #e5e7eb;
         }}
+
         table {{
           width: 100%;
           border-collapse: collapse;
           min-width: 720px;
         }}
+
         th, td {{
           padding: 12px 10px;
           border-bottom: 1px solid #e5e7eb;
@@ -1365,33 +1496,39 @@ def render_layout(title, body_html):
           font-size: 14px;
           vertical-align: top;
         }}
+
         th {{
           background: #f8fafc;
           color: #475569;
-          font-weight: 800;
+          font-weight: 900;
         }}
+
         .stats-grid {{
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 16px;
           margin-bottom: 16px;
         }}
+
         .section-title {{
           font-size: 18px;
-          font-weight: 800;
+          font-weight: 900;
         }}
+
         .history-list {{
           display: flex;
           flex-direction: column;
           gap: 12px;
         }}
+
         .history-item {{
-          background: #ffffff;
+          background: rgba(255,255,255,0.94);
           border: 1px solid #e5e7eb;
-          border-radius: 16px;
+          border-radius: 18px;
           padding: 14px;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
         }}
+
         .history-top {{
           display: flex;
           align-items: center;
@@ -1399,117 +1536,142 @@ def render_layout(title, body_html):
           gap: 12px;
           margin-bottom: 12px;
         }}
+
         .history-date {{
           font-size: 18px;
-          font-weight: 800;
+          font-weight: 900;
         }}
+
         .history-link {{
           display: inline-block;
           padding: 8px 12px;
-          border-radius: 10px;
-          background: #eef2ff;
+          border-radius: 12px;
+          background: linear-gradient(180deg, #eef4ff 0%, #e5edff 100%);
           color: #3730a3;
           font-size: 13px;
-          font-weight: 800;
+          font-weight: 900;
+          border: 1px solid #d7e2ff;
         }}
+
         .history-mini {{
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 10px;
         }}
+
         .history-mini-box {{
-          background: #f8fafc;
-          border: 1px solid #e5e7eb;
-          border-radius: 12px;
+          background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+          border: 1px solid #e2e8f0;
+          border-radius: 14px;
           padding: 10px;
         }}
+
         .history-mini-label {{
           font-size: 12px;
-          color: #6b7280;
+          color: #64748b;
           margin-bottom: 6px;
         }}
+
         .history-mini-value {{
           font-size: 16px;
-          font-weight: 800;
+          font-weight: 900;
         }}
+
         .ex-rank-grid {{
           display: grid;
           grid-template-columns: repeat(6, minmax(0, 1fr));
-          gap: 6px;
+          gap: 7px;
           width: 100%;
         }}
+
         .ex-rank-box {{
-          border: 1px solid #d1d5db;
-          border-radius: 10px;
-          background: #ffffff;
-          padding: 6px 4px;
+          border: 1px solid #d7dee8;
+          border-radius: 12px;
+          background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+          padding: 7px 4px;
           text-align: center;
           min-width: 0;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
         }}
+
         .ex-rank-1 {{
-          background: #dcfce7;
+          background: linear-gradient(180deg, #ecfdf5 0%, #dcfce7 100%);
           border-color: #86efac;
         }}
+
         .ex-rank-2 {{
-          background: #dbeafe;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
           border-color: #93c5fd;
         }}
+
         .ex-rank-3 {{
-          background: #fef3c7;
+          background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
           border-color: #fcd34d;
         }}
+
         .ex-rank-low {{
-          background: #f3f4f6;
+          background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
           color: #6b7280;
         }}
+
         .ex-lane {{
-          font-size: 11px;
-          color: #6b7280;
-          font-weight: 700;
+          font-size: 10px;
+          color: #64748b;
+          font-weight: 800;
           line-height: 1.1;
         }}
+
         .ex-rank {{
-          font-size: 16px;
-          font-weight: 800;
+          font-size: 18px;
+          font-weight: 900;
           line-height: 1.2;
-          margin-top: 2px;
+          margin-top: 3px;
+          color: #0f172a;
         }}
+
         .ex-rank-empty,
         .ex-chip-empty {{
           font-size: 13px;
           color: #6b7280;
         }}
+
         .ex-chip-wrap {{
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
         }}
+
         .ex-chip {{
           display: inline-flex;
           align-items: center;
           gap: 6px;
-          padding: 6px 8px;
+          padding: 6px 9px;
           border-radius: 999px;
-          background: #ffffff;
-          border: 1px solid #d1d5db;
+          background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+          border: 1px solid #d7dee8;
           font-size: 12px;
-          font-weight: 700;
+          font-weight: 800;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
         }}
+
         .ex-chip-lane {{
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          width: 18px;
-          height: 18px;
+          width: 20px;
+          height: 20px;
           border-radius: 999px;
-          background: #eff6ff;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
           color: #1d4ed8;
           font-size: 11px;
-          font-weight: 800;
+          font-weight: 900;
+          border: 1px solid #bfdbfe;
         }}
+
         .ex-chip-time {{
-          color: #111827;
+          color: #0f172a;
         }}
+
         @media (max-width: 820px) {{
           .summary,
           .summary.six,
@@ -1517,30 +1679,50 @@ def render_layout(title, body_html):
           .stats-grid {{
             grid-template-columns: 1fr 1fr;
           }}
+
           .row {{
-            grid-template-columns: 92px 1fr;
+            grid-template-columns: 96px 1fr;
+          }}
+
+          .time {{
+            font-size: 30px;
+          }}
+
+          .card-top {{
+            flex-direction: column;
+            align-items: flex-start;
+          }}
+
+          .status-wrap {{
+            justify-content: flex-start;
           }}
         }}
+
         @media (max-width: 560px) {{
           .container {{
             padding: 12px;
           }}
+
+          .title {{
+            font-size: 24px;
+          }}
+
           .summary,
           .summary.six,
           .history-mini,
           .stats-grid {{
             grid-template-columns: 1fr;
           }}
+
           .row {{
             grid-template-columns: 1fr;
             gap: 4px;
           }}
+
           .time {{
-            font-size: 20px;
+            font-size: 28px;
           }}
-          .title {{
-            font-size: 22px;
-          }}
+
           .ex-rank-grid {{
             grid-template-columns: repeat(3, minmax(0, 1fr));
           }}
