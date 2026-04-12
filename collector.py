@@ -647,6 +647,45 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
                 score += 0.4
                 reasons.append("展示1位の艇が1着候補に入っている")
 
+    if exhibition_times and unique_heads:
+        lane_time_map = {}
+        for lane, t in enumerate(exhibition_times, start=1):
+            try:
+                lane_time_map[lane] = float(t)
+            except Exception:
+                pass
+
+        head_times = [lane_time_map[h] for h in unique_heads if h in lane_time_map]
+        all_times = list(lane_time_map.values())
+
+        if head_times and all_times:
+            top_time = min(all_times)
+            bottom_time = max(all_times)
+            spread = bottom_time - top_time
+            head_avg_time = sum(head_times) / len(head_times)
+            head_gap_from_top = head_avg_time - top_time
+
+            details.append(f"1着展示タイム平均{round(head_avg_time, 2)}")
+            details.append(f"展示差{round(spread, 2)}")
+
+            if spread >= 0.18:
+                if head_gap_from_top <= 0.03:
+                    score += 0.35
+                    reasons.append("展示タイム差が大きく1着候補がかなり優勢")
+                elif head_gap_from_top <= 0.06:
+                    score += 0.2
+                    reasons.append("展示タイム差があり1着候補が上位")
+                elif head_gap_from_top >= 0.12:
+                    score -= 0.25
+                    reasons.append("展示タイム差がある中で1着候補が遅い")
+            elif spread >= 0.12:
+                if head_gap_from_top <= 0.03:
+                    score += 0.18
+                    reasons.append("展示タイム差の中で1着候補が上位")
+                elif head_gap_from_top >= 0.10:
+                    score -= 0.12
+                    reasons.append("展示タイム差の中で1着候補が遅め")
+
     if boat_stats:
         head_stats = [boat_stats[h] for h in unique_heads if h in boat_stats]
         second_stats = [boat_stats[s] for s in unique_seconds if s in boat_stats]
