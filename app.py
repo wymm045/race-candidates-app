@@ -1,3 +1,4 @@
+
 from datetime import datetime, timezone, timedelta
 import os
 import json
@@ -214,6 +215,17 @@ def render_exhibition_time_chips(exhibition_list):
         </div>
         """
     return f'<div class="ex-chip-wrap">{chips}</div>'
+
+
+def render_selection_chips(selection_text):
+    items = [x.strip() for x in str(selection_text or "").split(" / ") if x.strip()]
+    if not items:
+        return '<div class="selection-chip-empty">未取得</div>'
+
+    chips = ""
+    for item in items:
+        chips += f'<div class="selection-chip">{item}</div>'
+    return f'<div class="selection-chip-grid">{chips}</div>'
 
 
 def final_rank_badge(rank_text):
@@ -624,7 +636,6 @@ def render_home(races, summary, message_type="", message_text=""):
             checked_hit = "checked" if r["hit"] == 1 else ""
             payout_value = r["payout"] if r["payout"] else ""
             memo_value = r["memo"] if r["memo"] else ""
-            selection_html = r["selection"].replace(" / ", "\n")
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
 
@@ -661,6 +672,7 @@ def render_home(races, summary, message_type="", message_text=""):
 
             exhibition_time_html = render_exhibition_time_chips(exhibition)
             exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
+            selection_html = render_selection_chips(r.get("selection", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
             final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -681,7 +693,7 @@ def render_home(races, summary, message_type="", message_text=""):
               <div class="info-box">
                 <div class="row"><span class="label">会場・R</span><span class="value">{r['venue']} {r['race_no']}</span></div>
                 <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
-                <div class="row"><span class="label">買い目</span><span class="selection-value">{selection_html}</span></div>
+                <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value total-amount">{yen(total_amount)}</span></div>
@@ -1354,13 +1366,34 @@ def render_layout(title, body_html):
           text-align: left;
         }}
 
-        .selection-value {{
-          font-size: 17px;
+        .selection-chip-grid {{
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+          width: 100%;
+          max-width: 430px;
+        }}
+
+        .selection-chip {{
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 42px;
+          padding: 8px 10px;
+          border-radius: 12px;
+          background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
+          border: 1px solid #bfdbfe;
+          color: #153eaf;
+          font-size: 22px;
           font-weight: 900;
-          white-space: pre-wrap;
-          word-break: break-word;
-          line-height: 1.85;
-          color: #0f172a;
+          line-height: 1.1;
+          letter-spacing: 0.02em;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+        }}
+
+        .selection-chip-empty {{
+          font-size: 13px;
+          color: #6b7280;
         }}
 
         .total-amount {{
@@ -1701,6 +1734,11 @@ def render_layout(title, body_html):
           .status-wrap {{
             justify-content: flex-start;
           }}
+
+          .selection-chip-grid {{
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            max-width: 320px;
+          }}
         }}
 
         @media (max-width: 560px) {{
@@ -1730,6 +1768,16 @@ def render_layout(title, body_html):
 
           .ex-rank-grid {{
             grid-template-columns: repeat(3, minmax(0, 1fr));
+          }}
+
+          .selection-chip-grid {{
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            max-width: 100%;
+          }}
+
+          .selection-chip {{
+            font-size: 20px;
+            min-height: 40px;
           }}
         }}
       </style>
