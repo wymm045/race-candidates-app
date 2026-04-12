@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone, timedelta
 import os
 import json
@@ -15,6 +14,15 @@ EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "").strip()
 IMPORT_TOKEN = os.environ.get("IMPORT_TOKEN", "").strip()
 
 JST = timezone(timedelta(hours=9))
+
+AI_RATING_OPTIONS = [
+    "",
+    "AI★★★★★",
+    "AI★★★★☆",
+    "AI★★★☆☆",
+    "AI★★☆☆☆",
+    "AI★☆☆☆☆",
+]
 
 
 def log(msg):
@@ -241,6 +249,16 @@ def final_rank_badge(rank_text):
     return ""
 
 
+def render_ai_rating_filter_options(current_value):
+    html = '<option value="">すべて</option>'
+    for value in AI_RATING_OPTIONS:
+        if not value:
+            continue
+        selected = "selected" if value == current_value else ""
+        html += f'<option value="{value}" {selected}>{value}</option>'
+    return html
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -442,10 +460,17 @@ def get_today_races():
     return get_races_by_date(today_text())
 
 
-def get_visible_today_races():
+def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
     rows = get_today_races()
     rows = [r for r in rows if is_star5_only(r)]
-    return [r for r in rows if is_not_started(r["time"])]
+
+    if ai_rating_filter:
+        rows = [r for r in rows if str(r.get("ai_rating", "")).strip() == ai_rating_filter]
+
+    if not show_closed:
+        rows = [r for r in rows if is_not_started(r["time"])]
+
+    return rows
 
 
 def delete_today_races():
@@ -619,7 +644,7 @@ def get_history_date_summaries():
     return results
 
 
-def render_home(races, summary, message_type="", message_text=""):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
 
     message_html = ""
@@ -627,8 +652,11 @@ def render_home(races, summary, message_type="", message_text=""):
         css_class = "message-success" if message_type == "success" else "message-error"
         message_html = f'<div class="message {css_class}">{message_text}</div>'
 
+    checked_show_closed = "checked" if show_closed else ""
+    ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
+
     if not races:
-        cards_html = '<div class="empty">締切前の★★★★★候補はありません</div>'
+        cards_html = '<div class="empty">条件に合う★★★★★候補はありません</div>'
     else:
         cards_html = ""
         for r in races:
@@ -650,6 +678,9 @@ def render_home(races, summary, message_type="", message_text=""):
                 status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
             if r["hit"] == 1:
                 status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+
+            if not is_not_started(r["time"]):
+                status_parts.append('<span class="status-badge status-badge-closed">締切後</span>')
 
             status_html = ""
             if status_parts:
@@ -759,13 +790,40 @@ def render_home(races, summary, message_type="", message_text=""):
     if EXTERNAL_URL:
         external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>'
 
+    filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
+    filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
+
     content = f"""
     <div class="header hero">
       <div class="title">今日の買い候補</div>
       <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
       <div class="sub">最終取込時刻: {updated_str}</div>
+      <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
       {external_line}
       {message_html}
+
+      <form method="get" action="/" class="filter-box">
+        <div class="filter-grid">
+          <div class="filter-item filter-item-wide">
+            <label class="filter-check">
+              <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
+              締切後も表示する
+            </label>
+          </div>
+
+          <div class="filter-item">
+            <label for="ai_rating">AI評価で絞る</label>
+            <select name="ai_rating" id="ai_rating">
+              {ai_rating_options_html}
+            </select>
+          </div>
+
+          <div class="filter-actions">
+            <button type="submit" class="filter-btn">フィルター適用</button>
+            <a href="/" class="filter-reset">解除</a>
+          </div>
+        </div>
+      </form>
 
       <div class="nav">
         <a href="/">今日の候補</a>
@@ -1125,6 +1183,95 @@ def render_layout(title, body_html):
           margin-top: 4px;
         }}
 
+        .filter-box {{
+          margin-top: 16px;
+          background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+          border: 1px solid #dce7f7;
+          border-radius: 16px;
+          padding: 14px;
+        }}
+
+        .filter-grid {{
+          display: grid;
+          grid-template-columns: 1.3fr 1fr auto;
+          gap: 12px;
+          align-items: end;
+        }}
+
+        .filter-item {{
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }}
+
+        .filter-item-wide {{
+          justify-content: center;
+        }}
+
+        .filter-item label {{
+          font-size: 13px;
+          color: #64748b;
+          font-weight: 800;
+        }}
+
+        .filter-check {{
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          color: #0f172a;
+          font-weight: 900;
+        }}
+
+        select {{
+          width: 100%;
+          padding: 11px 12px;
+          border: 1px solid #cfd8e3;
+          border-radius: 12px;
+          font-size: 15px;
+          background: #ffffff;
+          color: #0f172a;
+        }}
+
+        select:focus {{
+          outline: none;
+          border-color: #93c5fd;
+          box-shadow: 0 0 0 4px rgba(147,197,253,0.18);
+        }}
+
+        .filter-actions {{
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          flex-wrap: wrap;
+        }}
+
+        .filter-btn {{
+          border: none;
+          background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+          color: #ffffff;
+          border-radius: 12px;
+          padding: 11px 14px;
+          font-size: 14px;
+          font-weight: 900;
+          cursor: pointer;
+          white-space: nowrap;
+        }}
+
+        .filter-reset {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 12px;
+          background: #f1f5f9;
+          border: 1px solid #dbe3ee;
+          border-radius: 12px;
+          color: #334155;
+          font-size: 14px;
+          font-weight: 900;
+          white-space: nowrap;
+        }}
+
         .nav {{
           display: flex;
           gap: 10px;
@@ -1440,6 +1587,12 @@ def render_layout(title, body_html):
           border: 1px solid #bbf7d0;
         }}
 
+        .status-badge-closed {{
+          background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
+          color: #be123c;
+          border: 1px solid #fecdd3;
+        }}
+
         .form {{
           margin-top: 14px;
           background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
@@ -1739,6 +1892,11 @@ def render_layout(title, body_html):
             grid-template-columns: repeat(2, minmax(0, 1fr));
             max-width: 320px;
           }}
+
+          .filter-grid {{
+            grid-template-columns: 1fr;
+            align-items: stretch;
+          }}
         }}
 
         @media (max-width: 560px) {{
@@ -1835,11 +1993,24 @@ def reset_today():
 
 @app.route("/")
 def index():
-    races = get_visible_today_races()
+    show_closed = request.args.get("show_closed", "").strip() == "1"
+    ai_rating_filter = request.args.get("ai_rating", "").strip()
+    if ai_rating_filter not in AI_RATING_OPTIONS:
+        ai_rating_filter = ""
+
+    races = get_filtered_today_races(show_closed=show_closed, ai_rating_filter=ai_rating_filter)
     summary = get_summary_by_date(today_text())
     message_type = request.args.get("type", "").strip()
     message_text = request.args.get("msg", "").strip()
-    return render_home(races, summary, message_type, message_text)
+
+    return render_home(
+        races,
+        summary,
+        message_type,
+        message_text,
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
+    )
 
 
 @app.route("/save", methods=["POST"])
