@@ -131,6 +131,101 @@ def percent(n):
         return "0%"
 
 
+def profit_class(value):
+    try:
+        v = int(value)
+    except Exception:
+        v = 0
+    if v > 0:
+        return "profit-plus"
+    if v < 0:
+        return "profit-minus"
+    return "profit-zero"
+
+
+def parse_exhibition_rank_map(rank_text):
+    result = {}
+    s = (rank_text or "").strip()
+    if not s:
+        return result
+
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        a, b = part.split(":", 1)
+        try:
+            lane = int(a.strip())
+            rank = int(b.strip())
+            result[lane] = rank
+        except Exception:
+            continue
+    return result
+
+
+def exhibition_rank_class(rank):
+    try:
+        r = int(rank)
+    except Exception:
+        return "ex-rank-box"
+
+    if r == 1:
+        return "ex-rank-box ex-rank-1"
+    if r == 2:
+        return "ex-rank-box ex-rank-2"
+    if r == 3:
+        return "ex-rank-box ex-rank-3"
+    if r >= 5:
+        return "ex-rank-box ex-rank-low"
+    return "ex-rank-box"
+
+
+def render_exhibition_rank_boxes(rank_text):
+    rank_map = parse_exhibition_rank_map(rank_text)
+    if not rank_map:
+        return '<div class="ex-rank-empty">未取得</div>'
+
+    boxes = ""
+    for lane in range(1, 7):
+        rank = rank_map.get(lane)
+        rank_display = "-" if rank is None else str(rank)
+        boxes += f"""
+        <div class="{exhibition_rank_class(rank)}">
+          <div class="ex-lane">{lane}</div>
+          <div class="ex-rank">{rank_display}</div>
+        </div>
+        """
+    return f'<div class="ex-rank-grid">{boxes}</div>'
+
+
+def render_exhibition_time_chips(exhibition_list):
+    if not exhibition_list:
+        return '<div class="ex-chip-empty">未取得</div>'
+
+    chips = ""
+    for i, t in enumerate(exhibition_list, start=1):
+        chips += f"""
+        <div class="ex-chip">
+          <span class="ex-chip-lane">{i}</span>
+          <span class="ex-chip-time">{t}</span>
+        </div>
+        """
+    return f'<div class="ex-chip-wrap">{chips}</div>'
+
+
+def final_rank_badge(rank_text):
+    s = (rank_text or "").strip()
+    if s == "買い強め":
+        return '<span class="final-rank final-rank-strong">買い強め</span>'
+    if s == "買い":
+        return '<span class="final-rank final-rank-buy">買い</span>'
+    if s == "様子見":
+        return '<span class="final-rank final-rank-watch">様子見</span>'
+    if s:
+        return f'<span class="final-rank final-rank-skip">{s}</span>'
+    return ""
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -307,6 +402,7 @@ def replace_today_candidates(races):
         f"replace_today_candidates race_date={race_date} inserted={inserted} updated={updated} deleted={deleted}"
     )
     return {"inserted": inserted, "updated": updated, "deleted": deleted}
+
 
 def get_races_by_date(race_date):
     conn = db_connect()
@@ -521,44 +617,62 @@ def render_layout(title, content_html):
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f7fb;
+      background:
+        radial-gradient(circle at top left, rgba(59,130,246,.10), transparent 28%),
+        radial-gradient(circle at top right, rgba(16,185,129,.08), transparent 24%),
+        #f4f7fb;
       color: #1f2937;
     }}
     .container {{
-      max-width: 960px;
+      max-width: 980px;
       margin: 0 auto;
-      padding: 12px;
+      padding: 14px;
     }}
     .header, .card, .table-wrap {{
-      background: #fff;
-      border-radius: 18px;
-      padding: 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.08);
-      margin-bottom: 10px;
+      background: rgba(255,255,255,.92);
+      backdrop-filter: blur(6px);
+      border-radius: 22px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(15,23,42,.08);
+      border: 1px solid rgba(255,255,255,.8);
+      margin-bottom: 12px;
+    }}
+    .card {{
+      position: relative;
+      overflow: hidden;
+    }}
+    .card::before {{
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 4px;
+      background: linear-gradient(90deg, #3b82f6, #8b5cf6, #14b8a6);
+      opacity: .9;
     }}
     .card-purchased {{
-      background: #eaf3ff;
-      border: 2px solid #93c5fd;
+      background: linear-gradient(180deg, #eef6ff 0%, #ffffff 100%);
+      border: 1px solid #bfdbfe;
     }}
     .card-hit {{
-      background: #ecfdf5;
-      border: 2px solid #4ade80;
-      box-shadow: 0 10px 26px rgba(34,197,94,.15);
+      background: linear-gradient(180deg, #ecfdf5 0%, #ffffff 100%);
+      border: 1px solid #86efac;
+      box-shadow: 0 12px 28px rgba(34,197,94,.12);
     }}
     .title {{
-      font-size: 22px;
-      font-weight: 700;
+      font-size: 24px;
+      font-weight: 800;
       margin: 0 0 8px;
+      letter-spacing: .2px;
     }}
     .section-title {{
       font-size: 18px;
-      font-weight: 700;
+      font-weight: 800;
       margin: 0;
     }}
     .sub {{
       font-size: 14px;
       color: #6b7280;
-      line-height: 1.5;
+      line-height: 1.55;
       margin-bottom: 8px;
       word-break: break-all;
     }}
@@ -570,126 +684,145 @@ def render_layout(title, content_html):
     }}
     .nav a {{
       text-decoration: none;
-      background: #111827;
+      background: linear-gradient(135deg, #111827, #334155);
       color: #fff;
       padding: 10px 14px;
-      border-radius: 12px;
+      border-radius: 999px;
       font-size: 14px;
       font-weight: 700;
+      box-shadow: 0 6px 14px rgba(15,23,42,.12);
     }}
     .summary {{
       display: grid;
       grid-template-columns: repeat(4,1fr);
-      gap: 8px;
+      gap: 10px;
       margin-top: 12px;
     }}
     .summary.six {{
       grid-template-columns: repeat(3,1fr);
     }}
     .summary-box {{
-      background: #f9fafb;
-      border-radius: 12px;
-      padding: 10px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 12px 10px;
       text-align: center;
     }}
     .summary-label {{
       font-size: 12px;
       color: #6b7280;
-      margin-bottom: 2px;
+      margin-bottom: 3px;
     }}
     .summary-value {{
       font-size: 18px;
-      font-weight: 700;
+      font-weight: 800;
       line-height: 1.2;
     }}
     .time {{
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 8px;
+      font-size: 21px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .time::before {{
+      content: "⏰";
+      font-size: 16px;
+    }}
+    .badge-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
     }}
     .row {{
       display: grid;
-      grid-template-columns: 84px 1fr;
-      gap: 8px;
-      margin: 4px 0;
+      grid-template-columns: 92px 1fr;
+      gap: 10px;
+      margin: 7px 0;
       font-size: 14px;
       align-items: start;
     }}
     .label {{
       color: #6b7280;
       line-height: 1.45;
+      font-weight: 600;
     }}
     .value {{
       text-align: right;
-      line-height: 1.45;
-      font-weight: 500;
+      line-height: 1.5;
+      font-weight: 600;
     }}
     .selection-value {{
       text-align: right;
       line-height: 1.45;
       word-break: break-word;
-      font-weight: 600;
+      font-weight: 700;
       letter-spacing: .2px;
       white-space: pre-line;
+      color: #111827;
     }}
     .rating {{
       display: inline-block;
-      padding: 3px 10px;
+      padding: 5px 11px;
       border-radius: 999px;
-      background: #fef3c7;
-      color: #92400e;
-      font-weight: 700;
+      background: #fff7ed;
+      color: #c2410c;
+      font-weight: 800;
       font-size: 13px;
-      margin-bottom: 8px;
-      margin-right: 6px;
+      border: 1px solid #fdba74;
     }}
     .ai-rating {{
       display: inline-block;
-      padding: 3px 10px;
+      padding: 5px 11px;
       border-radius: 999px;
-      background: #ede9fe;
+      background: #f5f3ff;
       color: #6d28d9;
-      font-weight: 700;
+      font-weight: 800;
       font-size: 13px;
-      margin-bottom: 8px;
-      margin-right: 6px;
+      border: 1px solid #c4b5fd;
     }}
     .final-rank {{
       display: inline-block;
-      padding: 3px 10px;
+      padding: 5px 11px;
       border-radius: 999px;
-      font-weight: 700;
+      font-weight: 800;
       font-size: 13px;
-      margin-bottom: 8px;
+      border: 1px solid transparent;
     }}
     .final-rank-strong {{
       background: #dbeafe;
       color: #1d4ed8;
+      border-color: #93c5fd;
     }}
     .final-rank-buy {{
       background: #ecfeff;
       color: #155e75;
+      border-color: #67e8f9;
     }}
     .final-rank-watch {{
       background: #f3f4f6;
       color: #4b5563;
+      border-color: #d1d5db;
     }}
     .final-rank-skip {{
       background: #fee2e2;
       color: #991b1b;
+      border-color: #fca5a5;
     }}
     .status-wrap {{
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
-      margin-top: 8px;
+      margin-top: 10px;
     }}
     .status-badge {{
       display: inline-block;
-      padding: 5px 10px;
+      padding: 6px 11px;
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 800;
     }}
     .status-badge-saved {{
       background: #dbeafe;
@@ -700,11 +833,12 @@ def render_layout(title, content_html):
       color: #166534;
     }}
     .message {{
-      border-radius: 14px;
+      border-radius: 16px;
       padding: 12px 14px;
       margin-bottom: 12px;
       font-size: 14px;
       line-height: 1.5;
+      font-weight: 600;
     }}
     .message-success {{
       background: #dcfce7;
@@ -719,18 +853,19 @@ def render_layout(title, content_html):
       padding-top: 8px;
       border-top: 1px solid #e5e7eb;
       display: grid;
-      gap: 1px;
+      gap: 3px;
     }}
     .form {{
-      margin-top: 10px;
-      padding-top: 10px;
+      margin-top: 12px;
+      padding-top: 12px;
       border-top: 1px solid #e5e7eb;
       display: grid;
       gap: 8px;
     }}
     .checkline {{
       font-size: 15px;
-      line-height: 1.4;
+      line-height: 1.45;
+      font-weight: 600;
     }}
     .checkline input {{
       transform: scale(1.08);
@@ -743,33 +878,37 @@ def render_layout(title, content_html):
     .input-row label {{
       font-size: 13px;
       color: #6b7280;
+      font-weight: 600;
     }}
     .input-row input {{
       border: 1px solid #d1d5db;
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 12px;
+      padding: 11px 12px;
       font-size: 16px;
+      background: #fff;
     }}
     .save-btn {{
       border: none;
-      background: #2563eb;
+      background: linear-gradient(135deg, #2563eb, #4f46e5);
       color: #fff;
       padding: 12px;
-      border-radius: 12px;
+      border-radius: 14px;
       font-size: 15px;
-      font-weight: 700;
+      font-weight: 800;
+      box-shadow: 0 8px 18px rgba(37,99,235,.18);
     }}
     .detail-box {{
-      background: rgba(255,255,255,.65);
-      border-radius: 12px;
+      background: #f8fafc;
+      border-radius: 14px;
       padding: 10px;
       display: grid;
       gap: 8px;
+      border: 1px solid #e5e7eb;
     }}
     .empty {{
       background: #fff;
-      border-radius: 18px;
-      padding: 24px;
+      border-radius: 20px;
+      padding: 26px;
       text-align: center;
       box-shadow: 0 8px 24px rgba(0,0,0,.08);
       color: #6b7280;
@@ -779,11 +918,92 @@ def render_layout(title, content_html):
       padding-left: 18px;
       color: #4b5563;
       font-size: 13px;
-      line-height: 1.45;
+      line-height: 1.5;
     }}
     .reason-list li {{
+      margin-bottom: 3px;
+    }}
+
+    .ex-chip-wrap {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+    }}
+    .ex-chip {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #ffffff;
+      border: 1px solid #dbe4ee;
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .ex-chip-lane {{
+      display: inline-flex;
+      width: 18px;
+      height: 18px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 11px;
+      font-weight: 800;
+    }}
+    .ex-chip-time {{
+      color: #0f172a;
+    }}
+    .ex-chip-empty, .ex-rank-empty {{
+      color: #9ca3af;
+      font-size: 13px;
+      text-align: right;
+    }}
+
+    .ex-rank-grid {{
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 6px;
+    }}
+    .ex-rank-box {{
+      background: #ffffff;
+      border: 1px solid #dbe4ee;
+      border-radius: 14px;
+      padding: 7px 4px;
+      text-align: center;
+      min-width: 0;
+    }}
+    .ex-rank-1 {{
+      background: linear-gradient(180deg, #fef3c7, #fff);
+      border-color: #fbbf24;
+    }}
+    .ex-rank-2 {{
+      background: linear-gradient(180deg, #e0f2fe, #fff);
+      border-color: #7dd3fc;
+    }}
+    .ex-rank-3 {{
+      background: linear-gradient(180deg, #ecfccb, #fff);
+      border-color: #bef264;
+    }}
+    .ex-rank-low {{
+      background: linear-gradient(180deg, #fee2e2, #fff);
+      border-color: #fca5a5;
+    }}
+    .ex-lane {{
+      font-size: 11px;
+      color: #64748b;
+      font-weight: 700;
       margin-bottom: 2px;
     }}
+    .ex-rank {{
+      font-size: 16px;
+      font-weight: 900;
+      line-height: 1.1;
+      color: #111827;
+    }}
+
     .stats-grid {{
       display: grid;
       grid-template-columns: repeat(2,1fr);
@@ -840,19 +1060,23 @@ def render_layout(title, content_html):
       width: 100%;
       border-collapse: collapse;
       font-size: 14px;
+      background: #fff;
+      border-radius: 16px;
+      overflow: hidden;
     }}
     th, td {{
       border-bottom: 1px solid #e5e7eb;
       padding: 10px 8px;
-      text-align: left;
-      vertical-align: top;
+      text-align: center;
+      vertical-align: middle;
     }}
     th {{
-      color: #6b7280;
-      font-weight: 700;
-      background: #f9fafb;
-      position: sticky;
-      top: 0;
+      background: #f8fafc;
+      color: #374151;
+      font-weight: 800;
+    }}
+    tr:last-child td {{
+      border-bottom: none;
     }}
     .profit-plus {{
       color: #166534;
@@ -871,11 +1095,11 @@ def render_layout(title, content_html):
         padding: 10px;
       }}
       .header, .card, .table-wrap {{
-        padding: 12px;
-        border-radius: 16px;
+        padding: 14px;
+        border-radius: 18px;
       }}
       .title {{
-        font-size: 20px;
+        font-size: 22px;
       }}
       .summary {{
         grid-template-columns: repeat(2,1fr);
@@ -889,22 +1113,15 @@ def render_layout(title, content_html):
       .history-mini {{
         grid-template-columns: repeat(2,1fr);
       }}
-      table {{
-        font-size: 12px;
-      }}
       .row {{
         grid-template-columns: 78px 1fr;
-        gap: 6px;
-        margin: 3px 0;
+        gap: 8px;
       }}
-      .time {{
-        font-size: 16px;
+      .ex-rank-grid {{
+        grid-template-columns: repeat(3, 1fr);
       }}
-      .summary-value {{
-        font-size: 16px;
-      }}
-      .selection-value {{
-        line-height: 1.3;
+      table {{
+        font-size: 12px;
       }}
     }}
   </style>
@@ -953,18 +1170,6 @@ def render_layout(title, content_html):
   </script>
 </body>
 </html>"""
-
-
-def profit_class(value):
-    try:
-        v = int(value)
-    except Exception:
-        v = 0
-    if v > 0:
-        return "profit-plus"
-    if v < 0:
-        return "profit-minus"
-    return "profit-zero"
 
 
 def render_home(races, summary, message_type="", message_text=""):
@@ -1019,18 +1224,20 @@ def render_home(races, summary, message_type="", message_text=""):
                 </div>
                 """
 
-            exhibition_text = " / ".join(exhibition) if exhibition else "未取得"
-            exhibition_rank_text = display_text(r.get("exhibition_rank"), "未取得")
+            exhibition_time_html = render_exhibition_time_chips(exhibition)
+            exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_text = r.get("ai_score") if r.get("ai_score") is not None else 0
+            final_rank_html = final_rank_badge(r.get("final_rank"))
 
             cards_html += f"""
             <div class="{card_class}">
               <div class="time">{r['time']}</div>
-              <div>
-                <span class="rating">{r.get('rating') or '公式評価なし'}</span>
+
+              <div class="badge-row">
+                <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
                 <span class="ai-rating">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
-                <span class="{final_rank_class(r.get('final_rank'))}">{display_text(r.get('final_rank'), '判定なし')}</span>
+                {final_rank_html}
               </div>
 
               <div class="info-box">
@@ -1041,8 +1248,8 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value">{yen(total_amount)}</span></div>
                 <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
-                <div class="row"><span class="label">展示</span><span class="value">{exhibition_text}</span></div>
-                <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_text}</span></div>
+                <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+                <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
                 {ai_reason_html}
               </div>
