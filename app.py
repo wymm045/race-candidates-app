@@ -788,14 +788,14 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
 
               <div class="info-box">
                 <div class="row row-race-spot">
-  <span class="label">会場・R</span>
-  <span class="value">
-    <span class="race-spot">
-      <span class="race-venue">{r['venue']}</span>
-      <span class="race-rno">{r['race_no']}</span>
-    </span>
-  </span>
-</div>
+                  <span class="label">会場・R</span>
+                  <span class="value">
+                    <span class="race-spot">
+                      <span class="race-venue">{r['venue']}</span>
+                      <span class="race-rno">{r['race_no']}</span>
+                    </span>
+                  </span>
+                </div>
                 <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
                 <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
@@ -1202,18 +1202,18 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
                 >
               </div>
 
-           <div class="card-top">
-  <div>
-    <div class="time">{r['time']}</div>
-    <div class="history-race-line">
-      <span class="race-spot race-spot-large">
-        <span class="race-venue">{r['venue']}</span>
-        <span class="race-rno">{r['race_no']}</span>
-      </span>
-    </div>
-  </div>
-  {status_html}
-</div>
+              <div class="card-top">
+                <div>
+                  <div class="time">{r['time']}</div>
+                  <div class="history-race-line">
+                    <span class="race-spot race-spot-large">
+                      <span class="race-venue">{r['venue']}</span>
+                      <span class="race-rno">{r['race_no']}</span>
+                    </span>
+                  </div>
+                </div>
+                {status_html}
+              </div>
 
               <div class="badge-row">
                 <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
@@ -1727,7 +1727,7 @@ def render_layout(title, body_html):
           border: 1px solid #e5e7eb;
         }}
 
-                .card {
+        .card {{
           background:
             linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(248,251,255,0.97) 100%);
           border-radius: 24px;
@@ -1736,124 +1736,6 @@ def render_layout(title, body_html):
           box-shadow:
             0 18px 42px rgba(15, 23, 42, 0.08),
             0 4px 14px rgba(37, 99, 235, 0.06);
-          border: 1px solid #e4ebf5;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .card::after {
-          content: "";
-          position: absolute;
-          right: -40px;
-          top: -40px;
-          width: 120px;
-          height: 120px;
-          border-radius: 999px;
-          background: radial-gradient(circle, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0.00) 70%);
-          pointer-events: none;
-        }
-
-        .info-box {
-          background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-          border: 1px solid #dfe8f4;
-          border-radius: 18px;
-          padding: 12px 14px;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
-        }
-
-        .row-race-spot {
-          align-items: center;
-        }
-
-        .race-spot {
-          display: inline-flex;
-          align-items: center;
-          gap: 10px;
-          flex-wrap: wrap;
-          padding: 8px 12px;
-          border-radius: 14px;
-          background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
-          border: 1px solid #bfdbfe;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.85),
-            0 6px 14px rgba(59,130,246,0.10);
-        }
-
-        .race-spot-large {
-          padding: 10px 14px;
-          border-radius: 16px;
-          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
-        }
-
-        .race-venue {
-          font-size: 22px;
-          font-weight: 900;
-          line-height: 1.1;
-          color: #0f172a;
-          letter-spacing: 0.01em;
-        }
-
-        .race-rno {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-width: 58px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
-          color: #ffffff;
-          font-size: 18px;
-          font-weight: 900;
-          line-height: 1;
-          box-shadow: 0 8px 16px rgba(37,99,235,0.22);
-        }
-
-        .history-race-line {
-          margin-top: 8px;
-        }
-
-        .time {
-          font-size: 36px;
-          font-weight: 900;
-          line-height: 1;
-          letter-spacing: 0.01em;
-          color: #13294b;
-          text-shadow: 0 1px 0 rgba(255,255,255,0.6);
-        }
-
-        .status-badge {
-          display: inline-flex;
-          align-items: center;
-          padding: 8px 12px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          box-shadow:
-            0 6px 14px rgba(15,23,42,0.07),
-            inset 0 1px 0 rgba(255,255,255,0.55);
-        }
-
-        @media (max-width: 560px) {
-          .race-venue {
-            font-size: 20px;
-          }
-
-          .race-rno {
-            min-width: 54px;
-            font-size: 17px;
-          }
-
-          .time {
-            font-size: 30px;
-          }
-        }
-
-        .card {{
-          background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,252,255,0.96) 100%);
-          border-radius: 24px;
-          padding: 18px;
-          margin-bottom: 18px;
-          box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
           border: 1px solid #e4ebf5;
           position: relative;
           overflow: hidden;
@@ -1868,6 +1750,18 @@ def render_layout(title, body_html):
           height: 5px;
           background: linear-gradient(90deg, #60a5fa, #818cf8);
           opacity: 0.35;
+        }}
+
+        .card::after {{
+          content: "";
+          position: absolute;
+          right: -40px;
+          top: -40px;
+          width: 120px;
+          height: 120px;
+          border-radius: 999px;
+          background: radial-gradient(circle, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0.00) 70%);
+          pointer-events: none;
         }}
 
         .card-purchased {{
@@ -1914,11 +1808,12 @@ def render_layout(title, body_html):
         }}
 
         .time {{
-          font-size: 34px;
+          font-size: 36px;
           font-weight: 900;
-          line-height: 1.0;
+          line-height: 1;
           letter-spacing: 0.01em;
           color: #13294b;
+          text-shadow: 0 1px 0 rgba(255,255,255,0.6);
         }}
 
         .badge-row {{
@@ -1979,9 +1874,10 @@ def render_layout(title, body_html):
 
         .info-box {{
           background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-          border: 1px solid #e2e8f0;
+          border: 1px solid #dfe8f4;
           border-radius: 18px;
           padding: 12px 14px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
         }}
 
         .row {{
@@ -2011,6 +1907,57 @@ def render_layout(title, body_html):
 
         .text-left {{
           text-align: left;
+        }}
+
+        .row-race-spot {{
+          align-items: center;
+        }}
+
+        .race-spot {{
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+          padding: 8px 12px;
+          border-radius: 14px;
+          background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
+          border: 1px solid #bfdbfe;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.85),
+            0 6px 14px rgba(59,130,246,0.10);
+        }}
+
+        .race-spot-large {{
+          padding: 10px 14px;
+          border-radius: 16px;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+        }}
+
+        .race-venue {{
+          font-size: 22px;
+          font-weight: 900;
+          line-height: 1.1;
+          color: #0f172a;
+          letter-spacing: 0.01em;
+        }}
+
+        .race-rno {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 58px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+          color: #ffffff;
+          font-size: 18px;
+          font-weight: 900;
+          line-height: 1;
+          box-shadow: 0 8px 16px rgba(37,99,235,0.22);
+        }}
+
+        .history-race-line {{
+          margin-top: 8px;
         }}
 
         .selection-chip-grid {{
@@ -2068,11 +2015,13 @@ def render_layout(title, body_html):
         .status-badge {{
           display: inline-flex;
           align-items: center;
-          padding: 7px 11px;
+          padding: 8px 12px;
           border-radius: 999px;
           font-size: 12px;
           font-weight: 900;
-          box-shadow: 0 4px 10px rgba(15,23,42,0.06);
+          box-shadow:
+            0 6px 14px rgba(15,23,42,0.07),
+            inset 0 1px 0 rgba(255,255,255,0.55);
         }}
 
         .status-badge-saved {{
@@ -2579,7 +2528,16 @@ def render_layout(title, body_html):
           }}
 
           .time {{
-            font-size: 28px;
+            font-size: 30px;
+          }}
+
+          .race-venue {{
+            font-size: 20px;
+          }}
+
+          .race-rno {{
+            min-width: 54px;
+            font-size: 17px;
           }}
 
           .ex-rank-grid {{
