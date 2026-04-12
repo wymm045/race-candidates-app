@@ -87,6 +87,18 @@ def display_text(value, empty_text="未取得"):
     return s
 
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return float(default)
+        s = str(value).strip()
+        if s == "":
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
+
 def normalize_ai_detail(raw_detail, exhibition_list):
     detail = (raw_detail or "").strip()
     has_exhibition = bool(exhibition_list)
@@ -346,7 +358,7 @@ def replace_today_candidates(races):
                 r["selection"],
                 r["amount"],
                 imported_at,
-                float(r.get("ai_score", 0)),
+                safe_float(r.get("ai_score", 0), 0),
                 str(r.get("ai_rating", "")).strip(),
                 str(r.get("ai_label", "")).strip(),
                 str(r.get("final_rank", "")).strip(),
@@ -658,7 +670,7 @@ def render_home(races, summary, message_type="", message_text=""):
             exhibition_time_html = render_exhibition_time_chips(exhibition)
             exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
-            ai_score_text = r.get("ai_score") if r.get("ai_score") is not None else 0
+            ai_score_value = safe_float(r.get("ai_score"), 0)
             final_rank_html = final_rank_badge(r.get("final_rank"))
 
             cards_html += f"""
@@ -678,7 +690,7 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value">{yen(total_amount)}</span></div>
-                <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
+                <div class="row"><span class="label">AI補正点</span><span class="value">{round(ai_score_value, 2)}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
@@ -1046,6 +1058,530 @@ def render_history_detail_page(race_date, races, summary):
     return render_layout("過去データ詳細", content)
 
 
+def render_layout(title, body_html):
+    return f"""
+    <!doctype html>
+    <html lang="ja">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>{title}</title>
+      <style>
+        * {{
+          box-sizing: border-box;
+        }}
+        body {{
+          margin: 0;
+          background: #f5f7fb;
+          color: #1f2937;
+          font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+          line-height: 1.5;
+        }}
+        a {{
+          color: #2563eb;
+          text-decoration: none;
+        }}
+        .container {{
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 16px;
+        }}
+        .header {{
+          background: #ffffff;
+          border-radius: 16px;
+          padding: 16px;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+          margin-bottom: 16px;
+        }}
+        .title {{
+          font-size: 24px;
+          font-weight: 800;
+          margin-bottom: 8px;
+        }}
+        .sub {{
+          font-size: 13px;
+          color: #6b7280;
+          margin-top: 4px;
+        }}
+        .nav {{
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-top: 14px;
+        }}
+        .nav a {{
+          display: inline-block;
+          padding: 9px 12px;
+          background: #eef2ff;
+          color: #3730a3;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 700;
+        }}
+        .summary {{
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+          margin-top: 16px;
+        }}
+        .summary.six {{
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+        }}
+        .summary-box {{
+          background: #f8fafc;
+          border: 1px solid #e5e7eb;
+          border-radius: 14px;
+          padding: 12px;
+        }}
+        .summary-label {{
+          font-size: 12px;
+          color: #6b7280;
+          margin-bottom: 6px;
+        }}
+        .summary-value {{
+          font-size: 20px;
+          font-weight: 800;
+        }}
+        .profit-plus {{
+          color: #16a34a;
+        }}
+        .profit-minus {{
+          color: #dc2626;
+        }}
+        .profit-zero {{
+          color: #374151;
+        }}
+        .message {{
+          margin-top: 12px;
+          padding: 12px 14px;
+          border-radius: 12px;
+          font-size: 14px;
+          font-weight: 700;
+        }}
+        .message-success {{
+          background: #ecfdf5;
+          color: #166534;
+          border: 1px solid #bbf7d0;
+        }}
+        .message-error {{
+          background: #fef2f2;
+          color: #991b1b;
+          border: 1px solid #fecaca;
+        }}
+        .empty {{
+          background: #ffffff;
+          border-radius: 16px;
+          padding: 18px;
+          color: #6b7280;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        }}
+        .card {{
+          background: #ffffff;
+          border-radius: 18px;
+          padding: 16px;
+          margin-bottom: 16px;
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+          border: 1px solid #e5e7eb;
+        }}
+        .card-purchased {{
+          border: 1px solid #bfdbfe;
+          background: #f8fbff;
+        }}
+        .card-hit {{
+          border: 1px solid #bbf7d0;
+          background: #f0fdf4;
+        }}
+        .time {{
+          font-size: 22px;
+          font-weight: 800;
+          margin-bottom: 10px;
+        }}
+        .badge-row {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-bottom: 12px;
+        }}
+        .rating,
+        .ai-rating,
+        .final-rank {{
+          display: inline-flex;
+          align-items: center;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+        }}
+        .rating {{
+          background: #fff7ed;
+          color: #c2410c;
+        }}
+        .ai-rating {{
+          background: #eff6ff;
+          color: #1d4ed8;
+        }}
+        .final-rank-strong {{
+          background: #dcfce7;
+          color: #166534;
+        }}
+        .final-rank-buy {{
+          background: #dbeafe;
+          color: #1d4ed8;
+        }}
+        .final-rank-watch {{
+          background: #fef3c7;
+          color: #92400e;
+        }}
+        .final-rank-skip {{
+          background: #f3f4f6;
+          color: #4b5563;
+        }}
+        .info-box {{
+          background: #f8fafc;
+          border: 1px solid #e5e7eb;
+          border-radius: 14px;
+          padding: 12px;
+        }}
+        .row {{
+          display: grid;
+          grid-template-columns: 110px 1fr;
+          gap: 10px;
+          padding: 8px 0;
+          border-bottom: 1px solid #e5e7eb;
+        }}
+        .row:last-child {{
+          border-bottom: none;
+        }}
+        .label {{
+          font-size: 13px;
+          color: #6b7280;
+          font-weight: 700;
+        }}
+        .value {{
+          font-size: 14px;
+          font-weight: 700;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }}
+        .selection-value {{
+          font-size: 16px;
+          font-weight: 800;
+          white-space: pre-wrap;
+          word-break: break-word;
+          line-height: 1.7;
+        }}
+        .reason-list {{
+          margin: 0;
+          padding-left: 18px;
+        }}
+        .status-wrap {{
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+          flex-wrap: wrap;
+        }}
+        .status-badge {{
+          display: inline-block;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+        }}
+        .status-badge-saved {{
+          background: #dbeafe;
+          color: #1d4ed8;
+        }}
+        .status-badge-hit {{
+          background: #dcfce7;
+          color: #166534;
+        }}
+        .form {{
+          margin-top: 14px;
+          background: #fcfcfd;
+          border: 1px solid #e5e7eb;
+          border-radius: 14px;
+          padding: 12px;
+        }}
+        .checkline {{
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 700;
+          margin-bottom: 10px;
+        }}
+        .detail-box {{
+          margin-top: 8px;
+        }}
+        .input-row {{
+          margin-top: 10px;
+        }}
+        .input-row label {{
+          display: block;
+          font-size: 13px;
+          color: #6b7280;
+          margin-bottom: 6px;
+          font-weight: 700;
+        }}
+        input[type="number"],
+        input[type="text"] {{
+          width: 100%;
+          padding: 10px 12px;
+          border: 1px solid #d1d5db;
+          border-radius: 10px;
+          font-size: 16px;
+          background: #ffffff;
+        }}
+        .save-btn {{
+          width: 100%;
+          margin-top: 12px;
+          border: none;
+          background: #2563eb;
+          color: #ffffff;
+          border-radius: 12px;
+          padding: 12px 14px;
+          font-size: 15px;
+          font-weight: 800;
+          cursor: pointer;
+        }}
+        .save-btn:hover {{
+          opacity: 0.92;
+        }}
+        .table-wrap {{
+          overflow-x: auto;
+          background: #ffffff;
+          border-radius: 16px;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        }}
+        table {{
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 720px;
+        }}
+        th, td {{
+          padding: 12px 10px;
+          border-bottom: 1px solid #e5e7eb;
+          text-align: left;
+          font-size: 14px;
+          vertical-align: top;
+        }}
+        th {{
+          background: #f8fafc;
+          color: #475569;
+          font-weight: 800;
+        }}
+        .stats-grid {{
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-bottom: 16px;
+        }}
+        .section-title {{
+          font-size: 18px;
+          font-weight: 800;
+        }}
+        .history-list {{
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }}
+        .history-item {{
+          background: #ffffff;
+          border: 1px solid #e5e7eb;
+          border-radius: 16px;
+          padding: 14px;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        }}
+        .history-top {{
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 12px;
+        }}
+        .history-date {{
+          font-size: 18px;
+          font-weight: 800;
+        }}
+        .history-link {{
+          display: inline-block;
+          padding: 8px 12px;
+          border-radius: 10px;
+          background: #eef2ff;
+          color: #3730a3;
+          font-size: 13px;
+          font-weight: 800;
+        }}
+        .history-mini {{
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }}
+        .history-mini-box {{
+          background: #f8fafc;
+          border: 1px solid #e5e7eb;
+          border-radius: 12px;
+          padding: 10px;
+        }}
+        .history-mini-label {{
+          font-size: 12px;
+          color: #6b7280;
+          margin-bottom: 6px;
+        }}
+        .history-mini-value {{
+          font-size: 16px;
+          font-weight: 800;
+        }}
+        .ex-rank-grid {{
+          display: grid;
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          gap: 6px;
+          width: 100%;
+        }}
+        .ex-rank-box {{
+          border: 1px solid #d1d5db;
+          border-radius: 10px;
+          background: #ffffff;
+          padding: 6px 4px;
+          text-align: center;
+          min-width: 0;
+        }}
+        .ex-rank-1 {{
+          background: #dcfce7;
+          border-color: #86efac;
+        }}
+        .ex-rank-2 {{
+          background: #dbeafe;
+          border-color: #93c5fd;
+        }}
+        .ex-rank-3 {{
+          background: #fef3c7;
+          border-color: #fcd34d;
+        }}
+        .ex-rank-low {{
+          background: #f3f4f6;
+          color: #6b7280;
+        }}
+        .ex-lane {{
+          font-size: 11px;
+          color: #6b7280;
+          font-weight: 700;
+          line-height: 1.1;
+        }}
+        .ex-rank {{
+          font-size: 16px;
+          font-weight: 800;
+          line-height: 1.2;
+          margin-top: 2px;
+        }}
+        .ex-rank-empty,
+        .ex-chip-empty {{
+          font-size: 13px;
+          color: #6b7280;
+        }}
+        .ex-chip-wrap {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }}
+        .ex-chip {{
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 8px;
+          border-radius: 999px;
+          background: #ffffff;
+          border: 1px solid #d1d5db;
+          font-size: 12px;
+          font-weight: 700;
+        }}
+        .ex-chip-lane {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 18px;
+          height: 18px;
+          border-radius: 999px;
+          background: #eff6ff;
+          color: #1d4ed8;
+          font-size: 11px;
+          font-weight: 800;
+        }}
+        .ex-chip-time {{
+          color: #111827;
+        }}
+        @media (max-width: 820px) {{
+          .summary,
+          .summary.six,
+          .history-mini,
+          .stats-grid {{
+            grid-template-columns: 1fr 1fr;
+          }}
+          .row {{
+            grid-template-columns: 92px 1fr;
+          }}
+        }}
+        @media (max-width: 560px) {{
+          .container {{
+            padding: 12px;
+          }}
+          .summary,
+          .summary.six,
+          .history-mini,
+          .stats-grid {{
+            grid-template-columns: 1fr;
+          }}
+          .row {{
+            grid-template-columns: 1fr;
+            gap: 4px;
+          }}
+          .time {{
+            font-size: 20px;
+          }}
+          .title {{
+            font-size: 22px;
+          }}
+          .ex-rank-grid {{
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        {body_html}
+      </div>
+
+      <script>
+        function toggleFormState(raceId) {{
+          const purchased = document.getElementById(`purchased-${{raceId}}`);
+          const hit = document.getElementById(`hit-${{raceId}}`);
+          const detail = document.getElementById(`detail-${{raceId}}`);
+          const payout = document.getElementById(`payout-${{raceId}}`);
+
+          if (!purchased || !detail) return;
+
+          if (purchased.checked) {{
+            detail.style.display = "block";
+          }} else {{
+            detail.style.display = "none";
+            if (hit) hit.checked = false;
+            if (payout) payout.value = "";
+          }}
+        }}
+
+        document.addEventListener("DOMContentLoaded", function() {{
+          document.querySelectorAll("[data-race-id]").forEach(function(form) {{
+            const raceId = form.getAttribute("data-race-id");
+            toggleFormState(raceId);
+          }});
+        }});
+      </script>
+    </body>
+    </html>
+    """
+
+
 def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
@@ -1158,7 +1694,7 @@ def import_candidates():
                 "bet_type": str(r["bet_type"]).strip(),
                 "selection": str(r["selection"]).strip(),
                 "amount": int(r["amount"]),
-                "ai_score": float(r.get("ai_score", 0)),
+                "ai_score": safe_float(r.get("ai_score", 0), 0),
                 "ai_rating": str(r.get("ai_rating", "")).strip(),
                 "ai_label": str(r.get("ai_label", "")).strip(),
                 "final_rank": str(r.get("final_rank", "")).strip(),
