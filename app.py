@@ -775,8 +775,16 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
 
             cards_html += f"""
             <div class="{card_class}">
-              <div class="card-top">
-                <div class="time">{r['time']}</div>
+              <div class="card-top card-top-main">
+                <div class="card-top-left">
+                  <div class="time">{r['time']}</div>
+                  <div class="race-mainline">
+                    <span class="race-spot race-spot-main">
+                      <span class="race-venue">{r['venue']}</span>
+                      <span class="race-rno">{r['race_no']}</span>
+                    </span>
+                  </div>
+                </div>
                 {status_html}
               </div>
 
@@ -786,22 +794,28 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
                 {final_rank_html}
               </div>
 
+              <div class="metric-badge-row">
+                <span class="metric-badge">
+                  <span class="metric-badge-label">券種</span>
+                  <span class="metric-badge-value">{r['bet_type']}</span>
+                </span>
+                <span class="metric-badge">
+                  <span class="metric-badge-label">点数</span>
+                  <span class="metric-badge-value">{point_count}点</span>
+                </span>
+                <span class="metric-badge metric-badge-strong">
+                  <span class="metric-badge-label">合計</span>
+                  <span class="metric-badge-value">{yen(total_amount)}</span>
+                </span>
+                <span class="metric-badge metric-badge-score">
+                  <span class="metric-badge-label">AI補正点</span>
+                  <span class="metric-badge-value">{round(ai_score_value, 2)}</span>
+                </span>
+              </div>
+
               <div class="info-box">
-                <div class="row row-race-spot">
-                  <span class="label">会場・R</span>
-                  <span class="value">
-                    <span class="race-spot">
-                      <span class="race-venue">{r['venue']}</span>
-                      <span class="race-rno">{r['race_no']}</span>
-                    </span>
-                  </span>
-                </div>
-                <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
                 <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
-                <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
-                <div class="row"><span class="label">合計金額</span><span class="value total-amount">{yen(total_amount)}</span></div>
-                <div class="row"><span class="label">AI補正点</span><span class="value ai-score-value">{round(ai_score_value, 2)}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
@@ -1202,11 +1216,11 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
                 >
               </div>
 
-              <div class="card-top">
-                <div>
+              <div class="card-top card-top-main">
+                <div class="card-top-left">
                   <div class="time">{r['time']}</div>
-                  <div class="history-race-line">
-                    <span class="race-spot race-spot-large">
+                  <div class="race-mainline">
+                    <span class="race-spot race-spot-main">
                       <span class="race-venue">{r['venue']}</span>
                       <span class="race-rno">{r['race_no']}</span>
                     </span>
@@ -1221,12 +1235,27 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
                 {final_rank_html}
               </div>
 
+              <div class="metric-badge-row">
+                <span class="metric-badge">
+                  <span class="metric-badge-label">券種</span>
+                  <span class="metric-badge-value">{r['bet_type']}</span>
+                </span>
+                <span class="metric-badge">
+                  <span class="metric-badge-label">点数</span>
+                  <span class="metric-badge-value">{point_count}点</span>
+                </span>
+                <span class="metric-badge metric-badge-strong">
+                  <span class="metric-badge-label">合計</span>
+                  <span class="metric-badge-value">{yen(total_amount)}</span>
+                </span>
+                <span class="metric-badge metric-badge-score">
+                  <span class="metric-badge-label">AI補正点</span>
+                  <span class="metric-badge-value">{round(ai_score_value, 2)}</span>
+                </span>
+              </div>
+
               <div class="info-box">
-                <div class="row"><span class="label">券種</span><span class="value">{r['bet_type']}</span></div>
                 <div class="row"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
-                <div class="row"><span class="label">点数</span><span class="value">{point_count}点</span></div>
-                <div class="row"><span class="label">合計金額</span><span class="value total-amount">{yen(total_amount)}</span></div>
-                <div class="row"><span class="label">AI補正点</span><span class="value ai-score-value">{round(ai_score_value, 2)}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
@@ -1807,6 +1836,18 @@ def render_layout(title, body_html):
           margin-bottom: 10px;
         }}
 
+        .card-top-main {{
+          align-items: flex-start;
+          margin-bottom: 12px;
+        }}
+
+        .card-top-left {{
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          min-width: 0;
+        }}
+
         .time {{
           font-size: 36px;
           font-weight: 900;
@@ -1814,6 +1855,13 @@ def render_layout(title, body_html):
           letter-spacing: 0.01em;
           color: #13294b;
           text-shadow: 0 1px 0 rgba(255,255,255,0.6);
+        }}
+
+        .race-mainline {{
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
         }}
 
         .badge-row {{
@@ -1872,6 +1920,58 @@ def render_layout(title, body_html):
           border-color: #e2e8f0;
         }}
 
+        .metric-badge-row {{
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-bottom: 14px;
+        }}
+
+        .metric-badge {{
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 12px;
+          border-radius: 14px;
+          background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+          border: 1px solid #dbe3ee;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.85),
+            0 6px 14px rgba(15,23,42,0.04);
+        }}
+
+        .metric-badge-label {{
+          font-size: 11px;
+          font-weight: 900;
+          color: #64748b;
+          letter-spacing: 0.02em;
+        }}
+
+        .metric-badge-value {{
+          font-size: 14px;
+          font-weight: 900;
+          color: #0f172a;
+          line-height: 1;
+        }}
+
+        .metric-badge-strong {{
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+          border-color: #bfdbfe;
+        }}
+
+        .metric-badge-strong .metric-badge-value {{
+          color: #1d4ed8;
+        }}
+
+        .metric-badge-score {{
+          background: linear-gradient(180deg, #eefcf7 0%, #dcfce7 100%);
+          border-color: #bbf7d0;
+        }}
+
+        .metric-badge-score .metric-badge-value {{
+          color: #166534;
+        }}
+
         .info-box {{
           background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
           border: 1px solid #dfe8f4;
@@ -1909,10 +2009,6 @@ def render_layout(title, body_html):
           text-align: left;
         }}
 
-        .row-race-spot {{
-          align-items: center;
-        }}
-
         .race-spot {{
           display: inline-flex;
           align-items: center;
@@ -1925,6 +2021,16 @@ def render_layout(title, body_html):
           box-shadow:
             inset 0 1px 0 rgba(255,255,255,0.85),
             0 6px 14px rgba(59,130,246,0.10);
+        }}
+
+        .race-spot-main {{
+          padding: 10px 14px;
+          border-radius: 18px;
+          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+          border: 1px solid #bfdbfe;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.9),
+            0 8px 18px rgba(59,130,246,0.12);
         }}
 
         .race-spot-large {{
