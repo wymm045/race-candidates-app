@@ -100,7 +100,7 @@ def is_future_or_now(hhmm):
 
 
 def fetch_html(url):
-    res = SESSION.get(url, timeout=20)
+    res = SESSION.get(url, timeout=10)
     res.raise_for_status()
     res.encoding = res.apparent_encoding
     return res.text
@@ -150,52 +150,6 @@ def parse_official_deadlines_for_jcd(jcd):
     return jcd, deadlines
 
 
-def parse_exhibition_times_for_key(jcd, race_no):
-    beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-
-    try:
-        html = fetch_html(beforeinfo_url)
-    except Exception:
-        return (jcd, race_no), {"times": [], "ranks": {}}
-
-    lines = normalize_lines(html)
-
-    time_candidates = []
-    for line in lines:
-        if re.fullmatch(r"\d\.\d{2}", line):
-            time_candidates.append(line)
-
-    if len(time_candidates) < 6:
-        for line in lines:
-            found = re.findall(r"\d\.\d{2}", line)
-            for m in found:
-                time_candidates.append(m)
-
-    times = time_candidates[:6]
-    if len(times) != 6:
-        return (jcd, race_no), {"times": [], "ranks": {}}
-
-    float_pairs = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_pairs.append((lane, float(t)))
-        except Exception:
-            return (jcd, race_no), {"times": [], "ranks": {}}
-
-    sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
-    ranks = {}
-    current_rank = 1
-    prev_time = None
-
-    for idx, (lane, t) in enumerate(sorted_pairs, start=1):
-        if prev_time is None or t != prev_time:
-            current_rank = idx
-        ranks[lane] = current_rank
-        prev_time = t
-
-    return (jcd, race_no), {"times": times, "ranks": ranks}
-
-
 def clean_num(text):
     if text is None:
         return None
@@ -209,16 +163,62 @@ def clean_num(text):
         return None
 
 
-def parse_boat_stats_for_key(jcd, race_no):
+def parse_beforeinfo_for_key(jcd, race_no):
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
 
     try:
         html = fetch_html(beforeinfo_url)
-    except Exception:
-        return (jcd, race_no), {}
+    except Exception as e:
+        log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
+        return (jcd, race_no), {
+            "exhibition": {"times": [], "ranks": {}},
+            "boat_stats": {},
+        }
 
     lines = normalize_lines(html)
 
+    # --- 展示タイム取得 ---
+    time_candidates = []
+    for line in lines:
+        if re.fullmatch(r"\d\.\d{2}", line):
+            time_candidates.append(line)
+
+    if len(time_candidates) < 6:
+        for line in lines:
+            found = re.findall(r"\d\.\d{2}", line)
+            for m in found:
+                time_candidates.append(m)
+
+    times = time_candidates[:6]
+    ranks = {}
+
+    if len(times) == 6:
+        float_pairs = []
+        for lane, t in enumerate(times, start=1):
+            try:
+                float_pairs.append((lane, float(t)))
+            except Exception:
+                float_pairs = []
+                break
+
+        if float_pairs:
+            sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
+            current_rank = 1
+            prev_time = None
+
+            for idx, (lane, t) in enumerate(sorted_pairs, start=1):
+                if prev_time is None or t != prev_time:
+                    current_rank = idx
+                ranks[lane] = current_rank
+                prev_time = t
+        else:
+            times = []
+
+    if len(times) != 6:
+        times = []
+        ranks = {}
+
+    # --- 勝率・モーター・ボート取得 ---
     stats = {}
     for lane in range(1, 7):
         stats[lane] = {
@@ -270,7 +270,10 @@ def parse_boat_stats_for_key(jcd, race_no):
         if s["boat2"] is not None and s["boat2"] > 100:
             s["boat2"] = None
 
-    return (jcd, race_no), stats
+    return (jcd, race_no), {
+        "exhibition": {"times": times, "ranks": ranks},
+        "boat_stats": stats,
+    }
 
 
 def normalize_triplet(a, b, c):
@@ -316,16 +319,6 @@ def decide_final_rank(official_rating, ai_score):
     if ai_score >= -0.2:
         return "様子見"
     return "見送り寄り"
-
-
-def extract_direct_digit_texts(tag):
-    vals = []
-    for node in tag.descendants:
-        if not hasattr(node, "get_text"):
-            text = str(node).strip()
-            if re.fullmatch(r"[1-6]", text):
-                vals.append(text)
-    return vals
 
 
 def extract_digits_from_cell(cell):
@@ -829,7 +822,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
 def fetch_deadlines_parallel(jcds):
     results = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=12) as ex:
         futures = [ex.submit(parse_official_deadlines_for_jcd, jcd) for jcd in sorted(jcds)]
         for future in as_completed(futures):
             jcd, deadlines = future.result()
@@ -837,20 +830,10 @@ def fetch_deadlines_parallel(jcds):
     return results
 
 
-def fetch_exhibitions_parallel(keys):
+def fetch_beforeinfo_parallel(keys):
     results = {}
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        futures = [ex.submit(parse_exhibition_times_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
-        for future in as_completed(futures):
-            key, info = future.result()
-            results[key] = info
-    return results
-
-
-def fetch_boat_stats_parallel(keys):
-    results = {}
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        futures = [ex.submit(parse_boat_stats_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = [ex.submit(parse_beforeinfo_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
         for future in as_completed(futures):
             key, info = future.result()
             results[key] = info
@@ -928,10 +911,9 @@ def build_candidates():
             future_keys.add((jcd, race_no))
 
     rows = filtered_rows
-    log(f"[deadline_filtered_summary] count={len(rows)} future_exhibition_count={len(future_keys)}")
+    log(f"[deadline_filtered_summary] count={len(rows)} future_beforeinfo_count={len(future_keys)}")
 
-    exhibition_cache = fetch_exhibitions_parallel(future_keys) if future_keys else {}
-    boat_stats_cache = fetch_boat_stats_parallel(future_keys) if future_keys else {}
+    beforeinfo_cache = fetch_beforeinfo_parallel(future_keys) if future_keys else {}
 
     results = []
     for row in rows:
@@ -942,8 +924,9 @@ def build_candidates():
         jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
         deadline = row["time"]
 
-        exhibition_info = exhibition_cache.get((jcd, race_no), {"times": [], "ranks": {}})
-        boat_stats = boat_stats_cache.get((jcd, race_no), {})
+        beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
+        exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
+        boat_stats = beforeinfo.get("boat_stats", {})
 
         analyzed = analyze_candidate(rating, selection, exhibition_info, boat_stats)
 
