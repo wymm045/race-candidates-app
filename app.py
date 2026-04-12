@@ -1498,16 +1498,16 @@ def import_candidates():
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
 
     result = replace_today_candidates(cleaned)
-log(f"import api success count={len(cleaned)}")
-return jsonify(
-    {
-        "ok": True,
-        "received": len(cleaned),
-        "inserted": result["inserted"],
-        "updated": result["updated"],
-        "imported_at": jst_now_str(),
-    }
-)
+    log(f"import api success count={len(cleaned)}")
+    return jsonify(
+        {
+            "ok": True,
+            "received": len(cleaned),
+            "inserted": result["inserted"],
+            "updated": result["updated"],
+            "imported_at": jst_now_str(),
+        }
+    )
 
 
 init_db()
