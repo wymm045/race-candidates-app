@@ -1,23 +1,36 @@
-databases:
-  - name: race-db
-    databaseName: race_app
-    user: race_user
-    plan: free
-
 services:
   - type: web
     name: race-candidates-app
-    env: python
-    plan: free
+    runtime: python
+    plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
-    healthCheckPath: /healthz
+    startCommand: gunicorn app:app
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+      - key: IMPORT_TOKEN
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
-          name: race-db
+          name: race-candidates-db
           property: connectionString
-      - key: EXTERNAL_URL
+
+  - type: cron
+    name: race-candidates-collector
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python collector.py
+    schedule: "*/10 * * * *"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: IMPORT_TOKEN
         sync: false
+      - key: RENDER_IMPORT_URL
+        value: https://race-candidates-app.onrender.com/api/import_candidates
+
+databases:
+  - name: race-candidates-db
+    plan: basic-1gb
