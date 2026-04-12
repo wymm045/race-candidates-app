@@ -190,7 +190,7 @@ def init_db():
 def replace_today_candidates(races):
     if not races:
         log("replace_today_candidates: no races")
-        return {"inserted": 0, "updated": 0}
+        return {"inserted": 0, "updated": 0, "deleted": 0}
 
     race_date = str(races[0]["race_date"]).strip()
     imported_at = jst_now_str()
@@ -200,6 +200,16 @@ def replace_today_candidates(races):
 
     inserted = 0
     updated = 0
+
+    current_keys = set()
+    for r in races:
+        key = (
+            str(r["race_date"]).strip(),
+            str(r["venue"]).strip(),
+            str(r["race_no"]).strip(),
+            str(r["selection"]).strip(),
+        )
+        current_keys.add(key)
 
     for r in races:
         cur.execute(
@@ -258,13 +268,45 @@ def replace_today_candidates(races):
         else:
             updated += 1
 
+    cur.execute(
+        """
+        SELECT race_date, venue, race_no, selection
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        """,
+        (race_date,),
+    )
+    existing_rows = cur.fetchall()
+
+    delete_targets = []
+    for row in existing_rows:
+        key = (row[0], row[1], row[2], row[3])
+        if key not in current_keys:
+            delete_targets.append(key)
+
+    deleted = 0
+    for key in delete_targets:
+        cur.execute(
+            """
+            DELETE FROM races
+            WHERE race_date = %s
+              AND venue = %s
+              AND race_no = %s
+              AND selection = %s
+            """,
+            key,
+        )
+        deleted += cur.rowcount
+
     conn.commit()
     cur.close()
     conn.close()
 
-    log(f"replace_today_candidates race_date={race_date} inserted={inserted} updated={updated}")
-    return {"inserted": inserted, "updated": updated}
-
+    log(
+        f"replace_today_candidates race_date={race_date} inserted={inserted} updated={updated} deleted={deleted}"
+    )
+    return {"inserted": inserted, "updated": updated, "deleted": deleted}
 
 def get_races_by_date(race_date):
     conn = db_connect()
