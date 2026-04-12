@@ -78,6 +78,15 @@ def parse_json_array_text(value):
     return []
 
 
+def display_text(value, empty_text="未取得"):
+    if value is None:
+        return empty_text
+    s = str(value).strip()
+    if s == "" or s == "-":
+        return empty_text
+    return s
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -114,66 +123,20 @@ def init_db():
         """
     )
 
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS imported_at TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS ai_score REAL DEFAULT 0
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS ai_rating TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS ai_label TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS final_rank TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS ai_reasons TEXT DEFAULT '[]'
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS exhibition TEXT DEFAULT '[]'
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS exhibition_rank TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS motor_rank TEXT DEFAULT ''
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE races
-        ADD COLUMN IF NOT EXISTS ai_detail TEXT DEFAULT ''
-        """
-    )
+    alter_sqls = [
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_score REAL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons TEXT DEFAULT '[]'",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition TEXT DEFAULT '[]'",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT DEFAULT ''",
+    ]
+    for sql in alter_sqls:
+        cur.execute(sql)
 
     conn.commit()
     cur.close()
@@ -555,6 +518,9 @@ def render_layout(title, content_html):
       font-weight: 600;
       letter-spacing: .2px;
     }}
+    .muted {{
+      color: #9ca3af;
+    }}
     .rating {{
       display: inline-block;
       padding: 3px 10px;
@@ -861,19 +827,18 @@ def render_home(races, summary, message_type="", message_text=""):
                 </div>
                 """
 
-            exhibition_text = " / ".join(exhibition) if exhibition else "-"
-            exhibition_rank_text = r.get("exhibition_rank") or "-"
-            motor_rank_text = r.get("motor_rank") or "-"
-            ai_detail_text = r.get("ai_detail") or "-"
+            exhibition_text = " / ".join(exhibition) if exhibition else "未取得"
+            exhibition_rank_text = display_text(r.get("exhibition_rank"), "未取得")
+            ai_detail_text = display_text(r.get("ai_detail"), "補正なし")
             ai_score_text = r.get("ai_score") if r.get("ai_score") is not None else 0
 
             cards_html += f"""
             <div class="{card_class}">
               <div class="time">{r['time']}</div>
               <div>
-                <span class="rating">{r['rating']}</span>
-                <span class="ai-rating">{r.get('ai_rating') or 'AI評価なし'}</span>
-                <span class="final-rank">{r.get('final_rank') or '判定なし'}</span>
+                <span class="rating">{r.get('rating') or '公式評価なし'}</span>
+                <span class="ai-rating">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
+                <span class="final-rank">{display_text(r.get('final_rank'), '判定なし')}</span>
               </div>
 
               <div class="info-box">
@@ -884,10 +849,9 @@ def render_home(races, summary, message_type="", message_text=""):
                 <div class="row"><span class="label">1点あたり</span><span class="value">{r['amount']}円</span></div>
                 <div class="row"><span class="label">合計金額</span><span class="value">{total_amount}円</span></div>
                 <div class="row"><span class="label">AI補正点</span><span class="value">{round(float(ai_score_text), 2)}</span></div>
-                <div class="row"><span class="label">AIラベル</span><span class="value">{r.get('ai_label') or '-'}</span></div>
+                <div class="row"><span class="label">AIラベル</span><span class="value">{display_text(r.get('ai_label'), '未設定')}</span></div>
                 <div class="row"><span class="label">展示</span><span class="value">{exhibition_text}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_text}</span></div>
-                <div class="row"><span class="label">モーター</span><span class="value">{motor_rank_text}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
                 {ai_reason_html}
               </div>
@@ -1139,18 +1103,18 @@ def render_history_detail_page(race_date, races, summary):
             point_count = get_point_count(r["selection"])
             total_amount = get_total_amount(r)
             exhibition = parse_json_array_text(r.get("exhibition", "[]"))
-            exhibition_text = " / ".join(exhibition) if exhibition else "-"
+            exhibition_text = " / ".join(exhibition) if exhibition else "未取得"
+
             rows_html += f"""
             <tr>
               <td>{r['time']}</td>
               <td>{r['venue']}</td>
               <td>{r['race_no']}</td>
-              <td>{r['rating']}</td>
-              <td>{r.get('ai_rating') or '-'}</td>
-              <td>{r.get('final_rank') or '-'}</td>
+              <td>{display_text(r.get('rating'), '未設定')}</td>
+              <td>{display_text(r.get('ai_rating'), '未設定')}</td>
+              <td>{display_text(r.get('final_rank'), '未設定')}</td>
               <td>{r['selection']}</td>
               <td>{exhibition_text}</td>
-              <td>{r.get('motor_rank') or '-'}</td>
               <td>{point_count}点 / {total_amount}円</td>
               <td>{'買い' if r['purchased'] == 1 else '見送り'}</td>
               <td>{'的中' if r['hit'] == 1 else '-'}</td>
@@ -1171,7 +1135,6 @@ def render_history_detail_page(race_date, races, summary):
                 <th>判定</th>
                 <th>買い目</th>
                 <th>展示</th>
-                <th>モーター</th>
                 <th>点数/投資</th>
                 <th>購入</th>
                 <th>的中</th>
