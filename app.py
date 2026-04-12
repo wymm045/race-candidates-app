@@ -1087,7 +1087,7 @@ def render_home(races, summary, message_type="", message_text=""):
         </div>
         <div class="summary-box">
           <div class="summary-label">収支</div>
-          <div class="summary-value" class="{profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
+          <div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div>
         </div>
         <div class="summary-box">
           <div class="summary-label">回収率</div>
