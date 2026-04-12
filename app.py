@@ -190,7 +190,7 @@ def init_db():
 def replace_today_candidates(races):
     if not races:
         log("replace_today_candidates: no races")
-        return {"inserted": 0, "deleted": 0}
+        return {"inserted": 0, "updated": 0}
 
     race_date = str(races[0]["race_date"]).strip()
     imported_at = jst_now_str()
@@ -198,16 +198,9 @@ def replace_today_candidates(races):
     conn = db_connect()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        DELETE FROM races
-        WHERE race_date = %s
-        """,
-        (race_date,),
-    )
-    deleted = cur.rowcount
-
     inserted = 0
+    updated = 0
+
     for r in races:
         cur.execute(
             """
@@ -218,7 +211,24 @@ def replace_today_candidates(races):
                 exhibition, exhibition_rank, motor_rank, ai_detail
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
+            ON CONFLICT (race_date, venue, race_no, selection)
+            DO UPDATE SET
+                time = EXCLUDED.time,
+                race_no_num = EXCLUDED.race_no_num,
+                rating = EXCLUDED.rating,
+                bet_type = EXCLUDED.bet_type,
+                amount = EXCLUDED.amount,
+                imported_at = EXCLUDED.imported_at,
+                ai_score = EXCLUDED.ai_score,
+                ai_rating = EXCLUDED.ai_rating,
+                ai_label = EXCLUDED.ai_label,
+                final_rank = EXCLUDED.final_rank,
+                ai_reasons = EXCLUDED.ai_reasons,
+                exhibition = EXCLUDED.exhibition,
+                exhibition_rank = EXCLUDED.exhibition_rank,
+                motor_rank = EXCLUDED.motor_rank,
+                ai_detail = EXCLUDED.ai_detail
+            RETURNING xmax = 0 AS inserted_flag
             """,
             (
                 r["race_date"],
@@ -243,15 +253,17 @@ def replace_today_candidates(races):
             ),
         )
         row = cur.fetchone()
-        if row:
+        if row and row[0]:
             inserted += 1
+        else:
+            updated += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    log(f"replace_today_candidates race_date={race_date} deleted={deleted} inserted={inserted}")
-    return {"inserted": inserted, "deleted": deleted}
+    log(f"replace_today_candidates race_date={race_date} inserted={inserted} updated={updated}")
+    return {"inserted": inserted, "updated": updated}
 
 
 def get_races_by_date(race_date):
@@ -1486,16 +1498,16 @@ def import_candidates():
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
 
     result = replace_today_candidates(cleaned)
-    log(f"import api success count={len(cleaned)}")
-    return jsonify(
-        {
-            "ok": True,
-            "received": len(cleaned),
-            "inserted_or_updated": result["inserted"],
-            "deleted_today_rows": result["deleted"],
-            "imported_at": jst_now_str(),
-        }
-    )
+log(f"import api success count={len(cleaned)}")
+return jsonify(
+    {
+        "ok": True,
+        "received": len(cleaned),
+        "inserted": result["inserted"],
+        "updated": result["updated"],
+        "imported_at": jst_now_str(),
+    }
+)
 
 
 init_db()
