@@ -175,6 +175,59 @@ def profit_class(value):
     return "profit-zero"
 
 
+def get_saved_state_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT
+            id,
+            race_date,
+            venue,
+            race_no,
+            purchased,
+            hit,
+            payout,
+            memo
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY
+            CASE
+                WHEN hit = 1 THEN 4
+                WHEN purchased = 1 THEN 3
+                WHEN payout > 0 THEN 2
+                WHEN COALESCE(memo, '') <> '' THEN 1
+                ELSE 0
+            END DESC,
+            id DESC
+        """,
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    saved_map = {}
+    for row in rows:
+        key = (
+            str(row["race_date"]).strip(),
+            str(row["venue"]).strip(),
+            str(row["race_no"]).strip(),
+        )
+        if key in saved_map:
+            continue
+
+        saved_map[key] = {
+            "purchased": int(row.get("purchased") or 0),
+            "hit": int(row.get("hit") or 0),
+            "payout": int(row.get("payout") or 0),
+            "memo": str(row.get("memo") or "").strip(),
+        }
+
+    return saved_map
+
+
 def parse_exhibition_rank_map(rank_text):
     result = {}
     s = (rank_text or "").strip()
@@ -351,6 +404,7 @@ def replace_today_candidates(races):
 
     race_date = str(races[0]["race_date"]).strip()
     imported_at = jst_now_str()
+    saved_state_map = get_saved_state_map_by_race(race_date)
 
     conn = db_connect()
     cur = conn.cursor()
@@ -369,15 +423,36 @@ def replace_today_candidates(races):
         current_keys.add(key)
 
     for r in races:
+        race_key = (
+            str(r["race_date"]).strip(),
+            str(r["venue"]).strip(),
+            str(r["race_no"]).strip(),
+        )
+        saved_state = saved_state_map.get(
+            race_key,
+            {
+                "purchased": 0,
+                "hit": 0,
+                "payout": 0,
+                "memo": "",
+            },
+        )
+
         cur.execute(
             """
             INSERT INTO races
             (
                 race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount,
+                purchased, hit, payout, memo,
                 imported_at, ai_score, ai_rating, ai_label, final_rank, ai_reasons,
                 exhibition, exhibition_rank, motor_rank, ai_detail
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s
+            )
             ON CONFLICT (race_date, venue, race_no, selection)
             DO UPDATE SET
                 time = EXCLUDED.time,
@@ -394,7 +469,11 @@ def replace_today_candidates(races):
                 exhibition = EXCLUDED.exhibition,
                 exhibition_rank = EXCLUDED.exhibition_rank,
                 motor_rank = EXCLUDED.motor_rank,
-                ai_detail = EXCLUDED.ai_detail
+                ai_detail = EXCLUDED.ai_detail,
+                purchased = races.purchased,
+                hit = races.hit,
+                payout = races.payout,
+                memo = races.memo
             RETURNING xmax = 0 AS inserted_flag
             """,
             (
@@ -407,6 +486,10 @@ def replace_today_candidates(races):
                 r["bet_type"],
                 r["selection"],
                 r["amount"],
+                int(saved_state.get("purchased", 0) or 0),
+                int(saved_state.get("hit", 0) or 0),
+                int(saved_state.get("payout", 0) or 0),
+                str(saved_state.get("memo", "") or ""),
                 imported_at,
                 safe_float(r.get("ai_score", 0), 0),
                 str(r.get("ai_rating", "")).strip(),
@@ -1118,7 +1201,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
       </div>
     </div>
     """
-    return render_layout("今日の集計", content)
+    return render_stats_page.__globals__["render_layout"]("今日の集計", content)
 
 
 def render_history_page(date_summaries):
@@ -2115,12 +2198,6 @@ def render_layout(title, body_html):
             0 8px 18px rgba(59,130,246,0.12);
         }}
 
-        .race-spot-large {{
-          padding: 10px 14px;
-          border-radius: 16px;
-          background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
-        }}
-
         .race-venue {{
           font-size: 22px;
           font-weight: 900;
@@ -2142,10 +2219,6 @@ def render_layout(title, body_html):
           font-weight: 900;
           line-height: 1;
           box-shadow: 0 8px 16px rgba(37,99,235,0.22);
-        }}
-
-        .history-race-line {{
-          margin-top: 8px;
         }}
 
         .selection-chip-grid {{
@@ -2212,12 +2285,6 @@ def render_layout(title, body_html):
           background: linear-gradient(180deg, #ecfdf5 0%, #dcfce7 100%);
           color: #166534;
           border: 1px solid #bbf7d0;
-        }}
-
-        .status-badge-closed {{
-          background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
-          color: #be123c;
-          border: 1px solid #fecdd3;
         }}
 
         .form {{
