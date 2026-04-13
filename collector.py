@@ -180,11 +180,30 @@ def build_beforeinfo_url(jcd, race_no):
     return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
 
 
-def build_racelist_detail_url(jcd, race_no):
+def build_racelist_detail_url(jcd, race_no, scheme="https"):
     slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
     if not slug:
         return ""
-    return f"https://kyotei.sakura.ne.jp/racelist-{slug}-{today_text_dashless()}-{int(race_no)}.html"
+    return f"{scheme}://kyotei.sakura.ne.jp/racelist-{slug}-{today_text_dashless()}-{int(race_no)}.html"
+
+
+def build_info_detail_url(jcd, race_no):
+    return f"https://info.kyotei.fun/info-{today_text_dashless()}-{jcd}-{int(race_no)}.html"
+
+
+def try_fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=2):
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = SESSION.get(url, timeout=timeout)
+            res.raise_for_status()
+            res.encoding = res.apparent_encoding
+            return res.text
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                time.sleep(0.6 * attempt)
+    return None
 
 
 def normalize_text_for_class_parse(html):
@@ -611,19 +630,33 @@ def parse_racelist_page_all_races(jcd):
     result = {}
 
     for race_no in range(1, 13):
-        url = build_racelist_detail_url(jcd, race_no)
-        if not url:
-            continue
+        url_candidates = [
+            build_racelist_detail_url(jcd, race_no, scheme="https"),
+            build_racelist_detail_url(jcd, race_no, scheme="http"),
+            build_info_detail_url(jcd, race_no),
+        ]
+        url_candidates = [u for u in url_candidates if u]
 
-        try:
-            html = fetch_html(url)
-        except Exception as e:
-            log(f"[racelist_page_error] jcd={jcd} venue={venue} race_no={race_no} err={e}")
+        html = None
+        used_url = ""
+        for url in url_candidates:
+            html = try_fetch_html(url)
+            if html:
+                used_url = url
+                break
+            else:
+                log(f"[racelist_try_failed] jcd={jcd} venue={venue} race_no={race_no} url={url}")
+
+        if not html:
+            log(f"[racelist_page_error] jcd={jcd} venue={venue} race_no={race_no} all_failed=1")
             continue
 
         lane_map = parse_racelist_race_from_html(html, race_no, jcd, venue)
         if lane_map:
             result[race_no] = lane_map
+            log(f"[racelist_source_ok] jcd={jcd} venue={venue} race_no={race_no} url={used_url}")
+        else:
+            log(f"[racelist_source_parse_miss] jcd={jcd} venue={venue} race_no={race_no} url={used_url}")
 
     log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
     return result
