@@ -309,6 +309,19 @@ def render_selection_chips(selection_text):
     return f'<div class="selection-chip-grid">{chips}</div>'
 
 
+
+
+def render_info_chips(items, empty_text="未取得", chip_class="info-chip"):
+    values = [str(x).strip() for x in (items or []) if str(x).strip()]
+    if not values:
+        return f'<div class="{chip_class}-empty">{empty_text}</div>'
+
+    chips = ""
+    for value in values:
+        chips += f'<div class="{chip_class}">{value}</div>'
+    return f'<div class="{chip_class}-wrap">{chips}</div>'
+
+
 def final_rank_badge(rank_text):
     s = (rank_text or "").strip()
     if s == "買い強め":
@@ -372,6 +385,10 @@ def init_db():
             exhibition_rank TEXT DEFAULT '',
             motor_rank TEXT DEFAULT '',
             ai_detail TEXT DEFAULT '',
+            ai_selection TEXT DEFAULT '',
+            ai_confidence REAL DEFAULT 0,
+            ai_lane_score_text TEXT DEFAULT '',
+            class_history_text TEXT DEFAULT '',
             UNIQUE(race_date, venue, race_no, selection)
         )
         """
@@ -388,6 +405,10 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence REAL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT DEFAULT ''",
     ]
     for sql in alter_sqls:
         cur.execute(sql)
@@ -445,7 +466,8 @@ def replace_today_candidates(races):
                 race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount,
                 purchased, hit, payout, memo,
                 imported_at, ai_score, ai_rating, ai_label, final_rank, ai_reasons,
-                exhibition, exhibition_rank, motor_rank, ai_detail
+                exhibition, exhibition_rank, motor_rank, ai_detail,
+                ai_selection, ai_confidence, ai_lane_score_text, class_history_text
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -470,6 +492,10 @@ def replace_today_candidates(races):
                 exhibition_rank = EXCLUDED.exhibition_rank,
                 motor_rank = EXCLUDED.motor_rank,
                 ai_detail = EXCLUDED.ai_detail,
+                ai_selection = EXCLUDED.ai_selection,
+                ai_confidence = EXCLUDED.ai_confidence,
+                ai_lane_score_text = EXCLUDED.ai_lane_score_text,
+                class_history_text = EXCLUDED.class_history_text,
                 purchased = races.purchased,
                 hit = races.hit,
                 payout = races.payout,
@@ -500,6 +526,10 @@ def replace_today_candidates(races):
                 str(r.get("exhibition_rank", "")).strip(),
                 str(r.get("motor_rank", "")).strip(),
                 str(r.get("ai_detail", "")).strip(),
+                str(r.get("ai_selection", "")).strip(),
+                safe_float(r.get("ai_confidence", 0), 0),
+                str(r.get("ai_lane_score_text", "")).strip(),
+                str(r.get("class_history_text", "")).strip(),
             ),
         )
         row = cur.fetchone()
@@ -870,8 +900,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
             exhibition_time_html = render_exhibition_time_chips(exhibition)
             exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
             selection_html = render_selection_chips(r.get("selection", ""))
+            ai_selection_html = render_selection_chips(r.get("ai_selection", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
+            ai_confidence_value = safe_float(r.get("ai_confidence"), 0)
+            class_history_text = display_text(r.get("class_history_text"), "未取得")
+            lane_score_text = display_text(r.get("ai_lane_score_text"), "未取得")
             final_rank_html = final_rank_badge(r.get("final_rank"))
             countdown_html = render_countdown_badge(r["time"])
 
@@ -919,10 +953,14 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
               </div>
 
               <div class="info-box">
-                <div class="row row-selection-highlight"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight"><span class="label">公式買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight ai-selection-row"><span class="label">AI買い目</span><span class="value">{ai_selection_html}</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value:.1f}%</span></div>
+                <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_text}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+                <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_text}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
                 {ai_reason_html}
               </div>
@@ -1290,8 +1328,12 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
             exhibition_time_html = render_exhibition_time_chips(exhibition)
             exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
             selection_html = render_selection_chips(r.get("selection", ""))
+            ai_selection_html = render_selection_chips(r.get("ai_selection", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
+            ai_confidence_value = safe_float(r.get("ai_confidence"), 0)
+            class_history_text = display_text(r.get("class_history_text"), "未取得")
+            lane_score_text = display_text(r.get("ai_lane_score_text"), "未取得")
             final_rank_html = final_rank_badge(r.get("final_rank"))
             redirect_to = f"/history/{race_date}"
 
@@ -1362,9 +1404,13 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
               </div>
 
               <div class="info-box">
-                <div class="row row-selection-highlight"><span class="label">買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight"><span class="label">公式買い目</span><span class="value">{selection_html}</span></div>
+                <div class="row row-selection-highlight ai-selection-row"><span class="label">AI買い目</span><span class="value">{ai_selection_html}</span></div>
+                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value:.1f}%</span></div>
+                <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_text}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+                <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_text}</span></div>
                 <div class="row"><span class="label">詳細材料</span><span class="value">{ai_detail_text}</span></div>
               </div>
 
@@ -3061,6 +3107,10 @@ def import_candidates():
                 "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
                 "motor_rank": str(r.get("motor_rank", "")).strip(),
                 "ai_detail": str(r.get("ai_detail", "")).strip(),
+                "ai_selection": str(r.get("ai_selection", "")).strip(),
+                "ai_confidence": safe_float(r.get("ai_confidence", 0), 0),
+                "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
+                "class_history_text": str(r.get("class_history_text", "")).strip(),
             }
         )
 
