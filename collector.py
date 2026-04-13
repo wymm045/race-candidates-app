@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 import os
 import re
+import time
 from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -32,6 +33,14 @@ HEADERS = {
 
 BET_TYPE = "3連単"
 BET_AMOUNT = 100
+
+REQUEST_TIMEOUT = (10, 20)
+POST_TIMEOUT = 40
+MAX_RETRIES = 3
+RETRY_SLEEP_SEC = 1.2
+
+OFFICIAL_MAX_WORKERS = 6
+BEFOREINFO_MAX_WORKERS = 12
 
 JCD_NAME_MAP = {
     "02": "戸田",
@@ -99,11 +108,24 @@ def is_future_or_now(hhmm):
         return False
 
 
-def fetch_html(url):
-    res = SESSION.get(url, timeout=10)
-    res.raise_for_status()
-    res.encoding = res.apparent_encoding
-    return res.text
+def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = SESSION.get(url, timeout=timeout)
+            res.raise_for_status()
+            res.encoding = res.apparent_encoding
+            return res.text
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                log(f"[fetch_retry] attempt={attempt}/{max_retries} url={url} err={e}")
+                time.sleep(RETRY_SLEEP_SEC * attempt)
+            else:
+                log(f"[fetch_failed] url={url} err={e}")
+
+    raise last_err
 
 
 def fetch_soup(url):
@@ -119,33 +141,74 @@ def normalize_lines(html):
 
 
 def build_official_url(jcd, race_no=1):
-    return f"http://boatrace.jp/owpc/pc/race/pcexpect?rno={race_no}&jcd={jcd}&hd={today_str()}"
+    return f"https://boatrace.jp/owpc/pc/race/pcexpect?rno={race_no}&jcd={jcd}&hd={today_str()}"
 
 
 def build_beforeinfo_url(jcd, race_no):
     qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
-    return f"http://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
+    return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
 
 
-def parse_official_deadlines_for_jcd(jcd):
-    official_url = build_official_url(jcd, race_no=1)
-    try:
-        html = fetch_html(official_url)
-    except Exception as e:
-        log(f"[official_deadlines_error] jcd={jcd} err={e}")
-        return jcd, {}
-
+def parse_official_deadlines_from_html(html):
     lines = normalize_lines(html)
     deadlines = {}
 
     for i, line in enumerate(lines):
         if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 40])
+            block = " ".join(lines[i:i + 80])
             times = re.findall(r"\d{2}:\d{2}", block)
             if times:
                 for idx, t in enumerate(times[:12], start=1):
                     deadlines[idx] = t
-                break
+                return deadlines
+
+    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
+    if len(all_times) >= 12:
+        for idx, t in enumerate(all_times[:12], start=1):
+            deadlines[idx] = t
+
+    return deadlines
+
+
+def parse_single_race_deadline(jcd, race_no):
+    url = build_official_url(jcd, race_no=race_no)
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        log(f"[official_single_error] jcd={jcd} race_no={race_no} err={e}")
+        return ""
+
+    lines = normalize_lines(html)
+
+    for i, line in enumerate(lines):
+        if "締切予定時刻" in line:
+            block = " ".join(lines[i:i + 30])
+            times = re.findall(r"\d{2}:\d{2}", block)
+            if times:
+                return times[0]
+
+    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
+    if all_times:
+        return all_times[0]
+
+    return ""
+
+
+def parse_official_deadlines_for_jcd(jcd):
+    official_url = build_official_url(jcd, race_no=1)
+    venue = JCD_NAME_MAP.get(jcd, jcd)
+
+    try:
+        html = fetch_html(official_url)
+    except Exception as e:
+        log(f"[official_deadlines_error] jcd={jcd} venue={venue} err={e}")
+        return jcd, {}
+
+    deadlines = parse_official_deadlines_from_html(html)
+    if deadlines:
+        log(f"[official_deadlines_ok] jcd={jcd} venue={venue} count={len(deadlines)}")
+    else:
+        log(f"[official_deadlines_empty] jcd={jcd} venue={venue}")
 
     return jcd, deadlines
 
@@ -177,7 +240,6 @@ def parse_beforeinfo_for_key(jcd, race_no):
 
     lines = normalize_lines(html)
 
-    # --- 展示タイム取得 ---
     time_candidates = []
     for line in lines:
         if re.fullmatch(r"\d\.\d{2}", line):
@@ -218,7 +280,6 @@ def parse_beforeinfo_for_key(jcd, race_no):
         times = []
         ranks = {}
 
-    # --- 勝率・モーター・ボート取得 ---
     stats = {}
     for lane in range(1, 7):
         stats[lane] = {
@@ -513,22 +574,6 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
     reasons = []
     details = []
 
-    exhibition_positive_score = 0.0
-    EXHIBITION_POSITIVE_CAP = 1.2
-
-    def add_exhibition_positive(points, reason_text=None):
-        nonlocal exhibition_positive_score, reasons
-        remaining = EXHIBITION_POSITIVE_CAP - exhibition_positive_score
-        if remaining <= 0:
-            return 0.0
-
-        add = min(points, remaining)
-        if add > 0:
-            exhibition_positive_score += add
-            if reason_text:
-                reasons.append(reason_text)
-        return add
-
     triplets = selection_triplets(selection)
     heads = []
     seconds = []
@@ -586,9 +631,11 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         if 1 in exhibition_ranks:
             r1 = exhibition_ranks[1]
             if r1 == 1:
-                score += add_exhibition_positive(0.8, "1号艇の展示順位が1位")
+                score += 0.8
+                reasons.append("1号艇の展示順位が1位")
             elif r1 <= 2:
-                score += add_exhibition_positive(0.4, "1号艇の展示順位が上位")
+                score += 0.4
+                reasons.append("1号艇の展示順位が上位")
             elif r1 >= 5:
                 score -= 0.6
                 reasons.append("1号艇の展示順位が下位")
@@ -599,17 +646,21 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             details.append(f"1着展示平均{round(avg_rank, 2)}位")
 
             if avg_rank <= 1.8:
-                score += add_exhibition_positive(1.2, "1着候補の展示順位がかなり良い")
+                score += 1.2
+                reasons.append("1着候補の展示順位がかなり良い")
             elif avg_rank <= 2.5:
-                score += add_exhibition_positive(0.7, "1着候補の展示順位が良い")
+                score += 0.7
+                reasons.append("1着候補の展示順位が良い")
             elif avg_rank <= 3.2:
-                score += add_exhibition_positive(0.3, "1着候補の展示順位がまずまず")
+                score += 0.3
+                reasons.append("1着候補の展示順位がまずまず")
             elif avg_rank >= 4.5:
                 score -= 1.0
                 reasons.append("1着候補の展示順位が悪い")
 
             if all(x <= 3 for x in head_ranks):
-                score += add_exhibition_positive(0.4, "1着候補が展示上位に寄っている")
+                score += 0.4
+                reasons.append("1着候補が展示上位に寄っている")
             elif all(x >= 4 for x in head_ranks):
                 score -= 0.5
                 reasons.append("1着候補が展示下位に寄っている")
@@ -619,7 +670,8 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             avg_second_rank = sum(second_ranks) / len(second_ranks)
             details.append(f"2着展示平均{round(avg_second_rank, 2)}位")
             if avg_second_rank <= 3.0:
-                score += add_exhibition_positive(0.2, "2着候補の展示も悪くない")
+                score += 0.2
+                reasons.append("2着候補の展示も悪くない")
             elif avg_second_rank >= 5.0:
                 score -= 0.2
                 reasons.append("2着候補の展示が弱い")
@@ -629,7 +681,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             avg_third_rank = sum(third_ranks) / len(third_ranks)
             details.append(f"3着展示平均{round(avg_third_rank, 2)}位")
             if avg_third_rank <= 3.5:
-                score += add_exhibition_positive(0.1, None)
+                score += 0.1
             elif avg_third_rank >= 5.2:
                 score -= 0.2
                 reasons.append("3着候補の展示が弱い")
@@ -638,13 +690,16 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         top3_lanes = [lane for lane, _ in sorted_rank_pairs[:3]]
         included_top3 = sum(1 for lane in top3_lanes if lane in all_targets)
         if included_top3 >= 3:
-            score += add_exhibition_positive(0.5, "展示上位3艇が買い目にうまく入っている")
+            score += 0.5
+            reasons.append("展示上位3艇が買い目にうまく入っている")
         elif included_top3 == 2:
-            score += add_exhibition_positive(0.2, "展示上位艇が買い目にある程度入っている")
+            score += 0.2
+            reasons.append("展示上位艇が買い目にある程度入っている")
 
         if top3_lanes:
             if any(h == top3_lanes[0] for h in unique_heads):
-                score += add_exhibition_positive(0.4, "展示1位の艇が1着候補に入っている")
+                score += 0.4
+                reasons.append("展示1位の艇が1着候補に入っている")
 
     if exhibition_times and unique_heads:
         lane_time_map = {}
@@ -669,21 +724,21 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
             if spread >= 0.18:
                 if head_gap_from_top <= 0.03:
-                    score += add_exhibition_positive(0.35, "展示タイム差が大きく1着候補がかなり優勢")
+                    score += 0.35
+                    reasons.append("展示タイム差が大きく1着候補がかなり優勢")
                 elif head_gap_from_top <= 0.06:
-                    score += add_exhibition_positive(0.2, "展示タイム差があり1着候補が上位")
+                    score += 0.2
+                    reasons.append("展示タイム差があり1着候補が上位")
                 elif head_gap_from_top >= 0.12:
                     score -= 0.25
                     reasons.append("展示タイム差がある中で1着候補が遅い")
             elif spread >= 0.12:
                 if head_gap_from_top <= 0.03:
-                    score += add_exhibition_positive(0.18, "展示タイム差の中で1着候補が上位")
+                    score += 0.18
+                    reasons.append("展示タイム差の中で1着候補が上位")
                 elif head_gap_from_top >= 0.10:
                     score -= 0.12
                     reasons.append("展示タイム差の中で1着候補が遅め")
-
-    if exhibition_positive_score > 0:
-        details.append(f"展示プラス上限適用{round(exhibition_positive_score, 2)}")
 
     if boat_stats:
         head_stats = [boat_stats[h] for h in unique_heads if h in boat_stats]
@@ -826,9 +881,36 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
     }
 
 
+def fill_missing_deadlines(rows, deadlines_cache):
+    filled = 0
+
+    for row in rows:
+        venue = row["venue"]
+        race_no = row["race_no"]
+        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+
+        if not jcd:
+            continue
+
+        current = deadlines_cache.get(jcd, {}).get(race_no, "")
+        if current:
+            continue
+
+        single_deadline = parse_single_race_deadline(jcd, race_no)
+        if single_deadline:
+            deadlines_cache.setdefault(jcd, {})[race_no] = single_deadline
+            filled += 1
+            log(f"[official_single_ok] jcd={jcd} venue={venue} race_no={race_no} time={single_deadline}")
+        else:
+            log(f"[official_single_empty] jcd={jcd} venue={venue} race_no={race_no}")
+
+    log(f"[official_single_fill_summary] filled={filled}")
+    return deadlines_cache
+
+
 def fetch_deadlines_parallel(jcds):
     results = {}
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=OFFICIAL_MAX_WORKERS) as ex:
         futures = [ex.submit(parse_official_deadlines_for_jcd, jcd) for jcd in sorted(jcds)]
         for future in as_completed(futures):
             jcd, deadlines = future.result()
@@ -838,7 +920,7 @@ def fetch_deadlines_parallel(jcds):
 
 def fetch_beforeinfo_parallel(keys):
     results = {}
-    with ThreadPoolExecutor(max_workers=16) as ex:
+    with ThreadPoolExecutor(max_workers=BEFOREINFO_MAX_WORKERS) as ex:
         futures = [ex.submit(parse_beforeinfo_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
         for future in as_completed(futures):
             key, info = future.result()
@@ -894,9 +976,11 @@ def build_candidates():
             needed_jcds.add(jcd)
 
     deadlines_cache = fetch_deadlines_parallel(needed_jcds)
+    deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
     filtered_rows = []
     future_keys = set()
+    missing_deadline_rows = []
 
     for row in rows:
         venue = row["venue"]
@@ -908,6 +992,7 @@ def build_candidates():
 
         deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
         if not deadline:
+            missing_deadline_rows.append(f"{venue}{race_no}R")
             continue
 
         row["time"] = deadline
@@ -918,6 +1003,9 @@ def build_candidates():
 
     rows = filtered_rows
     log(f"[deadline_filtered_summary] count={len(rows)} future_beforeinfo_count={len(future_keys)}")
+
+    if missing_deadline_rows:
+        log(f"[missing_deadline_rows] count={len(missing_deadline_rows)} rows={missing_deadline_rows}")
 
     beforeinfo_cache = fetch_beforeinfo_parallel(future_keys) if future_keys else {}
 
@@ -963,6 +1051,11 @@ def build_candidates():
         official_rating_counts[r["rating"]] = official_rating_counts.get(r["rating"], 0) + 1
     log(f"[summary_official_ratings] {official_rating_counts}")
 
+    venue_counts = {}
+    for r in results:
+        venue_counts[r["venue"]] = venue_counts.get(r["venue"], 0) + 1
+    log(f"[summary_venues] {venue_counts}")
+
     results.sort(key=lambda x: (to_minutes(x["time"]), x["venue"], x["race_no_num"]))
     log(f"build_candidates final_count={len(results)}")
     log("========== build_candidates end ==========")
@@ -981,7 +1074,7 @@ def send_to_render(races):
     }
     payload = {"races": races}
 
-    res = SESSION.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=30)
+    res = SESSION.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
     print("status_code =", res.status_code)
     print("response =", res.text)
     res.raise_for_status()
