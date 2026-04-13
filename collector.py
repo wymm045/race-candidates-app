@@ -513,8 +513,21 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
     reasons = []
     details = []
 
-    # 展示由来のプラスだけ別管理
-    exhibition_plus = 0.0
+    exhibition_positive_score = 0.0
+    EXHIBITION_POSITIVE_CAP = 1.2
+
+    def add_exhibition_positive(points, reason_text=None):
+        nonlocal exhibition_positive_score, reasons
+        remaining = EXHIBITION_POSITIVE_CAP - exhibition_positive_score
+        if remaining <= 0:
+            return 0.0
+
+        add = min(points, remaining)
+        if add > 0:
+            exhibition_positive_score += add
+            if reason_text:
+                reasons.append(reason_text)
+        return add
 
     triplets = selection_triplets(selection)
     heads = []
@@ -573,11 +586,9 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         if 1 in exhibition_ranks:
             r1 = exhibition_ranks[1]
             if r1 == 1:
-                exhibition_plus += 0.5
-                reasons.append("1号艇の展示順位が1位")
+                score += add_exhibition_positive(0.8, "1号艇の展示順位が1位")
             elif r1 <= 2:
-                exhibition_plus += 0.25
-                reasons.append("1号艇の展示順位が上位")
+                score += add_exhibition_positive(0.4, "1号艇の展示順位が上位")
             elif r1 >= 5:
                 score -= 0.6
                 reasons.append("1号艇の展示順位が下位")
@@ -588,21 +599,17 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             details.append(f"1着展示平均{round(avg_rank, 2)}位")
 
             if avg_rank <= 1.8:
-                exhibition_plus += 0.8
-                reasons.append("1着候補の展示順位がかなり良い")
+                score += add_exhibition_positive(1.2, "1着候補の展示順位がかなり良い")
             elif avg_rank <= 2.5:
-                exhibition_plus += 0.45
-                reasons.append("1着候補の展示順位が良い")
+                score += add_exhibition_positive(0.7, "1着候補の展示順位が良い")
             elif avg_rank <= 3.2:
-                exhibition_plus += 0.2
-                reasons.append("1着候補の展示順位がまずまず")
+                score += add_exhibition_positive(0.3, "1着候補の展示順位がまずまず")
             elif avg_rank >= 4.5:
                 score -= 1.0
                 reasons.append("1着候補の展示順位が悪い")
 
             if all(x <= 3 for x in head_ranks):
-                exhibition_plus += 0.2
-                reasons.append("1着候補が展示上位に寄っている")
+                score += add_exhibition_positive(0.4, "1着候補が展示上位に寄っている")
             elif all(x >= 4 for x in head_ranks):
                 score -= 0.5
                 reasons.append("1着候補が展示下位に寄っている")
@@ -612,8 +619,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             avg_second_rank = sum(second_ranks) / len(second_ranks)
             details.append(f"2着展示平均{round(avg_second_rank, 2)}位")
             if avg_second_rank <= 3.0:
-                exhibition_plus += 0.1
-                reasons.append("2着候補の展示も悪くない")
+                score += add_exhibition_positive(0.2, "2着候補の展示も悪くない")
             elif avg_second_rank >= 5.0:
                 score -= 0.2
                 reasons.append("2着候補の展示が弱い")
@@ -623,7 +629,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             avg_third_rank = sum(third_ranks) / len(third_ranks)
             details.append(f"3着展示平均{round(avg_third_rank, 2)}位")
             if avg_third_rank <= 3.5:
-                exhibition_plus += 0.05
+                score += add_exhibition_positive(0.1, None)
             elif avg_third_rank >= 5.2:
                 score -= 0.2
                 reasons.append("3着候補の展示が弱い")
@@ -632,16 +638,13 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         top3_lanes = [lane for lane, _ in sorted_rank_pairs[:3]]
         included_top3 = sum(1 for lane in top3_lanes if lane in all_targets)
         if included_top3 >= 3:
-            exhibition_plus += 0.2
-            reasons.append("展示上位3艇が買い目にうまく入っている")
+            score += add_exhibition_positive(0.5, "展示上位3艇が買い目にうまく入っている")
         elif included_top3 == 2:
-            exhibition_plus += 0.08
-            reasons.append("展示上位艇が買い目にある程度入っている")
+            score += add_exhibition_positive(0.2, "展示上位艇が買い目にある程度入っている")
 
         if top3_lanes:
             if any(h == top3_lanes[0] for h in unique_heads):
-                exhibition_plus += 0.15
-                reasons.append("展示1位の艇が1着候補に入っている")
+                score += add_exhibition_positive(0.4, "展示1位の艇が1着候補に入っている")
 
     if exhibition_times and unique_heads:
         lane_time_map = {}
@@ -666,25 +669,21 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
             if spread >= 0.18:
                 if head_gap_from_top <= 0.03:
-                    exhibition_plus += 0.18
-                    reasons.append("展示タイム差が大きく1着候補がかなり優勢")
+                    score += add_exhibition_positive(0.35, "展示タイム差が大きく1着候補がかなり優勢")
                 elif head_gap_from_top <= 0.06:
-                    exhibition_plus += 0.1
-                    reasons.append("展示タイム差があり1着候補が上位")
+                    score += add_exhibition_positive(0.2, "展示タイム差があり1着候補が上位")
                 elif head_gap_from_top >= 0.12:
                     score -= 0.25
                     reasons.append("展示タイム差がある中で1着候補が遅い")
             elif spread >= 0.12:
                 if head_gap_from_top <= 0.03:
-                    exhibition_plus += 0.1
-                    reasons.append("展示タイム差の中で1着候補が上位")
+                    score += add_exhibition_positive(0.18, "展示タイム差の中で1着候補が上位")
                 elif head_gap_from_top >= 0.10:
                     score -= 0.12
                     reasons.append("展示タイム差の中で1着候補が遅め")
 
-    # 展示プラスに上限
-    exhibition_plus = min(exhibition_plus, 1.2)
-    score += exhibition_plus
+    if exhibition_positive_score > 0:
+        details.append(f"展示プラス上限適用{round(exhibition_positive_score, 2)}")
 
     if boat_stats:
         head_stats = [boat_stats[h] for h in unique_heads if h in boat_stats]
