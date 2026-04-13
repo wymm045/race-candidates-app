@@ -226,6 +226,122 @@ def clean_num(text):
         return None
 
 
+def normalize_weather_text(text):
+    if not text:
+        return ""
+    text = text.strip()
+    if "晴" in text:
+        return "晴"
+    if "曇" in text:
+        return "曇"
+    if "雨" in text:
+        return "雨"
+    if "雪" in text:
+        return "雪"
+    return text
+
+
+def attrs_text(el):
+    vals = []
+    for key in ("alt", "title", "aria-label", "data-label"):
+        v = el.get(key)
+        if v:
+            vals.append(str(v))
+    return " ".join(vals)
+
+
+def detect_wind_direction_from_text(text):
+    if not text:
+        return ""
+
+    checks = [
+        "向かい風",
+        "追い風",
+        "左横風",
+        "右横風",
+        "横風",
+        "左追い風",
+        "右追い風",
+        "左向かい風",
+        "右向かい風",
+    ]
+    for k in checks:
+        if k in text:
+            return k
+    return ""
+
+
+def classify_wind_type(direction_text):
+    if not direction_text:
+        return ""
+
+    if "向かい風" in direction_text:
+        return "headwind"
+    if "追い風" in direction_text:
+        return "tailwind"
+    if "横風" in direction_text:
+        return "crosswind"
+    return ""
+
+
+def parse_environment_info(html, soup, lines):
+    joined = " ".join(lines)
+    env = {
+        "weather": "",
+        "wind_speed": None,
+        "wave_height": None,
+        "water_temp": None,
+        "air_temp": None,
+        "wind_direction": "",
+        "wind_type": "",
+        "stabilizer": False,
+    }
+
+    m_air = re.search(r"気温\s*([0-9]+(?:\.[0-9]+)?)℃", joined)
+    if m_air:
+        env["air_temp"] = float(m_air.group(1))
+
+    m_weather = re.search(r"(晴れ?|曇り?|雨|雪)", joined)
+    if m_weather:
+        env["weather"] = normalize_weather_text(m_weather.group(1))
+
+    m_wind = re.search(r"風速\s*([0-9]+(?:\.[0-9]+)?)m", joined)
+    if m_wind:
+        env["wind_speed"] = float(m_wind.group(1))
+
+    m_water = re.search(r"水温\s*([0-9]+(?:\.[0-9]+)?)℃", joined)
+    if m_water:
+        env["water_temp"] = float(m_water.group(1))
+
+    m_wave = re.search(r"波高\s*([0-9]+(?:\.[0-9]+)?)cm", joined)
+    if m_wave:
+        env["wave_height"] = float(m_wave.group(1))
+
+    if "安定板使用" in joined or "安定板" in joined:
+        env["stabilizer"] = True
+
+    direction = detect_wind_direction_from_text(joined)
+
+    if not direction:
+        for el in soup.find_all(True):
+            meta = attrs_text(el)
+            direction = detect_wind_direction_from_text(meta)
+            if direction:
+                break
+
+    if not direction:
+        for el in soup.find_all("img"):
+            src = (el.get("src") or "") + " " + (el.get("data-src") or "")
+            direction = detect_wind_direction_from_text(src)
+            if direction:
+                break
+
+    env["wind_direction"] = direction
+    env["wind_type"] = classify_wind_type(direction)
+
+    return env
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
 
@@ -236,9 +352,21 @@ def parse_beforeinfo_for_key(jcd, race_no):
         return (jcd, race_no), {
             "exhibition": {"times": [], "ranks": {}},
             "boat_stats": {},
+            "environment": {
+                "weather": "",
+                "wind_speed": None,
+                "wave_height": None,
+                "water_temp": None,
+                "air_temp": None,
+                "wind_direction": "",
+                "wind_type": "",
+                "stabilizer": False,
+            },
         }
 
+    soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines(html)
+    environment = parse_environment_info(html, soup, lines)
 
     time_candidates = []
     for line in lines:
@@ -334,6 +462,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
     return (jcd, race_no), {
         "exhibition": {"times": times, "ranks": ranks},
         "boat_stats": stats,
+        "environment": environment,
     }
 
 
@@ -569,7 +698,13 @@ def parse_rating_page(rating_text):
     return rows_fallback
 
 
-def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=None):
+def analyze_candidate(
+    official_rating,
+    selection,
+    exhibition_info,
+    boat_stats=None,
+    environment=None,
+):
     score = 0.0
     reasons = []
     details = []
@@ -627,6 +762,10 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
     if exhibition_times:
         details.append("展示あり")
 
+    head_avg_rank = None
+    head_time_gap_from_top = None
+    exhibition_spread = None
+
     if exhibition_ranks:
         if 1 in exhibition_ranks:
             r1 = exhibition_ranks[1]
@@ -642,19 +781,19 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
 
         head_ranks = [exhibition_ranks[h] for h in unique_heads if h in exhibition_ranks]
         if head_ranks:
-            avg_rank = sum(head_ranks) / len(head_ranks)
-            details.append(f"1着展示平均{round(avg_rank, 2)}位")
+            head_avg_rank = sum(head_ranks) / len(head_ranks)
+            details.append(f"1着展示平均{round(head_avg_rank, 2)}位")
 
-            if avg_rank <= 1.8:
+            if head_avg_rank <= 1.8:
                 score += 1.2
                 reasons.append("1着候補の展示順位がかなり良い")
-            elif avg_rank <= 2.5:
+            elif head_avg_rank <= 2.5:
                 score += 0.7
                 reasons.append("1着候補の展示順位が良い")
-            elif avg_rank <= 3.2:
+            elif head_avg_rank <= 3.2:
                 score += 0.3
                 reasons.append("1着候補の展示順位がまずまず")
-            elif avg_rank >= 4.5:
+            elif head_avg_rank >= 4.5:
                 score -= 1.0
                 reasons.append("1着候補の展示順位が悪い")
 
@@ -715,28 +854,28 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         if head_times and all_times:
             top_time = min(all_times)
             bottom_time = max(all_times)
-            spread = bottom_time - top_time
+            exhibition_spread = bottom_time - top_time
             head_avg_time = sum(head_times) / len(head_times)
-            head_gap_from_top = head_avg_time - top_time
+            head_time_gap_from_top = head_avg_time - top_time
 
             details.append(f"1着展示タイム平均{round(head_avg_time, 2)}")
-            details.append(f"展示差{round(spread, 2)}")
+            details.append(f"展示差{round(exhibition_spread, 2)}")
 
-            if spread >= 0.18:
-                if head_gap_from_top <= 0.03:
+            if exhibition_spread >= 0.18:
+                if head_time_gap_from_top <= 0.03:
                     score += 0.35
                     reasons.append("展示タイム差が大きく1着候補がかなり優勢")
-                elif head_gap_from_top <= 0.06:
+                elif head_time_gap_from_top <= 0.06:
                     score += 0.2
                     reasons.append("展示タイム差があり1着候補が上位")
-                elif head_gap_from_top >= 0.12:
+                elif head_time_gap_from_top >= 0.12:
                     score -= 0.25
                     reasons.append("展示タイム差がある中で1着候補が遅い")
-            elif spread >= 0.12:
-                if head_gap_from_top <= 0.03:
+            elif exhibition_spread >= 0.12:
+                if head_time_gap_from_top <= 0.03:
                     score += 0.18
                     reasons.append("展示タイム差の中で1着候補が上位")
-                elif head_gap_from_top >= 0.10:
+                elif head_time_gap_from_top >= 0.10:
                     score -= 0.12
                     reasons.append("展示タイム差の中で1着候補が遅め")
 
@@ -857,6 +996,116 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
             elif third_motor < 26:
                 score -= 0.08
 
+    env = environment or {}
+    wind_speed = env.get("wind_speed")
+    wave_height = env.get("wave_height")
+    wind_type = env.get("wind_type") or ""
+    wind_direction = env.get("wind_direction") or ""
+    weather = env.get("weather") or ""
+    stabilizer = bool(env.get("stabilizer"))
+
+    if weather:
+        details.append(f"天候{weather}")
+    if wind_speed is not None:
+        details.append(f"風速{wind_speed:g}m")
+    if wind_direction:
+        details.append(f"風向{wind_direction}")
+    if wave_height is not None:
+        details.append(f"波高{wave_height:g}cm")
+    if stabilizer:
+        details.append("安定板あり")
+
+    outer_heads = [h for h in unique_heads if h >= 4]
+    very_outer_heads = [h for h in unique_heads if h >= 5]
+
+    if wind_speed is not None:
+        if wind_speed >= 4:
+            if wind_type == "headwind":
+                if 1 in unique_heads:
+                    score += 0.35
+                    reasons.append("向かい風で1号艇寄り")
+                if 2 in unique_heads and 1 in unique_heads:
+                    score += 0.10
+                if outer_heads:
+                    score -= 0.12
+                    reasons.append("向かい風で外頭は少し不利")
+
+            elif wind_type == "tailwind":
+                if outer_heads:
+                    score += 0.25
+                    reasons.append("追い風で外の一撃候補を少し評価")
+                if 1 in unique_heads and len(unique_heads) == 1:
+                    score -= 0.05
+
+            elif wind_type == "crosswind":
+                if outer_heads:
+                    score -= 0.12
+                    reasons.append("横風で外頭は少し割引")
+
+        if wind_speed >= 6:
+            if 1 in unique_heads:
+                score += 0.15
+                reasons.append("強風で内寄りを少し評価")
+            if very_outer_heads:
+                score -= 0.20
+                reasons.append("強風で大外頭は少し厳しい")
+
+            if head_avg_rank is not None:
+                if head_avg_rank <= 2.5:
+                    score += 0.20
+                    reasons.append("強風なので展示順位上位を強め評価")
+                elif head_avg_rank >= 4.0:
+                    score -= 0.20
+                    reasons.append("強風で展示下位頭は割引")
+
+            if exhibition_spread is not None:
+                if exhibition_spread >= 0.12 and head_time_gap_from_top is not None:
+                    if head_time_gap_from_top <= 0.03:
+                        score += 0.15
+                        reasons.append("強風で展示タイム上位を少し強め評価")
+                    elif head_time_gap_from_top >= 0.10:
+                        score -= 0.12
+                        reasons.append("強風で展示タイム遅め頭は割引")
+
+    if wave_height is not None:
+        if wave_height >= 5:
+            if 1 in unique_heads:
+                score += 0.12
+            if outer_heads:
+                score -= 0.12
+                reasons.append("波高高めで外頭を少し割引")
+
+            if head_avg_rank is not None:
+                if head_avg_rank <= 2.5:
+                    score += 0.12
+                    reasons.append("波高高めで展示上位を少し重視")
+                elif head_avg_rank >= 4.0:
+                    score -= 0.10
+
+        if wave_height >= 7:
+            if 1 in unique_heads:
+                score += 0.10
+            if very_outer_heads:
+                score -= 0.15
+                reasons.append("波高かなり高めで大外頭をさらに割引")
+
+    if stabilizer:
+        if 1 in unique_heads:
+            score += 0.18
+            reasons.append("安定板ありでイン寄りを少し評価")
+        if outer_heads:
+            score -= 0.18
+            reasons.append("安定板ありで外のまくり頭を少し割引")
+
+        if head_avg_rank is not None and head_avg_rank <= 2.5:
+            score += 0.15
+            reasons.append("安定板ありで展示上位を少し重視")
+
+    if wind_speed is not None and wind_speed >= 4 and wind_type == "tailwind":
+        if outer_heads and head_avg_rank is not None and head_avg_rank <= 2.8:
+            score += 0.10
+            reasons.append("追い風×展示上位の外頭候補を軽く加点")
+
     ai_rating = score_to_ai_rating(score)
     final_rank = decide_final_rank(official_rating, score)
 
@@ -878,6 +1127,7 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         "exhibition_rank": exhibition_rank_text,
         "motor_rank": "",
         "ai_detail": ai_detail,
+        "environment": env,
     }
 
 
@@ -1021,8 +1271,15 @@ def build_candidates():
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         boat_stats = beforeinfo.get("boat_stats", {})
+        environment = beforeinfo.get("environment", {})
 
-        analyzed = analyze_candidate(rating, selection, exhibition_info, boat_stats)
+        analyzed = analyze_candidate(
+            rating,
+            selection,
+            exhibition_info,
+            boat_stats,
+            environment,
+        )
 
         candidate = {
             "race_date": today_text(),
