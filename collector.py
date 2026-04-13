@@ -85,7 +85,6 @@ RACELIST_VENUE_SLUG_MAP = {
     "17": "miyajima",
     "22": "fukuoka",
     "23": "karatsu",
-    "24": "omura",
 }
 
 SESSION = requests.Session()
@@ -542,35 +541,10 @@ def parse_racelist_page_all_races(jcd):
     return result
 
 
-def parse_racelist_page_all_races(jcd):
-    url = build_racelist_url(jcd)
-    venue = JCD_NAME_MAP.get(jcd, jcd)
-
-    if not url:
-        return {}
-
-    try:
-        html = fetch_html(url)
-    except Exception as e:
-        log(f"[racelist_page_error] jcd={jcd} venue={venue} err={e}")
-        return {}
-
-    lines = normalize_lines(html)
-    result = {}
-
-    for race_no in range(1, 13):
-        lane_map = parse_racelist_race_from_lines(lines, race_no, jcd, venue)
-        if lane_map:
-            result[race_no] = lane_map
-
-    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
-    return result
-
-
 def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     def race_header_no(text):
         s = str(text).strip()
-        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)\b", s)
+        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)", s)
         if not m:
             return None
         return int(m.group(1))
@@ -600,34 +574,57 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
-    grade_idx = None
-    for i, line in enumerate(block):
-        s = str(line).strip()
-        if "級" in s:
-            grade_idx = i
-            break
+    joined2 = " ".join(block)
+    joined2 = re.sub(r"\s+", " ", joined2)
 
-    if grade_idx is None:
-        log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
-        return {}
-
-    tail = block[grade_idx + 1:]
-
-    tokens = []
-    stop_keywords = [
+    stop_markers = [
         "能力", "今期", "全国", "当地", "モーター", "ボート",
         "2連対率", "3連対率", "勝率", "展示", "ST"
     ]
+    cut_pos = len(joined2)
+    for marker in stop_markers:
+        pos = joined2.find(marker)
+        if pos != -1:
+            cut_pos = min(cut_pos, pos)
+    joined2 = joined2[:cut_pos]
 
-    for raw in tail:
-        s = str(raw).strip()
+    grade_pos = joined2.find("級")
+    if grade_pos == -1:
+        log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
+        return {}
+    joined2 = joined2[grade_pos:]
+
+    joined2 = joined2.replace("過去3期", " ")
+    joined2 = joined2.replace("(", " ").replace(")", " ")
+    joined2 = joined2.replace("（", " ").replace("）", " ")
+    joined2 = re.sub(r"\s+", " ", joined2).strip()
+
+    pattern4 = re.findall(
+        r"\b(A1|A2|B1|B2)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\b",
+        joined2,
+    )
+
+    lane_map = {}
+
+    if len(pattern4) >= 6:
+        for lane, g in enumerate(pattern4[:6], start=1):
+            lane_map[lane] = {
+                "current_class": g[0] if g[0] != "-" else "",
+                "prev1_class": g[1] if g[1] != "-" else "",
+                "prev2_class": g[2] if g[2] != "-" else "",
+                "prev3_class": g[3] if g[3] != "-" else "",
+            }
+
+        log(
+            f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} "
+            f"sample={lane_map.get(1, {})}"
+        )
+        return lane_map
+
+    tokens = []
+    for s in block:
+        s = str(s).strip()
         if not s:
-            continue
-
-        if any(k in s for k in stop_keywords):
-            break
-
-        if "過去3期" in s:
             continue
 
         if re.fullmatch(r"(A1|A2|B1|B2)", s):
@@ -638,42 +635,19 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
             tokens.append(("history", s))
             continue
 
-        # 1行に current と history が両方ある形も拾う
-        m = re.fullmatch(
-            r"(A1|A2|B1|B2)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)",
-            s,
-        )
-        if m:
-            tokens.append(("current", m.group(1)))
-            tokens.append(("history", f"{m.group(2)} {m.group(3)} {m.group(4)}"))
-            continue
-
-    if len(tokens) < 12:
-        log(
-            f"[racelist_race_short] jcd={jcd} venue={venue} race_no={race_no} "
-            f"tokens={len(tokens)}"
-        )
-        return {}
-
-    lane_map = {}
     lane = 1
     i = 0
-
     while i + 1 < len(tokens) and lane <= 6:
         kind1, val1 = tokens[i]
         kind2, val2 = tokens[i + 1]
 
         if kind1 == "current" and kind2 == "history":
-            h_parts = val2.split()
-            prev1 = h_parts[0] if len(h_parts) >= 1 and h_parts[0] != "-" else ""
-            prev2 = h_parts[1] if len(h_parts) >= 2 and h_parts[1] != "-" else ""
-            prev3 = h_parts[2] if len(h_parts) >= 3 and h_parts[2] != "-" else ""
-
+            h = val2.split()
             lane_map[lane] = {
-                "current_class": val1,
-                "prev1_class": prev1,
-                "prev2_class": prev2,
-                "prev3_class": prev3,
+                "current_class": val1 if val1 != "-" else "",
+                "prev1_class": h[0] if len(h) >= 1 and h[0] != "-" else "",
+                "prev2_class": h[1] if len(h) >= 2 and h[1] != "-" else "",
+                "prev3_class": h[2] if len(h) >= 3 and h[2] != "-" else "",
             }
             lane += 1
             i += 2
@@ -692,7 +666,6 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         f"sample={lane_map.get(1, {})}"
     )
     return lane_map
-
 
 def parse_racelist_for_jcd(jcd):
     venue = JCD_NAME_MAP.get(jcd, jcd)
