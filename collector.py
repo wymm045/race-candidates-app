@@ -170,8 +170,8 @@ def build_racelist_url(jcd):
     slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
     if not slug:
         return ""
-    return f"https://racelist.kyotei24.jp/racelist-{slug}-{today_text_dashless()}.html"
-
+    return f"https://kyotei.sakura.ne.jp/racelist-{slug}-{today_text_dashless()}.html"
+    
 def build_racelist_race_url(jcd, race_no):
     slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
     if not slug:
@@ -544,8 +544,8 @@ def extract_class_tokens(lines):
 
     return tokens
 
-def parse_racelist_race_page(jcd, race_no):
-    url = build_racelist_race_url(jcd, race_no)
+def parse_racelist_page_all_races(jcd):
+    url = build_racelist_url(jcd)
     venue = JCD_NAME_MAP.get(jcd, jcd)
 
     if not url:
@@ -554,84 +554,124 @@ def parse_racelist_race_page(jcd, race_no):
     try:
         html = fetch_html(url)
     except Exception as e:
-        log(f"[racelist_race_error] jcd={jcd} venue={venue} race_no={race_no} err={e}")
+        log(f"[racelist_page_error] jcd={jcd} venue={venue} err={e}")
         return {}
 
     lines = normalize_lines(html)
+    result = {}
 
-    # 「級」「過去2期」の近辺だけを見る
-    joined = " | ".join(lines)
+    for race_no in range(1, 13):
+        lane_map = parse_racelist_race_from_lines(lines, race_no, jcd, venue)
+        if lane_map:
+            result[race_no] = lane_map
 
-    if "過去2期" not in joined or "級" not in joined:
-        log(f"[racelist_race_no_labels] jcd={jcd} venue={venue} race_no={race_no}")
+    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
+    return result
+
+
+def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
+    race_label = f"{race_no} R"
+
+    race_idx = None
+    for i, line in enumerate(lines):
+        if str(line).strip() == race_label:
+            race_idx = i
+            break
+
+    if race_idx is None:
+        log(f"[racelist_race_not_found] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
-    current_classes = []
-    past_classes = []
+    next_race_idx = len(lines)
+    for i in range(race_idx + 1, len(lines)):
+        s = str(lines[i]).strip()
+        if re.fullmatch(r"(1[0-2]|[1-9]) R", s):
+            next_race_idx = i
+            break
 
-    # ラベル位置を探す
-    idx_grade = None
-    idx_past = None
-    for i, line in enumerate(lines):
-        if line == "級" and idx_grade is None:
-            idx_grade = i
-        if line == "過去2期" and idx_past is None:
-            idx_past = i
+    block = lines[race_idx:next_race_idx]
+    joined = " | ".join(block)
 
-    # 級は「級」以降から6件拾う
-    if idx_grade is not None:
-        for s in lines[idx_grade: idx_grade + 80]:
-            s = str(s).strip()
-            if re.fullmatch(r"(A1|A2|B1|B2)", s):
-                current_classes.append(s)
-                if len(current_classes) >= 6:
-                    break
+    if "級" not in joined or "(過去3期)" not in joined:
+        log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
+        return {}
 
-    # 過去2期は「過去2期」以降から6件拾う
-    if idx_past is not None:
-        for s in lines[idx_past: idx_past + 120]:
-            s = str(s).strip()
-            if re.fullmatch(r"(A1|A2|B1|B2)/(A1|A2|B1|B2)", s):
-                past_classes.append(s)
-                if len(past_classes) >= 6:
-                    break
+    grade_idx = None
+    for i, line in enumerate(block):
+        if str(line).strip() == "級":
+            grade_idx = i
+            break
 
-    # 保険: ラベル近辺で取れなければページ全体から拾う
-    if len(current_classes) < 6:
-        for s in lines:
-            s = str(s).strip()
-            if re.fullmatch(r"(A1|A2|B1|B2)", s):
-                current_classes.append(s)
-                if len(current_classes) >= 6:
-                    break
+    if grade_idx is None:
+        log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
+        return {}
 
-    if len(past_classes) < 6:
-        for s in lines:
-            s = str(s).strip()
-            if re.fullmatch(r"(A1|A2|B1|B2)/(A1|A2|B1|B2)", s):
-                past_classes.append(s)
-                if len(past_classes) >= 6:
-                    break
+    tokens = []
+    stop_words = {
+        "能力(前期)",
+        "今期 F|L数",
+        "全国 勝率",
+        "2連対率",
+        "3連対率",
+        "(6ヶ月)",
+        "当地 勝率",
+    }
 
-    current_classes = current_classes[:6]
-    past_classes = past_classes[:6]
+    for s in block[grade_idx + 1:]:
+        s = str(s).strip()
 
-    if len(current_classes) < 6 or len(past_classes) < 6:
+        if s in stop_words:
+            break
+
+        if s == "(過去3期)":
+            continue
+
+        if re.fullmatch(r"(A1|A2|B1|B2)", s):
+            tokens.append(("current", s))
+            continue
+
+        if re.fullmatch(r"(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)", s):
+            tokens.append(("history", s))
+            continue
+
+    if len(tokens) < 12:
         log(
             f"[racelist_race_short] jcd={jcd} venue={venue} race_no={race_no} "
-            f"current={len(current_classes)} past={len(past_classes)}"
+            f"tokens={len(tokens)}"
         )
         return {}
 
     lane_map = {}
-    for lane in range(1, 7):
-        cur = current_classes[lane - 1]
-        p1, p2 = past_classes[lane - 1].split("/")
-        lane_map[lane] = {
-            "current_class": cur,
-            "prev1_class": p1,
-            "prev2_class": p2,
-        }
+    lane = 1
+    i = 0
+
+    while i + 1 < len(tokens) and lane <= 6:
+        kind1, val1 = tokens[i]
+        kind2, val2 = tokens[i + 1]
+
+        if kind1 == "current" and kind2 == "history":
+            h_parts = val2.split()
+            prev1 = h_parts[0] if len(h_parts) >= 1 and h_parts[0] != "-" else ""
+            prev2 = h_parts[1] if len(h_parts) >= 2 and h_parts[1] != "-" else ""
+            prev3 = h_parts[2] if len(h_parts) >= 3 and h_parts[2] != "-" else ""
+
+            lane_map[lane] = {
+                "current_class": val1,
+                "prev1_class": prev1,
+                "prev2_class": prev2,
+                "prev3_class": prev3,
+            }
+            lane += 1
+            i += 2
+        else:
+            i += 1
+
+    if len(lane_map) != 6:
+        log(
+            f"[racelist_race_lane_short] jcd={jcd} venue={venue} race_no={race_no} "
+            f"lanes={len(lane_map)}"
+        )
+        return {}
 
     log(
         f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} "
@@ -646,6 +686,9 @@ def parse_racelist_for_jcd(jcd):
     if jcd not in RACELIST_VENUE_SLUG_MAP:
         log(f"[racelist_skip] jcd={jcd} venue={venue}")
         return jcd, {}
+
+    result = parse_racelist_page_all_races(jcd)
+    return jcd, result
 
     result = {}
 
