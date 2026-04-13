@@ -1763,15 +1763,16 @@ def build_candidates():
     rows = valid_rows
     log(f"[selection_clean_summary] count={len(rows)}")
 
-    needed_jcds = set()
-    for row in rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if jcd:
-            needed_jcds.add(jcd)
+  needed_jcds = set()
+for row in rows:
+    jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+    if jcd:
+        needed_jcds.add(jcd)
 
-    racelist_cache = fetch_racelist_parallel(needed_jcds)
+　　racelist_cache = {}
+　　log("[racelist_parallel] skipped manually")
 
-    deadlines_cache = fetch_deadlines_parallel(needed_jcds)
+　　deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
     filtered_rows = []
