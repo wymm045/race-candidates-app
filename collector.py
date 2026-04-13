@@ -663,7 +663,6 @@ def parse_racelist_page_all_races(jcd):
 
 
 def parse_racelist_for_jcd(jcd):
-
     venue = JCD_NAME_MAP.get(jcd, jcd)
 
     if jcd not in RACELIST_VENUE_SLUG_MAP:
@@ -906,13 +905,29 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
 
 
 def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map):
+    exhibition_info = exhibition_info or {}
+    boat_stats = boat_stats or {}
+    environment = environment or {}
+    class_history_map = class_history_map or {}
+
     exhibition_times = exhibition_info.get("times", []) or []
     exhibition_ranks = exhibition_info.get("ranks", {}) or {}
 
     has_exhibition_times = len(exhibition_times) == 6
     has_exhibition_ranks = len(exhibition_ranks) == 6
+    has_boat_stats = any(bool(boat_stats.get(lane)) for lane in range(1, 7))
+    has_class_history = any(bool(class_history_map.get(lane)) for lane in range(1, 7))
+    has_environment = any(
+        [
+            environment.get("weather"),
+            environment.get("wind_speed") is not None,
+            environment.get("wave_height") is not None,
+            environment.get("wind_direction"),
+            environment.get("stabilizer"),
+        ]
+    )
 
-    if not has_exhibition_times and not has_exhibition_ranks:
+    if not has_exhibition_times and not has_exhibition_ranks and not has_boat_stats and not has_class_history and not has_environment:
         return {
             "ai_selection": "",
             "ai_confidence": "",
@@ -928,11 +943,24 @@ def generate_ai_selection(exhibition_info, boat_stats, environment, class_histor
     )
 
     sorted_lanes = sorted(lane_scores.items(), key=lambda x: (-x[1], x[0]))
-    top_lanes = [lane for lane, _ in sorted_lanes]
+    top_lanes = [lane for lane, _score in sorted_lanes]
 
-    first_candidates = top_lanes[:3]
-    second_candidates = top_lanes[:4]
-    third_candidates = top_lanes[:5]
+    if len(top_lanes) < 3:
+        return {
+            "ai_selection": "",
+            "ai_confidence": "",
+            "ai_lane_scores": lane_scores,
+            "ai_lane_score_text": "",
+        }
+
+    if has_exhibition_times or has_exhibition_ranks:
+        first_candidates = top_lanes[:3]
+        second_candidates = top_lanes[:4]
+        third_candidates = top_lanes[:5]
+    else:
+        first_candidates = top_lanes[:2]
+        second_candidates = top_lanes[:4]
+        third_candidates = top_lanes[:5]
 
     triplets = []
     scored_triplets = []
@@ -955,14 +983,25 @@ def generate_ai_selection(exhibition_info, boat_stats, environment, class_histor
 
     top_score = sorted_lanes[0][1] if sorted_lanes else 0.0
     second_score = sorted_lanes[1][1] if len(sorted_lanes) >= 2 else top_score
-    confidence_gap = round(top_score - second_score, 2)
+    third_score = sorted_lanes[2][1] if len(sorted_lanes) >= 3 else second_score
 
-    if confidence_gap >= 0.8:
-        confidence = "A"
-    elif confidence_gap >= 0.35:
-        confidence = "B"
+    confidence_gap = round(top_score - second_score, 2)
+    head_gap_3 = round(top_score - third_score, 2)
+
+    if has_exhibition_times or has_exhibition_ranks:
+        if confidence_gap >= 0.8:
+            confidence = "A"
+        elif confidence_gap >= 0.35:
+            confidence = "B"
+        else:
+            confidence = "C"
     else:
-        confidence = "C"
+        if confidence_gap >= 0.9 and head_gap_3 >= 1.2:
+            confidence = "B"
+        elif confidence_gap >= 0.35:
+            confidence = "C"
+        else:
+            confidence = "C"
 
     lane_score_text = " / ".join([f"{lane}:{round(score, 2)}" for lane, score in sorted_lanes])
 
