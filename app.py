@@ -3057,38 +3057,44 @@ def history_detail(race_date):
 
 @app.route("/api/import_candidates", methods=["POST"])
 def import_candidates():
-    if not is_valid_import_token(request):
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    try:
+        if not is_valid_import_token(request):
+            log("import_candidates: unauthorized")
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-    data = request.get_json(silent=True) or {}
-    races = data.get("races", [])
+        data = request.get_json(silent=True) or {}
+        races = data.get("races", [])
 
-    if not isinstance(races, list):
-        return jsonify({"ok": False, "error": "races must be a list"}), 400
+        log(f"import_candidates: received type={type(races).__name__}")
 
-    required_keys = {
-        "race_date",
-        "time",
-        "venue",
-        "race_no",
-        "race_no_num",
-        "rating",
-        "bet_type",
-        "selection",
-        "amount",
-    }
+        if not isinstance(races, list):
+            log("import_candidates: races is not list")
+            return jsonify({"ok": False, "error": "races must be a list"}), 400
 
-    cleaned = []
-    for i, r in enumerate(races):
-        if not isinstance(r, dict):
-            return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
+        required_keys = {
+            "race_date",
+            "time",
+            "venue",
+            "race_no",
+            "race_no_num",
+            "rating",
+            "bet_type",
+            "selection",
+            "amount",
+        }
 
-        missing = required_keys - set(r.keys())
-        if missing:
-            return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+        cleaned = []
+        for i, r in enumerate(races):
+            if not isinstance(r, dict):
+                log(f"import_candidates: row {i} is not dict")
+                return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
 
-        cleaned.append(
-            {
+            missing = required_keys - set(r.keys())
+            if missing:
+                log(f"import_candidates: row {i} missing keys={sorted(list(missing))}")
+                return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+
+            cleaned_row = {
                 "race_date": str(r["race_date"]).strip(),
                 "time": str(r["time"]).strip(),
                 "venue": str(r["venue"]).strip(),
@@ -3098,6 +3104,7 @@ def import_candidates():
                 "bet_type": str(r["bet_type"]).strip(),
                 "selection": str(r["selection"]).strip(),
                 "amount": int(r["amount"]),
+
                 "ai_score": safe_float(r.get("ai_score", 0), 0),
                 "ai_rating": str(r.get("ai_rating", "")).strip(),
                 "ai_label": str(r.get("ai_label", "")).strip(),
@@ -3107,32 +3114,46 @@ def import_candidates():
                 "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
                 "motor_rank": str(r.get("motor_rank", "")).strip(),
                 "ai_detail": str(r.get("ai_detail", "")).strip(),
+
                 "ai_selection": str(r.get("ai_selection", "")).strip(),
                 "ai_confidence": safe_float(r.get("ai_confidence", 0), 0),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
                 "class_history_text": str(r.get("class_history_text", "")).strip(),
             }
+
+            cleaned.append(cleaned_row)
+
+        if not cleaned:
+            log("import_candidates: races is empty")
+            return jsonify({"ok": False, "error": "races is empty"}), 400
+
+        race_dates = sorted(set(r["race_date"] for r in cleaned))
+        if len(race_dates) != 1:
+            log(f"import_candidates: multiple race_dates={race_dates}")
+            return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+
+        log(f"import_candidates: cleaned_count={len(cleaned)} first_keys={list(cleaned[0].keys())}")
+        log(f"import_candidates: first_row_sample={json.dumps(cleaned[0], ensure_ascii=False)[:1000]}")
+
+        result = replace_today_candidates(cleaned)
+
+        log(f"import api success count={len(cleaned)} result={result}")
+        return jsonify(
+            {
+                "ok": True,
+                "received": len(cleaned),
+                "inserted": result["inserted"],
+                "updated": result["updated"],
+                "deleted": result["deleted"],
+                "imported_at": jst_now_str(),
+            }
         )
 
-    if not cleaned:
-        return jsonify({"ok": False, "error": "races is empty"}), 400
-
-    race_dates = sorted(set(r["race_date"] for r in cleaned))
-    if len(race_dates) != 1:
-        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-
-    result = replace_today_candidates(cleaned)
-    log(f"import api success count={len(cleaned)}")
-    return jsonify(
-        {
-            "ok": True,
-            "received": len(cleaned),
-            "inserted": result["inserted"],
-            "updated": result["updated"],
-            "deleted": result["deleted"],
-            "imported_at": jst_now_str(),
-        }
-    )
+    except Exception as e:
+        log(f"import_candidates ERROR: {repr(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": repr(e)}), 500
 
 
 init_db()
