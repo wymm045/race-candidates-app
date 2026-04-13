@@ -42,7 +42,7 @@ RETRY_SLEEP_SEC = 1.2
 OFFICIAL_MAX_WORKERS = 6
 BEFOREINFO_MAX_WORKERS = 12
 RACELIST_MAX_WORKERS = 6
-USE_RACELIST = False
+USE_RACELIST = True
 
 JCD_NAME_MAP = {
     "02": "戸田",
@@ -693,16 +693,6 @@ def parse_racelist_for_jcd(jcd):
     result = parse_racelist_page_all_races(jcd)
     return jcd, result
 
-    result = {}
-
-    for race_no in range(1, 13):
-        lane_map = parse_racelist_race_page(jcd, race_no)
-        if lane_map:
-            result[race_no] = lane_map
-
-    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
-    return jcd, result
-
 
 def normalize_triplet(a, b, c):
     if a == b or a == c or b == c:
@@ -765,17 +755,20 @@ def class_history_score(class_history):
     cur = class_history.get("current_class", "")
     prev1 = class_history.get("prev1_class", "")
     prev2 = class_history.get("prev2_class", "")
+    prev3 = class_history.get("prev3_class", "")
 
     score = 0.0
     score += class_point(cur) * 1.0
     score += class_point(prev1) * 0.7
     score += class_point(prev2) * 0.5
+    score += class_point(prev3) * 0.35
 
-    pattern = [cur, prev1, prev2]
-    if pattern == ["A1", "A1", "A1"]:
+    pattern = [cur, prev1, prev2, prev3]
+
+    if pattern[:3] == ["A1", "A1", "A1"]:
         score += 0.55
-    elif pattern[0] == "A1" and pattern[1] == "A1":
-        score += 0.22
+    if pattern[:4] == ["A1", "A1", "A1", "A1"]:
+        score += 0.20
 
     if cur == "A1" and prev1 in {"A2", "B1"}:
         score += 0.12
@@ -793,7 +786,8 @@ def make_class_history_text(class_history):
     cur = class_history.get("current_class", "")
     prev1 = class_history.get("prev1_class", "")
     prev2 = class_history.get("prev2_class", "")
-    parts = [x for x in [cur, prev1, prev2] if x]
+    prev3 = class_history.get("prev3_class", "")
+    parts = [x for x in [cur, prev1, prev2, prev3] if x]
     return " / ".join(parts)
 
 
@@ -1805,10 +1799,10 @@ def build_candidates():
             needed_jcds.add(jcd)
 
     if USE_RACELIST:
-        racelist_cache = fetch_racelist_parallel(needed_jcds)
+    racelist_cache = fetch_racelist_parallel(needed_jcds)
     else:
-        racelist_cache = {}
-        log("[racelist_parallel] skipped by USE_RACELIST=False")
+    racelist_cache = {}
+    log("[racelist_parallel] skipped by USE_RACELIST=False")
 
     deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
