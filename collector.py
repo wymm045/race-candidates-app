@@ -571,9 +571,9 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     block = lines[race_idx:next_race_idx]
     joined = " | ".join(block)
 
-    if "級" not in joined or "過去3期" not in joined:
-        log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
-        return {}
+    if "級" not in joined:
+    log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
+    return {}
 
     grade_idx = None
     for i, line in enumerate(block):
