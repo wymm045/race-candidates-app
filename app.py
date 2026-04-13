@@ -413,6 +413,17 @@ def init_db():
     for sql in alter_sqls:
         cur.execute(sql)
 
+    try:
+        cur.execute(
+            """
+            ALTER TABLE races
+            ALTER COLUMN ai_confidence TYPE TEXT
+            USING ai_confidence::TEXT
+            """
+        )
+    except Exception as e:
+        log(f"ai_confidence type alter skipped: {e}")
+
     conn.commit()
     cur.close()
     conn.close()
