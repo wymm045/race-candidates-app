@@ -386,7 +386,7 @@ def init_db():
             motor_rank TEXT DEFAULT '',
             ai_detail TEXT DEFAULT '',
             ai_selection TEXT DEFAULT '',
-            ai_confidence REAL DEFAULT 0,
+            ai_confidence TEXT DEFAULT '',
             ai_lane_score_text TEXT DEFAULT '',
             class_history_text TEXT DEFAULT '',
             UNIQUE(race_date, venue, race_no, selection)
@@ -406,7 +406,7 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT DEFAULT ''",
-        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence REAL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT DEFAULT ''",
     ]
@@ -473,6 +473,7 @@ def replace_today_candidates(races):
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
                 %s, %s, %s, %s
             )
             ON CONFLICT (race_date, venue, race_no, selection)
@@ -527,7 +528,7 @@ def replace_today_candidates(races):
                 str(r.get("motor_rank", "")).strip(),
                 str(r.get("ai_detail", "")).strip(),
                 str(r.get("ai_selection", "")).strip(),
-                safe_float(r.get("ai_confidence", 0), 0),
+                str(r.get("ai_confidence", "")).strip(),
                 str(r.get("ai_lane_score_text", "")).strip(),
                 str(r.get("class_history_text", "")).strip(),
             ),
@@ -903,7 +904,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
             ai_selection_html = render_selection_chips(r.get("ai_selection", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
-            ai_confidence_value = safe_float(r.get("ai_confidence"), 0)
+            ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
             class_history_text = display_text(r.get("class_history_text"), "未取得")
             lane_score_text = display_text(r.get("ai_lane_score_text"), "未取得")
             final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -956,7 +957,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
                 <div class="row row-selection-highlight"><span class="label">公式買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row row-selection-highlight ai-selection-row"><span class="label">AI買い目</span><span class="value">{ai_selection_html}</span></div>
                 <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
-                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value:.1f}%</span></div>
+                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
                 <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_text}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
@@ -1331,7 +1332,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
             ai_selection_html = render_selection_chips(r.get("ai_selection", ""))
             ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
             ai_score_value = safe_float(r.get("ai_score"), 0)
-            ai_confidence_value = safe_float(r.get("ai_confidence"), 0)
+            ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
             class_history_text = display_text(r.get("class_history_text"), "未取得")
             lane_score_text = display_text(r.get("ai_lane_score_text"), "未取得")
             final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -1406,7 +1407,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
               <div class="info-box">
                 <div class="row row-selection-highlight"><span class="label">公式買い目</span><span class="value">{selection_html}</span></div>
                 <div class="row row-selection-highlight ai-selection-row"><span class="label">AI買い目</span><span class="value">{ai_selection_html}</span></div>
-                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value:.1f}%</span></div>
+                <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
                 <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_text}</span></div>
                 <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
                 <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
@@ -3108,7 +3109,7 @@ def import_candidates():
                 "motor_rank": str(r.get("motor_rank", "")).strip(),
                 "ai_detail": str(r.get("ai_detail", "")).strip(),
                 "ai_selection": str(r.get("ai_selection", "")).strip(),
-                "ai_confidence": safe_float(r.get("ai_confidence", 0), 0),
+                "ai_confidence": str(r.get("ai_confidence", "")).strip(),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
                 "class_history_text": str(r.get("class_history_text", "")).strip(),
             }
