@@ -923,7 +923,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         message_class = "message-success" if message_type == "success" else "message-error"
         message_html = f'<div class="message {message_class}">{message_text}</div>'
     else:
-        message_html = 
+        message_html = ""
     checked_show_closed = "checked" if show_closed else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
     cards_html = ''.join([build_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
@@ -1020,7 +1020,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
         message_class = "message-success" if message_type == "success" else "message-error"
         message_html = f'<div class="message {message_class}">{message_text}</div>'
     else:
-        message_html = 
+        message_html = ""
     if not races:
         body = '<div class="empty">データがありません</div>'
     else:
