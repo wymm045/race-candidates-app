@@ -571,7 +571,6 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     block = lines[race_idx:next_race_idx]
     joined = " | ".join(block)
 
-    # 「級」が見つからないときだけ失敗扱い
     if "級" not in joined:
         log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
@@ -592,23 +591,19 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     for s in block[grade_idx + 1:]:
         s = str(s).strip()
 
-        # 次の項目っぽい見出しが来たら終了
         if any(x in s for x in [
             "能力", "今期", "全国", "当地", "モーター", "ボート",
             "2連対率", "3連対率", "勝率"
         ]):
             break
 
-        # ラベル行は飛ばす
         if "過去3期" in s:
             continue
 
-        # 現級
         if re.fullmatch(r"(A1|A2|B1|B2)", s):
             tokens.append(("current", s))
             continue
 
-        # 過去3期
         if re.fullmatch(r"(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)", s):
             tokens.append(("history", s))
             continue
@@ -657,7 +652,6 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         f"sample={lane_map.get(1, {})}"
     )
     return lane_map
-
 def parse_racelist_for_jcd(jcd):
     venue = JCD_NAME_MAP.get(jcd, jcd)
 
