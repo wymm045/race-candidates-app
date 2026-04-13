@@ -470,6 +470,9 @@ def replace_today_candidates(races):
             },
         )
 
+        exhibition_json = json.dumps(r.get("exhibition", []), ensure_ascii=False)
+        ai_reasons_json = json.dumps(r.get("ai_reasons", []), ensure_ascii=False)
+
         cur.execute(
             """
             INSERT INTO races
@@ -499,15 +502,51 @@ def replace_today_candidates(races):
                 ai_rating = EXCLUDED.ai_rating,
                 ai_label = EXCLUDED.ai_label,
                 final_rank = EXCLUDED.final_rank,
-                ai_reasons = EXCLUDED.ai_reasons,
-                exhibition = EXCLUDED.exhibition,
-                exhibition_rank = EXCLUDED.exhibition_rank,
-                motor_rank = EXCLUDED.motor_rank,
-                ai_detail = EXCLUDED.ai_detail,
-                ai_selection = EXCLUDED.ai_selection,
-                ai_confidence = EXCLUDED.ai_confidence,
-                ai_lane_score_text = EXCLUDED.ai_lane_score_text,
-                class_history_text = EXCLUDED.class_history_text,
+                ai_reasons = CASE
+                    WHEN EXCLUDED.ai_reasons IS NOT NULL AND EXCLUDED.ai_reasons <> '[]'
+                    THEN EXCLUDED.ai_reasons
+                    ELSE races.ai_reasons
+                END,
+                exhibition = CASE
+                    WHEN EXCLUDED.exhibition IS NOT NULL AND EXCLUDED.exhibition <> '[]'
+                    THEN EXCLUDED.exhibition
+                    ELSE races.exhibition
+                END,
+                exhibition_rank = CASE
+                    WHEN COALESCE(EXCLUDED.exhibition_rank, '') <> ''
+                    THEN EXCLUDED.exhibition_rank
+                    ELSE races.exhibition_rank
+                END,
+                motor_rank = CASE
+                    WHEN COALESCE(EXCLUDED.motor_rank, '') <> ''
+                    THEN EXCLUDED.motor_rank
+                    ELSE races.motor_rank
+                END,
+                ai_detail = CASE
+                    WHEN COALESCE(EXCLUDED.ai_detail, '') <> ''
+                    THEN EXCLUDED.ai_detail
+                    ELSE races.ai_detail
+                END,
+                ai_selection = CASE
+                    WHEN COALESCE(EXCLUDED.ai_selection, '') <> ''
+                    THEN EXCLUDED.ai_selection
+                    ELSE races.ai_selection
+                END,
+                ai_confidence = CASE
+                    WHEN COALESCE(EXCLUDED.ai_confidence, '') <> ''
+                    THEN EXCLUDED.ai_confidence
+                    ELSE races.ai_confidence
+                END,
+                ai_lane_score_text = CASE
+                    WHEN COALESCE(EXCLUDED.ai_lane_score_text, '') <> ''
+                    THEN EXCLUDED.ai_lane_score_text
+                    ELSE races.ai_lane_score_text
+                END,
+                class_history_text = CASE
+                    WHEN COALESCE(EXCLUDED.class_history_text, '') <> ''
+                    THEN EXCLUDED.class_history_text
+                    ELSE races.class_history_text
+                END,
                 purchased = races.purchased,
                 hit = races.hit,
                 payout = races.payout,
@@ -533,8 +572,8 @@ def replace_today_candidates(races):
                 str(r.get("ai_rating", "")).strip(),
                 str(r.get("ai_label", "")).strip(),
                 str(r.get("final_rank", "")).strip(),
-                json.dumps(r.get("ai_reasons", []), ensure_ascii=False),
-                json.dumps(r.get("exhibition", []), ensure_ascii=False),
+                ai_reasons_json,
+                exhibition_json,
                 str(r.get("exhibition_rank", "")).strip(),
                 str(r.get("motor_rank", "")).strip(),
                 str(r.get("ai_detail", "")).strip(),
@@ -544,6 +583,7 @@ def replace_today_candidates(races):
                 str(r.get("class_history_text", "")).strip(),
             ),
         )
+
         row = cur.fetchone()
         if row and row[0]:
             inserted += 1
@@ -589,7 +629,6 @@ def replace_today_candidates(races):
         f"replace_today_candidates race_date={race_date} inserted={inserted} updated={updated} deleted={deleted}"
     )
     return {"inserted": inserted, "updated": updated, "deleted": deleted}
-
 
 def get_races_by_date(race_date):
     conn = db_connect()
