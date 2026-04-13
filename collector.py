@@ -543,11 +543,19 @@ def parse_racelist_page_all_races(jcd):
 
 
 def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
-    race_label = f"{race_no} R"
+    def is_race_header(text, target_race_no=None):
+        s = str(text).strip()
+        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)\b", s)
+        if not m:
+            return False
+        found_no = int(m.group(1))
+        if target_race_no is None:
+            return True
+        return found_no == target_race_no
 
     race_idx = None
     for i, line in enumerate(lines):
-        if str(line).strip() == race_label:
+        if is_race_header(line, race_no):
             race_idx = i
             break
 
@@ -557,21 +565,21 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
 
     next_race_idx = len(lines)
     for i in range(race_idx + 1, len(lines)):
-        s = str(lines[i]).strip()
-        if re.fullmatch(r"(1[0-2]|[1-9]) R", s):
+        if is_race_header(lines[i], None):
             next_race_idx = i
             break
 
     block = lines[race_idx:next_race_idx]
     joined = " | ".join(block)
 
-    if "級" not in joined or "(過去3期)" not in joined:
+    if "級" not in joined or "過去3期" not in joined:
         log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
     grade_idx = None
     for i, line in enumerate(block):
-        if str(line).strip() == "級":
+        s = str(line).strip()
+        if s == "級" or s.startswith("級 "):
             grade_idx = i
             break
 
@@ -588,6 +596,10 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         "3連対率",
         "(6ヶ月)",
         "当地 勝率",
+        "当地2連率",
+        "当地3連率",
+        "モーターNO",
+        "ボートNO",
     }
 
     for s in block[grade_idx + 1:]:
@@ -596,7 +608,7 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         if s in stop_words:
             break
 
-        if s == "(過去3期)":
+        if "過去3期" in s:
             continue
 
         if re.fullmatch(r"(A1|A2|B1|B2)", s):
