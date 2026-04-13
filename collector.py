@@ -542,12 +542,43 @@ def parse_racelist_page_all_races(jcd):
     return result
 
 
+def parse_racelist_page_all_races(jcd):
+    url = build_racelist_url(jcd)
+    venue = JCD_NAME_MAP.get(jcd, jcd)
+
+    if not url:
+        return {}
+
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        log(f"[racelist_page_error] jcd={jcd} venue={venue} err={e}")
+        return {}
+
+    lines = normalize_lines(html)
+    result = {}
+
+    for race_no in range(1, 13):
+        lane_map = parse_racelist_race_from_lines(lines, race_no, jcd, venue)
+        if lane_map:
+            result[race_no] = lane_map
+
+    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
+    return result
+
+
 def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
-    race_label = f"{race_no} R"
+    def race_header_no(text):
+        s = str(text).strip()
+        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)\b", s)
+        if not m:
+            return None
+        return int(m.group(1))
 
     race_idx = None
     for i, line in enumerate(lines):
-        if str(line).strip() == race_label:
+        n = race_header_no(line)
+        if n == race_no:
             race_idx = i
             break
 
@@ -557,21 +588,22 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
 
     next_race_idx = len(lines)
     for i in range(race_idx + 1, len(lines)):
-        s = str(lines[i]).strip()
-        if re.fullmatch(r"(1[0-2]|[1-9]) R", s):
+        n = race_header_no(lines[i])
+        if n is not None:
             next_race_idx = i
             break
 
     block = lines[race_idx:next_race_idx]
     joined = " | ".join(block)
 
-    if "級" not in joined or "(過去3期)" not in joined:
+    if "級" not in joined:
         log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
     grade_idx = None
     for i, line in enumerate(block):
-        if str(line).strip() == "級":
+        s = str(line).strip()
+        if "級" in s:
             grade_idx = i
             break
 
@@ -579,24 +611,23 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
         log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
+    tail = block[grade_idx + 1:]
+
     tokens = []
-    stop_words = {
-        "能力(前期)",
-        "今期 F|L数",
-        "全国 勝率",
-        "2連対率",
-        "3連対率",
-        "(6ヶ月)",
-        "当地 勝率",
-    }
+    stop_keywords = [
+        "能力", "今期", "全国", "当地", "モーター", "ボート",
+        "2連対率", "3連対率", "勝率", "展示", "ST"
+    ]
 
-    for s in block[grade_idx + 1:]:
-        s = str(s).strip()
+    for raw in tail:
+        s = str(raw).strip()
+        if not s:
+            continue
 
-        if s in stop_words:
+        if any(k in s for k in stop_keywords):
             break
 
-        if s == "(過去3期)":
+        if "過去3期" in s:
             continue
 
         if re.fullmatch(r"(A1|A2|B1|B2)", s):
@@ -605,6 +636,16 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
 
         if re.fullmatch(r"(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)", s):
             tokens.append(("history", s))
+            continue
+
+        # 1行に current と history が両方ある形も拾う
+        m = re.fullmatch(
+            r"(A1|A2|B1|B2)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)",
+            s,
+        )
+        if m:
+            tokens.append(("current", m.group(1)))
+            tokens.append(("history", f"{m.group(2)} {m.group(3)} {m.group(4)}"))
             continue
 
     if len(tokens) < 12:
