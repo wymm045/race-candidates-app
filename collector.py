@@ -17,7 +17,7 @@ RENDER_IMPORT_URL = os.environ.get(
 ).strip()
 IMPORT_TOKEN = os.environ.get(
     "IMPORT_TOKEN",
-    "abc123456789-super-secret",
+    "race-token-2026",
 ).strip()
 
 HEADERS = {
