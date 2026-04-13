@@ -41,6 +41,7 @@ RETRY_SLEEP_SEC = 1.2
 
 OFFICIAL_MAX_WORKERS = 6
 BEFOREINFO_MAX_WORKERS = 12
+RACELIST_MAX_WORKERS = 6
 
 JCD_NAME_MAP = {
     "02": "戸田",
@@ -72,6 +73,20 @@ RATING_PAGE_MAP = {
     "★★★★★": "s5",
 }
 
+RACELIST_VENUE_SLUG_MAP = {
+    "01": "kiryu",
+    "03": "edogawa",
+    "04": "heiwajima",
+    "06": "hamanako",
+    "14": "naruto",
+    "15": "marugame",
+    "16": "kojima",
+    "17": "miyajima",
+    "22": "fukuoka",
+    "23": "karatsu",
+    "24": "omura",
+}
+
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
@@ -90,6 +105,10 @@ def today_str():
 
 def today_text():
     return jst_now().strftime("%Y-%m-%d")
+
+
+def today_text_dashless():
+    return jst_now().strftime("%Y%m%d")
 
 
 def current_hhmm():
@@ -148,6 +167,18 @@ def build_beforeinfo_url(jcd, race_no):
     qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
     return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
 
+
+def build_racelist_url(jcd):
+    slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
+    if not slug:
+        return ""
+    return f"https://racelist.kyotei24.jp/racelist-{slug}-{today_text_dashless()}.html"
+
+def build_racelist_race_url(jcd, race_no):
+    slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
+    if not slug:
+        return ""
+    return f"https://racelist.kyotei24.jp/racelist-{slug}-{today_text_dashless()}-{race_no}.html"
 
 def parse_official_deadlines_from_html(html):
     lines = normalize_lines(html)
@@ -342,6 +373,25 @@ def parse_environment_info(html, soup, lines):
     return env
 
 
+def summarize_environment_for_log(env):
+    parts = []
+    if env.get("weather"):
+        parts.append(f"weather={env['weather']}")
+    if env.get("wind_speed") is not None:
+        parts.append(f"wind={env['wind_speed']}m")
+    if env.get("wind_direction"):
+        parts.append(f"dir={env['wind_direction']}")
+    else:
+        parts.append("dir=-")
+    if env.get("wave_height") is not None:
+        parts.append(f"wave={env['wave_height']}cm")
+    if env.get("stabilizer"):
+        parts.append("stb=Y")
+    else:
+        parts.append("stb=N")
+    return " ".join(parts)
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
 
@@ -459,11 +509,155 @@ def parse_beforeinfo_for_key(jcd, race_no):
         if s["boat2"] is not None and s["boat2"] > 100:
             s["boat2"] = None
 
+    log(
+        f"[beforeinfo_env] jcd={jcd} race_no={race_no} "
+        f"times={len(times)} ranks={len(ranks)} {summarize_environment_for_log(environment)}"
+    )
+
     return (jcd, race_no), {
         "exhibition": {"times": times, "ranks": ranks},
         "boat_stats": stats,
         "environment": environment,
     }
+
+
+def extract_class_tokens(lines):
+    tokens = []
+    for line in lines:
+        s = str(line).strip()
+
+        if re.fullmatch(r"(A1|A2|B1|B2)", s):
+            tokens.append(s)
+            continue
+
+        if re.fullmatch(r"(A1|A2|B1|B2)/(A1|A2|B1|B2)", s):
+            tokens.append(s)
+            continue
+
+        m = re.search(r"\b(A1|A2|B1|B2)\b", s)
+        if m:
+            tokens.append(m.group(1))
+            continue
+
+        m2 = re.search(r"\b(A1|A2|B1|B2)/(A1|A2|B1|B2)\b", s)
+        if m2:
+            tokens.append(m2.group(0))
+            continue
+
+    return tokens
+
+def parse_racelist_race_page(jcd, race_no):
+    url = build_racelist_race_url(jcd, race_no)
+    venue = JCD_NAME_MAP.get(jcd, jcd)
+
+    if not url:
+        return {}
+
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        log(f"[racelist_race_error] jcd={jcd} venue={venue} race_no={race_no} err={e}")
+        return {}
+
+    lines = normalize_lines(html)
+
+    # 「級」「過去2期」の近辺だけを見る
+    joined = " | ".join(lines)
+
+    if "過去2期" not in joined or "級" not in joined:
+        log(f"[racelist_race_no_labels] jcd={jcd} venue={venue} race_no={race_no}")
+        return {}
+
+    current_classes = []
+    past_classes = []
+
+    # ラベル位置を探す
+    idx_grade = None
+    idx_past = None
+    for i, line in enumerate(lines):
+        if line == "級" and idx_grade is None:
+            idx_grade = i
+        if line == "過去2期" and idx_past is None:
+            idx_past = i
+
+    # 級は「級」以降から6件拾う
+    if idx_grade is not None:
+        for s in lines[idx_grade: idx_grade + 80]:
+            s = str(s).strip()
+            if re.fullmatch(r"(A1|A2|B1|B2)", s):
+                current_classes.append(s)
+                if len(current_classes) >= 6:
+                    break
+
+    # 過去2期は「過去2期」以降から6件拾う
+    if idx_past is not None:
+        for s in lines[idx_past: idx_past + 120]:
+            s = str(s).strip()
+            if re.fullmatch(r"(A1|A2|B1|B2)/(A1|A2|B1|B2)", s):
+                past_classes.append(s)
+                if len(past_classes) >= 6:
+                    break
+
+    # 保険: ラベル近辺で取れなければページ全体から拾う
+    if len(current_classes) < 6:
+        for s in lines:
+            s = str(s).strip()
+            if re.fullmatch(r"(A1|A2|B1|B2)", s):
+                current_classes.append(s)
+                if len(current_classes) >= 6:
+                    break
+
+    if len(past_classes) < 6:
+        for s in lines:
+            s = str(s).strip()
+            if re.fullmatch(r"(A1|A2|B1|B2)/(A1|A2|B1|B2)", s):
+                past_classes.append(s)
+                if len(past_classes) >= 6:
+                    break
+
+    current_classes = current_classes[:6]
+    past_classes = past_classes[:6]
+
+    if len(current_classes) < 6 or len(past_classes) < 6:
+        log(
+            f"[racelist_race_short] jcd={jcd} venue={venue} race_no={race_no} "
+            f"current={len(current_classes)} past={len(past_classes)}"
+        )
+        return {}
+
+    lane_map = {}
+    for lane in range(1, 7):
+        cur = current_classes[lane - 1]
+        p1, p2 = past_classes[lane - 1].split("/")
+        lane_map[lane] = {
+            "current_class": cur,
+            "prev1_class": p1,
+            "prev2_class": p2,
+        }
+
+    log(
+        f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} "
+        f"sample={lane_map.get(1, {})}"
+    )
+    return lane_map
+
+
+def parse_racelist_for_jcd(jcd):
+    venue = JCD_NAME_MAP.get(jcd, jcd)
+
+    if jcd not in RACELIST_VENUE_SLUG_MAP:
+        log(f"[racelist_skip] jcd={jcd} venue={venue}")
+        return jcd, {}
+
+    result = {}
+
+    for race_no in range(1, 13):
+        lane_map = parse_racelist_race_page(jcd, race_no)
+        if lane_map:
+            result[race_no] = lane_map
+
+    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
+    return jcd, result
 
 
 def normalize_triplet(a, b, c):
@@ -509,6 +703,223 @@ def decide_final_rank(official_rating, ai_score):
     if ai_score >= -0.2:
         return "様子見"
     return "見送り寄り"
+
+
+def class_point(cls):
+    if cls == "A1":
+        return 1.00
+    if cls == "A2":
+        return 0.45
+    if cls == "B1":
+        return 0.00
+    if cls == "B2":
+        return -0.60
+    return 0.0
+
+
+def class_history_score(class_history):
+    cur = class_history.get("current_class", "")
+    prev1 = class_history.get("prev1_class", "")
+    prev2 = class_history.get("prev2_class", "")
+
+    score = 0.0
+    score += class_point(cur) * 1.0
+    score += class_point(prev1) * 0.7
+    score += class_point(prev2) * 0.5
+
+    pattern = [cur, prev1, prev2]
+    if pattern == ["A1", "A1", "A1"]:
+        score += 0.55
+    elif pattern[0] == "A1" and pattern[1] == "A1":
+        score += 0.22
+
+    if cur == "A1" and prev1 in {"A2", "B1"}:
+        score += 0.12
+    if cur == "A2" and prev1 == "B1":
+        score += 0.08
+    if cur in {"B1", "B2"} and prev1 == "A1":
+        score -= 0.12
+    if cur == "B2":
+        score -= 0.18
+
+    return round(score, 3)
+
+
+def make_class_history_text(class_history):
+    cur = class_history.get("current_class", "")
+    prev1 = class_history.get("prev1_class", "")
+    prev2 = class_history.get("prev2_class", "")
+    parts = [x for x in [cur, prev1, prev2] if x]
+    return " / ".join(parts)
+
+
+def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_history_map):
+    scores = {lane: 0.0 for lane in range(1, 7)}
+    exhibition_times = exhibition_info.get("times", [])
+    exhibition_ranks = exhibition_info.get("ranks", {})
+
+    lane_time_map = {}
+    for lane, t in enumerate(exhibition_times, start=1):
+        try:
+            lane_time_map[lane] = float(t)
+        except Exception:
+            pass
+
+    for lane in range(1, 7):
+        s = boat_stats.get(lane, {})
+        ch = class_history_map.get(lane, {})
+
+        national = s.get("national_win")
+        local = s.get("local_win")
+        motor2 = s.get("motor2")
+        boat2 = s.get("boat2")
+        cls = s.get("class") or ch.get("current_class") or ""
+
+        if national is not None:
+            scores[lane] += (national - 5.3) * 0.36
+        if local is not None:
+            scores[lane] += (local - 5.1) * 0.20
+        if motor2 is not None:
+            scores[lane] += (motor2 - 34.0) * 0.022
+        if boat2 is not None:
+            scores[lane] += (boat2 - 33.0) * 0.010
+
+        scores[lane] += class_history_score({
+            "current_class": cls,
+            "prev1_class": ch.get("prev1_class", ""),
+            "prev2_class": ch.get("prev2_class", ""),
+        })
+
+        if lane in exhibition_ranks:
+            r = exhibition_ranks[lane]
+            if r == 1:
+                scores[lane] += 0.70
+            elif r == 2:
+                scores[lane] += 0.45
+            elif r == 3:
+                scores[lane] += 0.20
+            elif r >= 5:
+                scores[lane] -= 0.30
+
+        if lane in lane_time_map:
+            all_times = list(lane_time_map.values())
+            top_time = min(all_times)
+            gap = lane_time_map[lane] - top_time
+            if gap <= 0.00:
+                scores[lane] += 0.35
+            elif gap <= 0.03:
+                scores[lane] += 0.18
+            elif gap >= 0.10:
+                scores[lane] -= 0.12
+
+        if lane == 1:
+            scores[lane] += 0.22
+        elif lane == 2:
+            scores[lane] += 0.08
+        elif lane >= 5:
+            scores[lane] -= 0.06
+
+    env = environment or {}
+    wind_speed = env.get("wind_speed")
+    wave_height = env.get("wave_height")
+    wind_type = env.get("wind_type") or ""
+    stabilizer = bool(env.get("stabilizer"))
+
+    if wind_speed is not None:
+        if wind_speed >= 4 and wind_type == "headwind":
+            scores[1] += 0.28
+            scores[2] += 0.08
+            scores[4] -= 0.08
+            scores[5] -= 0.12
+            scores[6] -= 0.15
+        elif wind_speed >= 4 and wind_type == "tailwind":
+            scores[4] += 0.10
+            scores[5] += 0.16
+            scores[6] += 0.12
+        elif wind_speed >= 4 and wind_type == "crosswind":
+            scores[4] -= 0.08
+            scores[5] -= 0.10
+            scores[6] -= 0.12
+
+        if wind_speed >= 6:
+            scores[1] += 0.12
+            scores[5] -= 0.10
+            scores[6] -= 0.15
+
+    if wave_height is not None:
+        if wave_height >= 5:
+            scores[1] += 0.10
+            scores[4] -= 0.05
+            scores[5] -= 0.08
+            scores[6] -= 0.10
+        if wave_height >= 7:
+            scores[1] += 0.08
+            scores[5] -= 0.08
+            scores[6] -= 0.12
+
+    if stabilizer:
+        scores[1] += 0.15
+        scores[2] += 0.05
+        scores[4] -= 0.08
+        scores[5] -= 0.12
+        scores[6] -= 0.14
+
+    return scores
+
+
+def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map):
+    lane_scores = generate_lane_ai_scores(
+        exhibition_info,
+        boat_stats,
+        environment,
+        class_history_map,
+    )
+
+    sorted_lanes = sorted(lane_scores.items(), key=lambda x: (-x[1], x[0]))
+    top_lanes = [lane for lane, _ in sorted_lanes]
+
+    first_candidates = top_lanes[:3]
+    second_candidates = top_lanes[:4]
+    third_candidates = top_lanes[:5]
+
+    triplets = []
+    scored_triplets = []
+
+    for a in first_candidates:
+        for b in second_candidates:
+            for c in third_candidates:
+                if len({a, b, c}) < 3:
+                    continue
+                score = lane_scores[a] * 1.25 + lane_scores[b] * 0.90 + lane_scores[c] * 0.60
+                scored_triplets.append((score, normalize_triplet(str(a), str(b), str(c))))
+
+    scored_triplets.sort(key=lambda x: (-x[0], x[1]))
+
+    for score, tri in scored_triplets:
+        if tri and tri not in triplets:
+            triplets.append(tri)
+        if len(triplets) >= 6:
+            break
+
+    top_score = sorted_lanes[0][1] if sorted_lanes else 0.0
+    second_score = sorted_lanes[1][1] if len(sorted_lanes) >= 2 else top_score
+    confidence_gap = round(top_score - second_score, 2)
+
+    if confidence_gap >= 0.8:
+        confidence = "A"
+    elif confidence_gap >= 0.35:
+        confidence = "B"
+    else:
+        confidence = "C"
+
+    lane_score_text = " / ".join([f"{lane}:{round(score, 2)}" for lane, score in sorted_lanes])
+
+    return {
+        "ai_selection": " / ".join(triplets[:6]),
+        "ai_confidence": confidence,
+        "ai_lane_scores": lane_scores,
+        "ai_lane_score_text": lane_score_text,
+    }
 
 
 def extract_digits_from_cell(cell):
@@ -564,7 +975,12 @@ def parse_rating_page_dom(rating_text):
     page = RATING_PAGE_MAP[rating_text]
     url = f"{BASE_URL}/{page}/{today_str()}.html"
 
-    soup, _html = fetch_soup(url)
+    try:
+        soup, _html = fetch_soup(url)
+    except Exception as e:
+        log(f"[rating_page_dom_error] rating={rating_text} url={url} err={e}")
+        return []
+
     rows = []
 
     header_idx = {}
@@ -656,7 +1072,12 @@ def parse_rating_page_text_fallback(rating_text):
     page = RATING_PAGE_MAP[rating_text]
     url = f"{BASE_URL}/{page}/{today_str()}.html"
 
-    html = fetch_html(url)
+    try:
+        html = fetch_html(url)
+    except Exception as e:
+        log(f"[rating_page_fallback_error] rating={rating_text} url={url} err={e}")
+        return []
+
     lines = normalize_lines(html)
 
     rows = []
@@ -688,12 +1109,22 @@ def parse_rating_page_text_fallback(rating_text):
 
 
 def parse_rating_page(rating_text):
-    rows_dom = parse_rating_page_dom(rating_text)
+    try:
+        rows_dom = parse_rating_page_dom(rating_text)
+    except Exception as e:
+        log(f"[rating_page_dom_crash] rating={rating_text} err={e}")
+        rows_dom = []
+
     if rows_dom:
         log(f"[rating_page_summary] {rating_text} count={len(rows_dom)} mode=dom")
         return rows_dom
 
-    rows_fallback = parse_rating_page_text_fallback(rating_text)
+    try:
+        rows_fallback = parse_rating_page_text_fallback(rating_text)
+    except Exception as e:
+        log(f"[rating_page_fallback_crash] rating={rating_text} err={e}")
+        rows_fallback = []
+
     log(f"[rating_page_summary] {rating_text} count={len(rows_fallback)} mode=fallback")
     return rows_fallback
 
@@ -704,6 +1135,7 @@ def analyze_candidate(
     exhibition_info,
     boat_stats=None,
     environment=None,
+    class_history_map=None,
 ):
     score = 0.0
     reasons = []
@@ -942,14 +1374,6 @@ def analyze_candidate(
                 score -= 0.2
                 reasons.append("1着候補のボート気配が弱い")
 
-        a1_count = sum(1 for s in head_stats if s.get("class") == "A1")
-        if a1_count >= 2:
-            score += 0.6
-            reasons.append("1着候補にA1級が複数いる")
-        elif a1_count == 1:
-            score += 0.3
-            reasons.append("1着候補にA1級がいる")
-
         if second_national is not None:
             details.append(f"2着全国勝率平均{round(second_national, 2)}")
             if second_national >= 5.4:
@@ -995,6 +1419,39 @@ def analyze_candidate(
                 score += 0.08
             elif third_motor < 26:
                 score -= 0.08
+
+    class_history_map = class_history_map or {}
+    head_histories = [class_history_map[h] for h in unique_heads if h in class_history_map]
+    second_histories = [class_history_map[s] for s in unique_seconds if s in class_history_map]
+
+    if head_histories:
+        head_class_scores = [class_history_score(x) for x in head_histories]
+        avg_head_class = sum(head_class_scores) / len(head_class_scores)
+        details.append(f"1着級別3期平均{round(avg_head_class, 2)}")
+
+        if avg_head_class >= 1.2:
+            score += 0.65
+            reasons.append("1着候補の級別3期傾向がかなり良い")
+        elif avg_head_class >= 0.7:
+            score += 0.35
+            reasons.append("1着候補の級別3期傾向が良い")
+        elif avg_head_class <= -0.2:
+            score -= 0.35
+            reasons.append("1着候補の級別3期傾向が弱い")
+
+        a1_trend_count = sum(1 for x in head_histories if x.get("current_class") == "A1")
+        if a1_trend_count >= 2:
+            score += 0.25
+            reasons.append("1着候補に現A1が複数いる")
+
+    if second_histories:
+        second_class_scores = [class_history_score(x) for x in second_histories]
+        avg_second_class = sum(second_class_scores) / len(second_class_scores)
+        details.append(f"2着級別3期平均{round(avg_second_class, 2)}")
+        if avg_second_class >= 0.7:
+            score += 0.15
+        elif avg_second_class <= -0.2:
+            score -= 0.10
 
     env = environment or {}
     wind_speed = env.get("wind_speed")
@@ -1127,7 +1584,6 @@ def analyze_candidate(
         "exhibition_rank": exhibition_rank_text,
         "motor_rank": "",
         "ai_detail": ai_detail,
-        "environment": env,
     }
 
 
@@ -1178,6 +1634,69 @@ def fetch_beforeinfo_parallel(keys):
     return results
 
 
+def fetch_racelist_parallel(jcds):
+    results = {}
+    supported = [jcd for jcd in sorted(jcds) if jcd in RACELIST_VENUE_SLUG_MAP]
+
+    if not supported:
+        log("[racelist_parallel] supported=0")
+        return results
+
+    log(f"[racelist_parallel] supported={supported}")
+
+    with ThreadPoolExecutor(max_workers=RACELIST_MAX_WORKERS) as ex:
+        futures = [ex.submit(parse_racelist_for_jcd, jcd) for jcd in supported]
+        for future in as_completed(futures):
+            try:
+                jcd, info = future.result()
+                results[jcd] = info
+            except Exception as e:
+                log(f"[racelist_parallel_error] err={e}")
+
+    return results
+
+
+def log_beforeinfo_summary(beforeinfo_cache, future_keys):
+    total = len(future_keys)
+    fetched = len(beforeinfo_cache)
+
+    weather_count = 0
+    wind_speed_count = 0
+    wind_dir_count = 0
+    wave_count = 0
+    stabilizer_count = 0
+    exhibition_time_count = 0
+    exhibition_rank_count = 0
+
+    for _key, info in beforeinfo_cache.items():
+        env = info.get("environment", {})
+        exhibition = info.get("exhibition", {})
+
+        if env.get("weather"):
+            weather_count += 1
+        if env.get("wind_speed") is not None:
+            wind_speed_count += 1
+        if env.get("wind_direction"):
+            wind_dir_count += 1
+        if env.get("wave_height") is not None:
+            wave_count += 1
+        if env.get("stabilizer"):
+            stabilizer_count += 1
+        if exhibition.get("times"):
+            exhibition_time_count += 1
+        if exhibition.get("ranks"):
+            exhibition_rank_count += 1
+
+    log(
+        "[beforeinfo_summary] "
+        f"targets={total} fetched={fetched} "
+        f"weather={weather_count} wind_speed={wind_speed_count} "
+        f"wind_dir={wind_dir_count} wave={wave_count} "
+        f"stabilizer={stabilizer_count} "
+        f"ex_times={exhibition_time_count} ex_ranks={exhibition_rank_count}"
+    )
+
+
 def build_candidates():
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1225,6 +1744,8 @@ def build_candidates():
         if jcd:
             needed_jcds.add(jcd)
 
+    racelist_cache = fetch_racelist_parallel(needed_jcds)
+
     deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
@@ -1258,8 +1779,17 @@ def build_candidates():
         log(f"[missing_deadline_rows] count={len(missing_deadline_rows)} rows={missing_deadline_rows}")
 
     beforeinfo_cache = fetch_beforeinfo_parallel(future_keys) if future_keys else {}
+    if future_keys:
+        log_beforeinfo_summary(beforeinfo_cache, future_keys)
 
     results = []
+    env_detail_count = 0
+    wind_speed_used_count = 0
+    wave_used_count = 0
+    stabilizer_used_count = 0
+    class3_rows = 0
+    ai_selection_rows = 0
+
     for row in rows:
         venue = row["venue"]
         race_no = row["race_no"]
@@ -1272,6 +1802,7 @@ def build_candidates():
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         boat_stats = beforeinfo.get("boat_stats", {})
         environment = beforeinfo.get("environment", {})
+        class_history_map = racelist_cache.get(jcd, {}).get(race_no, {})
 
         analyzed = analyze_candidate(
             rating,
@@ -1279,7 +1810,39 @@ def build_candidates():
             exhibition_info,
             boat_stats,
             environment,
+            class_history_map,
         )
+
+        ai_generated = generate_ai_selection(
+            exhibition_info,
+            boat_stats,
+            environment,
+            class_history_map,
+        )
+
+        ai_detail_text = analyzed["ai_detail"]
+        if "風速" in ai_detail_text:
+            wind_speed_used_count += 1
+        if "波高" in ai_detail_text:
+            wave_used_count += 1
+        if "安定板あり" in ai_detail_text:
+            stabilizer_used_count += 1
+        if "1着級別3期平均" in ai_detail_text:
+            class3_rows += 1
+        if ai_detail_text:
+            env_detail_count += 1
+        if ai_generated["ai_selection"]:
+            ai_selection_rows += 1
+
+        class_history_text = ""
+        if class_history_map:
+            class_history_text = " / ".join(
+                [
+                    f"{lane}:{make_class_history_text(class_history_map.get(lane, {}))}"
+                    for lane in range(1, 7)
+                    if class_history_map.get(lane)
+                ]
+            )
 
         candidate = {
             "race_date": today_text(),
@@ -1300,8 +1863,20 @@ def build_candidates():
             "exhibition_rank": analyzed["exhibition_rank"],
             "motor_rank": analyzed["motor_rank"],
             "ai_detail": analyzed["ai_detail"],
+            "ai_selection": ai_generated["ai_selection"],
+            "ai_confidence": ai_generated["ai_confidence"],
+            "ai_lane_score_text": ai_generated["ai_lane_score_text"],
+            "class_history_text": class_history_text,
         }
         results.append(candidate)
+
+    log(
+        "[ai_detail_summary] "
+        f"rows={len(results)} detail_rows={env_detail_count} "
+        f"wind_speed_rows={wind_speed_used_count} "
+        f"wave_rows={wave_used_count} stabilizer_rows={stabilizer_used_count} "
+        f"class3_rows={class3_rows} ai_selection_rows={ai_selection_rows}"
+    )
 
     official_rating_counts = {}
     for r in results:
