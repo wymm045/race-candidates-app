@@ -544,7 +544,7 @@ def parse_racelist_page_all_races(jcd):
 def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     def is_race_header(text, target_race_no=None):
         s = str(text).strip()
-        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)\b", s)
+        m = re.match(r"^(1[0-2]|[1-9])\s*(?:R|レース)", s)
         if not m:
             return False
         found_no = int(m.group(1))
@@ -571,49 +571,44 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     block = lines[race_idx:next_race_idx]
     joined = " | ".join(block)
 
+    # 「級」が見つからないときだけ失敗扱い
     if "級" not in joined:
-    log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
-    return {}
+        log(f"[racelist_race_no_grade_block] jcd={jcd} venue={venue} race_no={race_no}")
+        return {}
 
     grade_idx = None
-for i, line in enumerate(block):
-    s = str(line).strip()
-    if "級" in s:
-        grade_idx = i
-        break
+    for i, line in enumerate(block):
+        s = str(line).strip()
+        if "級" in s:
+            grade_idx = i
+            break
 
     if grade_idx is None:
         log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
         return {}
 
     tokens = []
-    stop_words = {
-        "能力(前期)",
-        "今期 F|L数",
-        "全国 勝率",
-        "2連対率",
-        "3連対率",
-        "(6ヶ月)",
-        "当地 勝率",
-        "当地2連率",
-        "当地3連率",
-        "モーターNO",
-        "ボートNO",
-    }
 
     for s in block[grade_idx + 1:]:
         s = str(s).strip()
 
-        if s in stop_words:
+        # 次の項目っぽい見出しが来たら終了
+        if any(x in s for x in [
+            "能力", "今期", "全国", "当地", "モーター", "ボート",
+            "2連対率", "3連対率", "勝率"
+        ]):
             break
 
+        # ラベル行は飛ばす
         if "過去3期" in s:
             continue
 
+        # 現級
         if re.fullmatch(r"(A1|A2|B1|B2)", s):
             tokens.append(("current", s))
             continue
 
+        # 過去3期
         if re.fullmatch(r"(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)\s+(A1|A2|B1|B2|-)", s):
             tokens.append(("history", s))
             continue
@@ -662,7 +657,6 @@ for i, line in enumerate(block):
         f"sample={lane_map.get(1, {})}"
     )
     return lane_map
-
 
 def parse_racelist_for_jcd(jcd):
     venue = JCD_NAME_MAP.get(jcd, jcd)
