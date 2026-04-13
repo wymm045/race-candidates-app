@@ -122,10 +122,7 @@ def to_minutes(hhmm):
 
 
 def is_future_or_now(hhmm):
-    try:
-        return to_minutes(hhmm) >= to_minutes(current_hhmm())
-    except Exception:
-        return False
+    return True
 
 
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
