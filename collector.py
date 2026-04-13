@@ -85,7 +85,6 @@ RACELIST_VENUE_SLUG_MAP = {
     "17": "miyajima",
     "22": "fukuoka",
     "23": "karatsu",
-    "24": "omura",
 }
 
 SESSION = requests.Session()
