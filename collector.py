@@ -576,11 +576,11 @@ def parse_racelist_race_from_lines(lines, race_no, jcd, venue):
     return {}
 
     grade_idx = None
-    for i, line in enumerate(block):
-        s = str(line).strip()
-        if s == "級" or s.startswith("級 "):
-            grade_idx = i
-            break
+for i, line in enumerate(block):
+    s = str(line).strip()
+    if "級" in s:
+        grade_idx = i
+        break
 
     if grade_idx is None:
         log(f"[racelist_race_grade_missing] jcd={jcd} venue={venue} race_no={race_no}")
