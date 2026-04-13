@@ -24,14 +24,9 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+        "Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Referer": "https://www.boatrace.jp/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -47,6 +42,7 @@ RETRY_SLEEP_SEC = 1.2
 OFFICIAL_MAX_WORKERS = 6
 BEFOREINFO_MAX_WORKERS = 12
 RACELIST_MAX_WORKERS = 6
+USE_RACELIST = False
 
 JCD_NAME_MAP = {
     "02": "戸田",
@@ -137,30 +133,10 @@ def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
 
     for attempt in range(1, max_retries + 1):
         try:
-            request_headers = {}
-
-            if "racelist.kyotei24.jp" in url:
-                request_headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": (
-                        "text/html,application/xhtml+xml,application/xml;"
-                        "q=0.9,image/avif,image/webp,*/*;q=0.8"
-                    ),
-                    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-                    "Referer": "https://www.boatrace.jp/",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
-                }
-
-            res = SESSION.get(url, headers=request_headers, timeout=timeout)
+            res = SESSION.get(url, timeout=timeout)
             res.raise_for_status()
             res.encoding = res.apparent_encoding
             return res.text
-
         except Exception as e:
             last_err = e
             if attempt < max_retries:
@@ -1763,16 +1739,19 @@ def build_candidates():
     rows = valid_rows
     log(f"[selection_clean_summary] count={len(rows)}")
 
-  needed_jcds = set()
-for row in rows:
-    jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-    if jcd:
-        needed_jcds.add(jcd)
+    needed_jcds = set()
+    for row in rows:
+        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+        if jcd:
+            needed_jcds.add(jcd)
 
-　　racelist_cache = {}
-　　log("[racelist_parallel] skipped manually")
+    if USE_RACELIST:
+        racelist_cache = fetch_racelist_parallel(needed_jcds)
+    else:
+        racelist_cache = {}
+        log("[racelist_parallel] skipped by USE_RACELIST=False")
 
-　　deadlines_cache = fetch_deadlines_parallel(needed_jcds)
+    deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
     filtered_rows = []
