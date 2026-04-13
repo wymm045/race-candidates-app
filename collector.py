@@ -912,6 +912,22 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
 
 
 def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map):
+    exhibition_times = exhibition_info.get("times", []) or []
+    exhibition_ranks = exhibition_info.get("ranks", {}) or {}
+
+    has_exhibition_times = len(exhibition_times) == 6
+    has_exhibition_ranks = len(exhibition_ranks) == 6
+
+    # 展示材料がないときはAI買い目を作らない
+    # これで、締切後の再取得などで固定パターンに戻るのを防ぐ
+    if not has_exhibition_times and not has_exhibition_ranks:
+        return {
+            "ai_selection": "",
+            "ai_confidence": "",
+            "ai_lane_scores": {},
+            "ai_lane_score_text": "",
+        }
+
     lane_scores = generate_lane_ai_scores(
         exhibition_info,
         boat_stats,
