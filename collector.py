@@ -24,9 +24,14 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+    "Referer": "https://www.boatrace.jp/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -132,10 +137,30 @@ def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
 
     for attempt in range(1, max_retries + 1):
         try:
-            res = SESSION.get(url, timeout=timeout)
+            request_headers = {}
+
+            if "racelist.kyotei24.jp" in url:
+                request_headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;"
+                        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+                    ),
+                    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+                    "Referer": "https://www.boatrace.jp/",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                }
+
+            res = SESSION.get(url, headers=request_headers, timeout=timeout)
             res.raise_for_status()
             res.encoding = res.apparent_encoding
             return res.text
+
         except Exception as e:
             last_err = e
             if attempt < max_retries:
