@@ -721,13 +721,13 @@ def decide_final_rank(official_rating, ai_score):
 
 def class_point(cls):
     if cls == "A1":
-        return 1.00
+        return 1.25
     if cls == "A2":
-        return 0.45
+        return 0.55
     if cls == "B1":
-        return 0.00
+        return -0.05
     if cls == "B2":
-        return -0.60
+        return -0.95
     return 0.0
 
 
@@ -738,25 +738,34 @@ def class_history_score(class_history):
     prev3 = class_history.get("prev3_class", "")
 
     score = 0.0
-    score += class_point(cur) * 1.0
-    score += class_point(prev1) * 0.7
-    score += class_point(prev2) * 0.5
-    score += class_point(prev3) * 0.35
+    score += class_point(cur) * 1.20
+    score += class_point(prev1) * 0.85
+    score += class_point(prev2) * 0.60
+    score += class_point(prev3) * 0.45
 
     pattern = [cur, prev1, prev2, prev3]
+    a1_count = sum(1 for x in pattern if x == "A1")
+    a2_or_better_count = sum(1 for x in pattern if x in {"A1", "A2"})
+    b2_count = sum(1 for x in pattern if x == "B2")
 
     if pattern[:3] == ["A1", "A1", "A1"]:
-        score += 0.55
+        score += 0.70
     if pattern[:4] == ["A1", "A1", "A1", "A1"]:
-        score += 0.20
+        score += 0.30
+    if a1_count >= 2:
+        score += 0.18
+    if a2_or_better_count >= 3:
+        score += 0.16
 
     if cur == "A1" and prev1 in {"A2", "B1"}:
-        score += 0.12
+        score += 0.15
     if cur == "A2" and prev1 == "B1":
-        score += 0.08
+        score += 0.10
     if cur in {"B1", "B2"} and prev1 == "A1":
-        score -= 0.12
+        score -= 0.16
     if cur == "B2":
+        score -= 0.22
+    if b2_count >= 2:
         score -= 0.18
 
     return round(score, 3)
@@ -802,7 +811,7 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
         if boat2 is not None:
             scores[lane] += (boat2 - 33.0) * 0.010
 
-        scores[lane] += class_history_score(
+        class_score = class_history_score(
             {
                 "current_class": cls,
                 "prev1_class": ch.get("prev1_class", ""),
@@ -810,6 +819,14 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
                 "prev3_class": ch.get("prev3_class", ""),
             }
         )
+        scores[lane] += class_score * 1.15
+
+        if cls == "A1":
+            scores[lane] += 0.22
+        elif cls == "A2":
+            scores[lane] += 0.08
+        elif cls == "B2":
+            scores[lane] -= 0.18
 
         if lane in exhibition_ranks:
             r = exhibition_ranks[lane]
@@ -1464,29 +1481,53 @@ def analyze_candidate(
         avg_head_class = sum(head_class_scores) / len(head_class_scores)
         details.append(f"1着級別3期平均{round(avg_head_class, 2)}")
 
-        if avg_head_class >= 1.2:
-            score += 0.65
-            reasons.append("1着候補の級別3期傾向がかなり良い")
-        elif avg_head_class >= 0.7:
-            score += 0.35
+        head_current_classes = [x.get("current_class", "") for x in head_histories if x.get("current_class")]
+        head_a1_count = sum(1 for x in head_current_classes if x == "A1")
+        head_b2_count = sum(1 for x in head_current_classes if x == "B2")
+
+        if avg_head_class >= 1.6:
+            score += 0.95
+            reasons.append("1着候補の級別3期傾向がかなり強い")
+        elif avg_head_class >= 1.0:
+            score += 0.55
             reasons.append("1着候補の級別3期傾向が良い")
-        elif avg_head_class <= -0.2:
-            score -= 0.35
+        elif avg_head_class >= 0.5:
+            score += 0.25
+            reasons.append("1着候補の級別3期傾向がまずまず")
+        elif avg_head_class <= -0.3:
+            score -= 0.50
             reasons.append("1着候補の級別3期傾向が弱い")
 
-        a1_trend_count = sum(1 for x in head_histories if x.get("current_class") == "A1")
-        if a1_trend_count >= 2:
-            score += 0.25
+        if head_a1_count >= 2:
+            score += 0.32
             reasons.append("1着候補に現A1が複数いる")
+        elif head_a1_count >= 1 and len(unique_heads) == 1:
+            score += 0.18
+            reasons.append("頭本線が現A1")
 
+        if head_b2_count >= 1:
+            score -= 0.22
+            reasons.append("1着候補に現B2が含まれる")
+
+    avg_second_class = None
     if second_histories:
         second_class_scores = [class_history_score(x) for x in second_histories]
         avg_second_class = sum(second_class_scores) / len(second_class_scores)
         details.append(f"2着級別3期平均{round(avg_second_class, 2)}")
-        if avg_second_class >= 0.7:
-            score += 0.15
+        if avg_second_class >= 0.9:
+            score += 0.18
         elif avg_second_class <= -0.2:
-            score -= 0.10
+            score -= 0.12
+
+    if head_histories and avg_second_class is not None:
+        class_gap = avg_head_class - avg_second_class
+        details.append(f"1-2着級別差{round(class_gap, 2)}")
+        if class_gap >= 0.7:
+            score += 0.22
+            reasons.append("1着候補の級別優位がある")
+        elif class_gap <= -0.5:
+            score -= 0.18
+            reasons.append("1着候補の級別優位が薄い")
 
     env = environment or {}
     wind_speed = env.get("wind_speed")
