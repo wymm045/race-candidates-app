@@ -434,12 +434,6 @@ def safe_redirect_path(path, default="/"):
     return s
 
 
-def chip_class_for_compare(source):
-    if source == "overlap":
-        return "selection-choice-chip selection-chip-overlap"
-    return "selection-choice-chip"
-
-
 def build_selection_compare_data(official_text, ai_text):
     official_items = selection_items(official_text)
     ai_items = selection_items(ai_text)
@@ -459,6 +453,7 @@ def render_selection_column(
     empty_text,
     race_id_key="",
     selected_items=None,
+    form_id="",
 ):
     if not own_items:
         return f'<div class="selection-chip-empty">{empty_text}</div>'
@@ -472,22 +467,28 @@ def render_selection_column(
     chips = ""
     for idx, item in enumerate(own_items):
         item_clean = normalize_pick_text(item)
-        source_name = "overlap" if item_clean in overlap_set else source
         checked = "checked" if item_clean in selected_items else ""
         item_id = f"{prefix}-{race_id_key}-{idx}"
 
+        if item_clean in overlap_set:
+            chip_kind = "overlap"
+        else:
+            chip_kind = source
+
         chips += f'''
-        <label class="{chip_class_for_compare(source_name)}">
+        <label class="selection-choice-chip selection-choice-chip-{chip_kind}" for="{item_id}">
           <input
+            class="selection-choice-input"
             type="checkbox"
             id="{item_id}"
             name="{input_name}"
             value="{item_clean}"
             data-pick-value="{item_clean}"
+            form="{form_id}"
             {checked}
             onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
           >
-          <span class="selection-choice-text">{item_clean}</span>
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{item_clean}</span>
         </label>
         '''
 
@@ -498,6 +499,7 @@ def render_selection_compare_html(r, race_id_key):
     official_text = r.get("selection", "")
     ai_text = r.get("ai_selection", "")
     selected_items = set(selection_items(r.get("purchased_selection_text", "")))
+    form_id = f"race-form-{race_id_key}"
 
     data = build_selection_compare_data(official_text, ai_text)
 
@@ -508,6 +510,7 @@ def render_selection_compare_html(r, race_id_key):
         "未取得",
         race_id_key=race_id_key,
         selected_items=selected_items,
+        form_id=form_id,
     )
     ai_html = render_selection_column(
         data["ai_items"],
@@ -516,6 +519,7 @@ def render_selection_compare_html(r, race_id_key):
         "未取得",
         race_id_key=race_id_key,
         selected_items=selected_items,
+        form_id=form_id,
     )
 
     return f'''
@@ -608,7 +612,9 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
     conn.commit()
     cur.close()
     conn.close()
-    log(f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}")
+    log(
+        f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}"
+    )
 
 
 def delete_race(race_id):
@@ -787,6 +793,7 @@ def build_card_html(r, is_history=False, race_date=""):
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
+    form_id = f"race-form-{race_id_key}"
 
     top_checkbox = ""
     if is_history:
@@ -854,7 +861,7 @@ def build_card_html(r, is_history=False, race_date=""):
         {ai_reason_html}
       </div>
 
-      <form method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
+      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
         <input type="hidden" name="race_id" value="{r['id']}">
         {history_hidden}
 
@@ -898,8 +905,16 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     content = f'''
     <div class="app-shell">
       <div class="topbar">
-        <div class="brand"><div class="brand-logo">🏁</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">ボートレース買い候補</div></div></div>
-        <div class="topbar-status"><span class="top-pill">最終取込: {updated_str}</span></div>
+        <div class="brand">
+          <div class="brand-logo">🏁</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">ボートレース買い候補</div>
+          </div>
+        </div>
+        <div class="topbar-status">
+          <span class="top-pill">最終取込: {updated_str}</span>
+        </div>
       </div>
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
@@ -909,12 +924,27 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         {message_html}
         <form method="get" action="/" class="filter-box">
           <div class="filter-grid">
-            <div class="filter-item filter-item-wide"><label class="filter-check"><input type="checkbox" name="show_closed" value="1" {checked_show_closed}>締切後も表示する</label></div>
-            <div class="filter-item"><label for="ai_rating">AI評価で絞る</label><select name="ai_rating" id="ai_rating">{ai_rating_options_html}</select></div>
-            <div class="filter-actions"><button type="submit" class="filter-btn">フィルター適用</button><a href="/" class="filter-reset">解除</a></div>
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
+                締切後も表示する
+              </label>
+            </div>
+            <div class="filter-item">
+              <label for="ai_rating">AI評価で絞る</label>
+              <select name="ai_rating" id="ai_rating">{ai_rating_options_html}</select>
+            </div>
+            <div class="filter-actions">
+              <button type="submit" class="filter-btn">フィルター適用</button>
+              <a href="/" class="filter-reset">解除</a>
+            </div>
           </div>
         </form>
-        <div class="nav nav-app"><a href="/" class="nav-card active">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card">過去データ</a></div>
+        <div class="nav nav-app">
+          <a href="/" class="nav-card active">今日の候補</a>
+          <a href="/stats" class="nav-card">今日の集計</a>
+          <a href="/history" class="nav-card">過去データ</a>
+        </div>
         <div class="summary">
           <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
           <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
@@ -939,7 +969,16 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
 
     content = f'''
     <div class="app-shell">
-      <div class="topbar"><div class="brand"><div class="brand-logo">📊</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">今日の集計</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">📊</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">今日の集計</div>
+          </div>
+        </div>
+        <div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div>
+      </div>
       <div class="header hero hero-strong">
         <div class="title">今日の集計</div>
         <div class="sub">対象日: {race_date}</div>
@@ -1013,17 +1052,49 @@ def render_layout(title, body_html):
     css = """
     <style>
       *{box-sizing:border-box}
-      body{margin:0;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;color:#222}
-      .container{max-width:980px;margin:0 auto;padding:16px 12px 92px}
+      html{padding-top:env(safe-area-inset-top,0px);background:#f5f7fb}
+      body{
+        margin:0;
+        background:#f5f7fb;
+        font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;
+        color:#222;
+        -webkit-text-size-adjust:100%;
+      }
+      .container{
+        max-width:980px;
+        margin:0 auto;
+        padding:calc(16px + env(safe-area-inset-top,0px)) 12px calc(92px + env(safe-area-inset-bottom,0px));
+      }
       .app-shell{display:flex;flex-direction:column;gap:14px}
       .topbar,.header,.card,.history-item{background:#fff;border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
       .hero-strong{background:linear-gradient(180deg,#fff,#f8fbff)}
-      .brand{display:flex;align-items:center;gap:10px}
-      .brand-logo{font-size:28px}
+      .brand{display:flex;align-items:center;gap:10px;min-width:0}
+      .brand-logo{font-size:28px;flex:0 0 auto}
       .brand-title{font-weight:700}
       .brand-sub,.sub{font-size:13px;color:#667085}
-      .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
-      .top-pill{background:#eef4ff;color:#2f5bd2;padding:6px 10px;border-radius:999px;font-size:12px}
+      .topbar{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:10px;
+      }
+      .topbar-status{
+        min-width:0;
+        display:flex;
+        justify-content:flex-end;
+      }
+      .top-pill{
+        background:#eef4ff;
+        color:#2f5bd2;
+        padding:6px 10px;
+        border-radius:999px;
+        font-size:12px;
+        display:inline-block;
+        max-width:100%;
+        white-space:normal;
+        word-break:break-word;
+        line-height:1.4;
+      }
       .title{font-size:24px;font-weight:800;margin-bottom:4px}
       .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
       .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
@@ -1033,7 +1104,9 @@ def render_layout(title, body_html):
       .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
       .summary-label,.history-mini-label{font-size:12px;color:#667085}
       .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
-      .profit-plus{color:#d92d20}.profit-minus{color:#175cd3}.profit-zero{color:#344054}
+      .profit-plus{color:#d92d20}
+      .profit-minus{color:#175cd3}
+      .profit-zero{color:#344054}
       .filter-box,.info-box{margin-top:10px}
       .filter-grid{display:grid;grid-template-columns:1.5fr 1fr auto;gap:10px;align-items:end}
       .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
@@ -1045,39 +1118,176 @@ def render_layout(title, body_html):
       .toolbar-btn{background:#eef2ff;color:#344054}
       .filter-reset{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;background:#f2f4f7;color:#344054;border-radius:10px}
       .card-top-main{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
-      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.time{font-size:24px;font-weight:800}
+      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .time{font-size:24px;font-weight:800}
       .countdown-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}
-      .countdown-normal{background:#eef2ff;color:#3538cd}.countdown-warning{background:#fff4e5;color:#b54708}.countdown-soon{background:#ffead5;color:#c4320a}.countdown-closed{background:#f2f4f7;color:#475467}
+      .countdown-normal{background:#eef2ff;color:#3538cd}
+      .countdown-warning{background:#fff4e5;color:#b54708}
+      .countdown-soon{background:#ffead5;color:#c4320a}
+      .countdown-closed{background:#f2f4f7;color:#475467}
       .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
-      .race-venue{font-size:22px}.race-rno{font-size:22px}
-      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}.status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
-      .status-badge-saved{background:#ecfdf3;color:#067647}.status-badge-hit{background:#fff1f3;color:#c11574}
+      .race-venue{font-size:22px}
+      .race-rno{font-size:22px}
+      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .status-badge-saved{background:#ecfdf3;color:#067647}
+      .status-badge-hit{background:#fff1f3;color:#c11574}
       .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
       .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
-      .rating{background:#fff6e5;color:#b54708}.ai-rating{background:#eef4ff;color:#175cd3}.final-rank-strong{background:#ecfdf3;color:#027a48}.final-rank-buy{background:#e0f2fe;color:#0369a1}.final-rank-watch{background:#f2f4f7;color:#475467}.final-rank-skip{background:#fef3f2;color:#b42318}
-      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}.metric-badge-strong{background:#eef4ff}.metric-badge-score{background:#fff6e5}.metric-badge-label{color:#667085}.metric-badge-value{font-weight:800}
-      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}.row:first-child{border-top:none}.label{font-weight:700;color:#344054}.value{min-width:0}
-      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}.selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}.selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
-      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}.selection-choice-chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:8px 10px;font-weight:700;border:1px solid #d0d5dd;background:#fff}
-      .selection-chip-overlap{background:#ecfdf3;border-color:#abefc6}.selection-chip-official{background:#eef4ff}.selection-chip-ai{background:#fff6e5}.selection-choice-chip input{margin:0}
+      .rating{background:#fff6e5;color:#b54708}
+      .ai-rating{background:#eef4ff;color:#175cd3}
+      .final-rank-strong{background:#ecfdf3;color:#027a48}
+      .final-rank-buy{background:#e0f2fe;color:#0369a1}
+      .final-rank-watch{background:#f2f4f7;color:#475467}
+      .final-rank-skip{background:#fef3f2;color:#b42318}
+      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}
+      .metric-badge-strong{background:#eef4ff}
+      .metric-badge-score{background:#fff6e5}
+      .metric-badge-label{color:#667085}
+      .metric-badge-value{font-weight:800}
+      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
+      .row:first-child{border-top:none}
+      .label{font-weight:700;color:#344054}
+      .value{min-width:0}
+      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}
+      .selection-choice-chip{
+        display:inline-block;
+        cursor:pointer;
+        user-select:none;
+        -webkit-tap-highlight-color:transparent;
+      }
+      .selection-choice-input{
+        position:absolute;
+        opacity:0;
+        pointer-events:none;
+        width:1px;
+        height:1px;
+      }
+      .selection-choice-body{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        padding:8px 10px;
+        border-radius:999px;
+        font-weight:700;
+        border:1px solid #d0d5dd;
+        background:#fff;
+        color:#344054;
+        white-space:nowrap;
+        line-height:1.2;
+        transition:all .15s ease;
+      }
+      .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
+      .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
+      .selection-choice-body-overlap{
+        background:#ecfdf3;
+        border-color:#abefc6;
+        color:#067647;
+      }
+      .selection-choice-input:checked + .selection-choice-body-overlap{
+        background:#dcfae6;
+        border-color:#75e0a7;
+        color:#05603a;
+      }
+      .selection-choice-input:checked + .selection-choice-body-official{
+        background:#eef4ff;
+        border-color:#b2ccff;
+        color:#175cd3;
+      }
+      .selection-choice-input:checked + .selection-choice-body-ai{
+        background:#fff6e5;
+        border-color:#f7c98b;
+        color:#b54708;
+      }
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip{white-space:nowrap}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty{color:#667085}
-      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}.lane-score-verygood{background:#ecfdf3}.lane-score-good{background:#eef4ff}.lane-score-bad{background:#fef3f2}
-      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}.ex-rank-1{background:#ecfdf3}.ex-rank-2{background:#eef4ff}.ex-rank-3{background:#fff6e5}.ex-rank-low{background:#fef3f2}
-      .class-history-wrap{display:flex;flex-direction:column;gap:8px}.class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}.class-history-lane{font-weight:800}.class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
-      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}.class-chip-a1{background:#ecfdf3}.class-chip-a2{background:#eef4ff}.class-chip-b1{background:#fff6e5}.class-chip-b2{background:#fef3f2}.class-chip-sub{font-size:11px;color:#667085}.class-chip-main{font-weight:800}
-      .form{margin-top:12px}.detail-box{display:flex;flex-direction:column;gap:10px}.checkline{display:flex;align-items:center;gap:8px;font-weight:700}.input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
-      .save-btn{width:100%;margin-top:10px}.half-btn{width:100%}.delete-form{margin-top:8px}
-      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}.message-success{background:#ecfdf3;color:#027a48}.message-error{background:#fef3f2;color:#b42318}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}
+      .lane-score-verygood{background:#ecfdf3}
+      .lane-score-good{background:#eef4ff}
+      .lane-score-bad{background:#fef3f2}
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}
+      .ex-rank-1{background:#ecfdf3}
+      .ex-rank-2{background:#eef4ff}
+      .ex-rank-3{background:#fff6e5}
+      .ex-rank-low{background:#fef3f2}
+      .class-history-wrap{display:flex;flex-direction:column;gap:8px}
+      .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
+      .class-history-lane{font-weight:800}
+      .class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
+      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}
+      .class-chip-a1{background:#ecfdf3}
+      .class-chip-a2{background:#eef4ff}
+      .class-chip-b1{background:#fff6e5}
+      .class-chip-b2{background:#fef3f2}
+      .class-chip-sub{font-size:11px;color:#667085}
+      .class-chip-main{font-weight:800}
+      .form{margin-top:12px}
+      .detail-box{display:flex;flex-direction:column;gap:10px}
+      .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
+      .input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .save-btn{width:100%;margin-top:10px}
+      .half-btn{width:100%}
+      .delete-form{margin-top:8px}
+      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}
+      .message-success{background:#ecfdf3;color:#027a48}
+      .message-error{background:#fef3f2;color:#b42318}
       .empty{background:#fff;border-radius:16px;padding:24px;text-align:center;color:#667085;box-shadow:0 4px 14px rgba(0,0,0,.06)}
-      .history-list{display:flex;flex-direction:column;gap:10px}.history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}.history-date{font-size:20px;font-weight:800}.history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
-      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)} table{width:100%;border-collapse:collapse;background:#fff} th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap} th{background:#f8fafc}
-      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.section-title{font-size:18px;font-weight:800}
-      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)} .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
-      .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px;z-index:50}
-      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}.bottom-nav-item.active{color:#175cd3;font-weight:800}
-      @media (max-width: 760px){.container{padding:12px 10px 92px}.summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{grid-template-columns:1fr}.row{grid-template-columns:1fr}.race-venue,.race-rno{font-size:20px}.time{font-size:22px}.ex-rank-grid{grid-template-columns:repeat(2,1fr)}}
+      .history-list{display:flex;flex-direction:column;gap:10px}
+      .history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .history-date{font-size:20px;font-weight:800}
+      .history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
+      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+      .table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      table{width:100%;border-collapse:collapse;background:#fff}
+      th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap}
+      th{background:#f8fafc}
+      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+      .section-title{font-size:18px;font-weight:800}
+      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .bottom-nav{
+        position:fixed;
+        left:0;
+        right:0;
+        bottom:0;
+        display:grid;
+        grid-template-columns:repeat(3,1fr);
+        background:#fff;
+        border-top:1px solid #eaecf0;
+        padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
+        z-index:50;
+      }
+      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
+      .bottom-nav-item.active{color:#175cd3;font-weight:800}
+
+      @media (max-width: 760px){
+        .container{padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px))}
+        .topbar{
+          flex-direction:column;
+          align-items:flex-start;
+        }
+        .topbar-status{
+          width:100%;
+          justify-content:flex-start;
+        }
+        .top-pill{
+          width:100%;
+          border-radius:12px;
+        }
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{grid-template-columns:1fr}
+        .row{grid-template-columns:1fr}
+        .race-venue,.race-rno{font-size:20px}
+        .time{font-size:22px}
+        .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
+        .card-top-main{flex-direction:column;align-items:flex-start}
+        .status-wrap{margin-top:2px}
+      }
     </style>
     """
 
@@ -1086,21 +1296,30 @@ def render_layout(title, body_html):
       function getCardRootByRaceId(raceId){
         return document.querySelector('[data-race-id="' + raceId + '"]');
       }
+
       function getCheckedValues(raceId){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return []; }
         const checked = root.querySelectorAll('input[type="checkbox"][data-pick-value]:checked');
-        return Array.from(checked).map(x => (x.getAttribute('data-pick-value') || '').trim()).filter(Boolean);
+        return Array.from(checked)
+          .map(x => (x.getAttribute('data-pick-value') || '').trim())
+          .filter(Boolean);
       }
-      function syncSelectionValue(el, raceId){ return true; }
+
+      function syncSelectionValue(el, raceId){
+        return true;
+      }
+
       function updateSelectionSummary(raceId){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return; }
+
         const values = getCheckedValues(raceId);
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
         const amount = parseInt(root.getAttribute('data-amount') || '0', 10);
+
         if(summaryEl){
           if(values.length === 0){
             summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
@@ -1108,26 +1327,48 @@ def render_layout(title, body_html):
             summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + v + '</div>').join('') + '</div>';
           }
         }
-        if(countEl){ countEl.textContent = values.length + '点'; }
-        if(totalEl){ totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円'; }
+
+        if(countEl){
+          countEl.textContent = values.length + '点';
+        }
+
+        if(totalEl){
+          totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
+        }
       }
-      function toggleFormState(raceId){ return true; }
+
+      function toggleFormState(raceId){
+        return true;
+      }
+
       function updateBulkDeleteCount(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
         const el = document.getElementById('bulk-delete-count');
-        if(el){ el.textContent = count + '件選択中'; }
+        if(el){
+          el.textContent = count + '件選択中';
+        }
       }
+
       function toggleAllBulk(checked){
-        document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
+        document.querySelectorAll('.bulk-checkbox').forEach(el => {
+          el.checked = checked;
+        });
         updateBulkDeleteCount();
       }
+
       function confirmBulkDelete(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
-        if(count <= 0){ alert('削除するデータを選んでください'); return false; }
+        if(count <= 0){
+          alert('削除するデータを選んでください');
+          return false;
+        }
         return confirm(count + '件を削除しますか？');
       }
+
       document.addEventListener('DOMContentLoaded', function(){
-        document.querySelectorAll('form[data-race-id]').forEach(form => { updateSelectionSummary(form.getAttribute('data-race-id')); });
+        document.querySelectorAll('form[data-race-id]').forEach(form => {
+          updateSelectionSummary(form.getAttribute('data-race-id'));
+        });
         updateBulkDeleteCount();
       });
     </script>
@@ -1140,7 +1381,7 @@ def render_layout(title, body_html):
       <a href="/history" class="bottom-nav-item {history_active}"><span class="bottom-nav-icon">🗂️</span><span class="bottom-nav-label">過去</span></a>
     </nav>
     '''
-    return """<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title>{}</head><body><div class=\"container\">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
+    return """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>{}</title>{}</head><body><div class="container">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
 
 def is_valid_import_token(req):
@@ -1358,19 +1599,31 @@ def parse_selected_from_request():
 @app.route("/save", methods=["POST"])
 def save():
     race_id = int(request.form.get("race_id", "0"))
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect("/?type=error&msg=" + quote("データが見つかりません"))
+
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
     hit = 1 if request.form.get("hit") == "1" else 0
     payout_raw = request.form.get("payout", "").strip()
     payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
+
     if purchased == 0:
         hit = 0
         payout = 0
+
     if purchased == 1 and hit == 1 and payout <= 0:
-        return redirect("/?type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+        redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+        sep = "&" if "?" in redirect_base else "?"
+        return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+
     update_race_result(race_id, selected_text, hit, payout, memo)
-    return redirect("/?type=success&msg=" + quote("保存しました"))
+
+    redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+    sep = "&" if "?" in redirect_base else "?"
+    return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
 
 
 @app.route("/update_record", methods=["POST"])
