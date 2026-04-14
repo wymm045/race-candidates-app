@@ -308,7 +308,7 @@ def render_exhibition_rank_boxes(rank_text):
         rank_display = "-" if rank is None else str(rank)
         boxes += f'''
         <div class="{exhibition_rank_class(rank)}">
-          <div class="ex-lane">{lane}号艇</div>
+          <div class="ex-lane">{render_lane_badge(lane)}</div>
           <div class="ex-rank">{rank_display}</div>
         </div>
         '''
@@ -322,7 +322,7 @@ def render_exhibition_time_chips(exhibition_list):
     for i, t in enumerate(exhibition_list, start=1):
         chips += f'''
         <div class="ex-chip">
-          <span class="ex-chip-lane">{i}</span>
+          <span class="ex-chip-lane">{render_lane_badge(i)}</span>
           <span class="ex-chip-time">{t}</span>
         </div>
         '''
@@ -359,7 +359,7 @@ def render_player_names_html(player_names_text):
         name = player_map.get(lane, "未取得")
         items += f'''
         <div class="player-chip player-chip-{lane}">
-          <span class="player-chip-lane">{render_lane_badge(lane, '号艇')}</span>
+          <span class="player-chip-lane">{render_lane_badge(lane)}</span>
           <span class="player-chip-name">{name}</span>
         </div>
         '''
@@ -409,7 +409,7 @@ def render_class_history_blocks(class_history_text):
             chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
         html += f'''
         <div class="class-history-row">
-          <div class="class-history-lane">{render_lane_badge(lane, '号艇')}</div>
+          <div class="class-history-lane">{render_lane_badge(lane)}</div>
           <div class="class-history-chips">{chips}</div>
         </div>
         '''
@@ -451,7 +451,7 @@ def render_lane_score_chips(lane_score_text):
     items = sorted(items, key=lambda x: (-x[1], x[0]))
     chips = ""
     for lane, score in items:
-        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{lane}号艇</span><span class="lane-score-value">{score:.2f}</span></div>'
+        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{render_lane_badge(lane)}</span><span class="lane-score-value">{score:.2f}</span></div>'
     return f'<div class="lane-score-wrap">{chips}</div>'
 
 
@@ -1302,9 +1302,9 @@ def render_layout(title, body_html):
       .label{font-weight:700;color:#344054}
       .value{min-width:0}
       .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
-      .selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
-      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
       .selection-choice-chip{
         display:inline-block;
         cursor:pointer;
@@ -1360,39 +1360,45 @@ def render_layout(title, body_html):
       }
 
       
-      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border-radius:4px;font-weight:800;font-size:15px;line-height:1;border:1px solid rgba(0,0,0,.06)}
+      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 4px;border-radius:2px;font-weight:800;font-size:14px;line-height:1;border:1px solid rgba(0,0,0,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
       .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
       .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
       .lane-color-3{background:#ef4444;color:#ffffff;border-color:#ef4444}
       .lane-color-4{background:#3b82f6;color:#ffffff;border-color:#3b82f6}
       .lane-color-5{background:#fde047;color:#111827;border-color:#eab308}
       .lane-color-6{background:#22c55e;color:#ffffff;border-color:#22c55e}
-      .pick-inline{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
-      .pick-sep{font-weight:900;color:#667085;font-size:14px;line-height:1}
+      .pick-inline .lane-color{min-width:22px;height:22px;font-size:14px;border-radius:2px;padding:0 3px}
+      .picked-chip .pick-inline .lane-color,.selection-choice-body .pick-inline .lane-color{min-width:21px;height:21px;font-size:13px}
+      .player-chip .lane-color,.class-history-lane .lane-color,.ex-chip-lane .lane-color,.ex-lane .lane-color{min-width:28px;height:24px;font-size:14px;border-radius:2px}
+      .ex-chip{display:inline-flex;align-items:center;gap:8px}
+      .ex-chip-time{font-weight:700}
+      .ex-lane{display:flex;justify-content:center;margin-bottom:6px}
+      .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
+      .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
       .pick-plain{font-weight:800;color:#344054}
-      .player-chip-wrap{display:flex;flex-direction:column;gap:8px}
-      .player-chip{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+      .player-chip-wrap{display:flex;flex-direction:column;gap:6px}
+      .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       .player-chip-lane{flex:0 0 auto}
       .player-chip-name{font-weight:700;color:#172033}
 .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
-      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty{color:#667085}
-      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
       .lane-score-bad{background:#fef3f2}
       .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:10px;padding:8px;text-align:center}
       .ex-rank-1{background:#ecfdf3}
       .ex-rank-2{background:#eef4ff}
       .ex-rank-3{background:#fff6e5}
       .ex-rank-low{background:#fef3f2}
       .class-history-wrap{display:flex;flex-direction:column;gap:8px}
       .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
-      .class-history-lane{font-weight:800}
-      .class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
-      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}
+      .class-history-lane{font-weight:800;display:flex;align-items:center}
+      .class-history-chips{display:flex;gap:5px;flex-wrap:wrap}
+      .class-chip{display:inline-flex;gap:5px;align-items:center;border-radius:10px;padding:6px 8px;border:1px solid #d0d5dd;background:#fff}
       .class-chip-a1{background:#ecfdf3}
       .class-chip-a2{background:#eef4ff}
       .class-chip-b1{background:#fff6e5}
@@ -1465,11 +1471,11 @@ def render_layout(title, body_html):
         .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
         .class-history-lane{font-size:15px;line-height:1.2;margin-bottom:2px;}
         .class-history-chips{gap:8px}
-        .class-chip{padding:8px 12px;min-height:44px;border-radius:999px}
+        .class-chip{padding:6px 8px;min-height:36px;border-radius:10px}
         .class-chip-sub{font-size:12px;font-weight:700;color:#667085;min-width:auto;text-align:center;background:none;padding:0}
         .class-chip-main{font-size:15px;font-weight:900}
-        .class-history-row .class-history-chips .class-chip:first-child{padding-left:14px;padding-right:14px;border-width:2px}
-        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:20px;font-weight:900;letter-spacing:.01em}
+        .class-history-row .class-history-chips .class-chip:first-child{padding-left:10px;padding-right:10px;border-width:2px}
+        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:18px;font-weight:900;letter-spacing:.01em}
         .history-filter-meta{flex-direction:column;align-items:flex-start}
         .jump-wrap{width:100%}
         .jump-chip{min-width:48px;padding:8px 11px}
