@@ -1,2157 +1,1996 @@
 from datetime import datetime, timezone, timedelta
 import os
-import re
-import time
-from urllib.parse import urlencode
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+from urllib.parse import quote
 
-import requests
-from bs4 import BeautifulSoup
+import psycopg2
+import psycopg2.extras
+from flask import Flask, request, redirect, jsonify
+
+app = Flask(__name__)
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "").strip()
+IMPORT_TOKEN = os.environ.get("IMPORT_TOKEN", "").strip()
 
 JST = timezone(timedelta(hours=9))
 
-BASE_URL = "https://demedas.kyotei.club"
-RENDER_IMPORT_URL = os.environ.get(
-    "RENDER_IMPORT_URL",
-    "https://race-candidates-app.onrender.com/api/import_candidates",
-).strip()
-IMPORT_TOKEN = os.environ.get(
-    "IMPORT_TOKEN",
-    "race-token-2026",
-).strip()
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-}
-
-BET_TYPE = "3連単"
-BET_AMOUNT = 100
-
-REQUEST_TIMEOUT = (10, 20)
-POST_TIMEOUT = 40
-MAX_RETRIES = 3
-RETRY_SLEEP_SEC = 1.2
-
-OFFICIAL_MAX_WORKERS = 6
-BEFOREINFO_MAX_WORKERS = 12
-RACELIST_MAX_WORKERS = 6
-USE_RACELIST = True
-
-JCD_NAME_MAP = {
-    "02": "戸田",
-    "03": "江戸川",
-    "04": "平和島",
-    "05": "多摩川",
-    "06": "浜名湖",
-    "07": "蒲郡",
-    "08": "常滑",
-    "09": "津",
-    "10": "三国",
-    "11": "びわこ",
-    "12": "住之江",
-    "13": "尼崎",
-    "14": "鳴門",
-    "15": "丸亀",
-    "16": "児島",
-    "17": "宮島",
-    "20": "若松",
-    "21": "芦屋",
-    "22": "福岡",
-    "23": "唐津",
-    "24": "大村",
-}
-
-NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
-
-RATING_PAGE_MAP = {
-    "★★★★★": "s5",
-}
-
-RACELIST_VENUE_SLUG_MAP = {
-    "01": "kiryu",
-    "02": "toda",
-    "03": "edogawa",
-    "04": "heiwajima",
-    "05": "tamagawa",
-    "06": "hamanako",
-    "07": "gamagori",
-    "08": "tokoname",
-    "09": "tsu",
-    "10": "mikuni",
-    "11": "biwako",
-    "12": "suminoe",
-    "13": "amagasaki",
-    "14": "naruto",
-    "15": "marugame",
-    "16": "kojima",
-    "17": "miyajima",
-    "20": "wakamatsu",
-    "21": "ashiya",
-    "22": "fukuoka",
-    "23": "karatsu",
-    "24": "omura",
-}
-
-SESSION = requests.Session()
-SESSION.headers.update(HEADERS)
+AI_RATING_OPTIONS = [
+    "",
+    "AI★★★★★",
+    "AI★★★★☆",
+    "AI★★★☆☆",
+    "AI★★☆☆☆",
+    "AI★☆☆☆☆",
+]
 
 
 def log(msg):
-    print(msg, flush=True)
+    print(f"[DEBUG][{jst_now_str()}] {msg}", flush=True)
 
 
 def jst_now():
     return datetime.now(JST)
 
 
-def today_str():
-    return jst_now().strftime("%Y%m%d")
+def jst_now_str():
+    return jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
 
 
 def today_text():
     return jst_now().strftime("%Y-%m-%d")
 
 
-def today_text_dashless():
-    return jst_now().strftime("%Y%m%d")
-
-
 def current_hhmm():
     return jst_now().strftime("%H:%M")
 
 
-def to_minutes(hhmm):
+def is_star5_only(race):
+    return str(race.get("rating", "")).strip() == "★★★★★"
+
+
+def hhmm_to_minutes(hhmm):
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
 
 
-def is_future_or_now(hhmm):
+def is_not_started(time_str):
     try:
-        return to_minutes(hhmm) >= to_minutes(current_hhmm())
+        return hhmm_to_minutes(time_str) >= hhmm_to_minutes(current_hhmm())
     except Exception:
-        return False
+        return True
 
 
-def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
-    last_err = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            res = SESSION.get(url, timeout=timeout)
-            res.raise_for_status()
-            res.encoding = res.apparent_encoding
-            return res.text
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries:
-                log(f"[fetch_retry] attempt={attempt}/{max_retries} url={url} err={e}")
-                time.sleep(RETRY_SLEEP_SEC * attempt)
-            else:
-                log(f"[fetch_failed] url={url} err={e}")
-
-    raise last_err
-
-
-def fetch_soup(url):
-    html = fetch_html(url)
-    return BeautifulSoup(html, "html.parser"), html
-
-
-def normalize_lines(html):
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n")
-    lines = [line.strip() for line in text.splitlines()]
-    return [line for line in lines if line]
-
-
-def build_official_url(jcd, race_no=1):
-    return f"https://boatrace.jp/owpc/pc/race/pcexpect?rno={race_no}&jcd={jcd}&hd={today_str()}"
-
-
-def build_beforeinfo_url(jcd, race_no):
-    qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
-    return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
-
-
-def build_racelist_detail_url(jcd, race_no, scheme="https"):
-    slug = RACELIST_VENUE_SLUG_MAP.get(jcd)
-    if not slug:
-        return ""
-    return f"{scheme}://kyotei.sakura.ne.jp/racelist-{slug}-{today_text_dashless()}-{int(race_no)}.html"
-
-
-def build_info_detail_url(jcd, race_no):
-    return f"https://info.kyotei.fun/info-{today_text_dashless()}-{jcd}-{int(race_no)}.html"
-
-
-def try_fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=2):
-    last_err = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            res = SESSION.get(url, timeout=timeout)
-            res.raise_for_status()
-            res.encoding = res.apparent_encoding
-            return res.text
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries:
-                time.sleep(0.6 * attempt)
-    return None
-
-
-def normalize_text_for_class_parse(html):
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    text = soup.get_text("\n")
-    text = text.replace("\xa0", " ")
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n+", "\n", text)
-    return text.strip()
-
-
-def extract_class_block_tokens(text):
-    start = text.find("級")
-    if start < 0:
-        return {}
-
-    end_candidates = []
-    for marker in ["能力", "全国", "当地", "モーター", "ボート", "2連率", "勝率", "展示", "ST"]:
-        pos = text.find(marker, start + 1)
-        if pos > start:
-            end_candidates.append(pos)
-
-    if end_candidates:
-        block = text[start:min(end_candidates)]
-    else:
-        block = text[start:start + 1200]
-
-    tokens = re.findall(r"\b(A1|A2|B1|B2|-)\b", block)
-
-    if len(tokens) >= 24:
-        tokens = tokens[:24]
-        rows = {}
-        for lane in range(1, 7):
-            base = (lane - 1) * 4
-            rows[lane] = {
-                "current_class": "" if tokens[base] == "-" else tokens[base],
-                "prev1_class": "" if tokens[base + 1] == "-" else tokens[base + 1],
-                "prev2_class": "" if tokens[base + 2] == "-" else tokens[base + 2],
-                "prev3_class": "" if tokens[base + 3] == "-" else tokens[base + 3],
-            }
-        return rows
-
-    if len(tokens) >= 18:
-        tokens = tokens[:18]
-        rows = {}
-        for lane in range(1, 7):
-            base = (lane - 1) * 3
-            rows[lane] = {
-                "current_class": "" if tokens[base] == "-" else tokens[base],
-                "prev1_class": "" if tokens[base + 1] == "-" else tokens[base + 1],
-                "prev2_class": "" if tokens[base + 2] == "-" else tokens[base + 2],
-                "prev3_class": "",
-            }
-        return rows
-
-    return {}
-
-
-def parse_official_deadlines_from_html(html):
-    lines = normalize_lines(html)
-    deadlines = {}
-
-    for i, line in enumerate(lines):
-        if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 80])
-            times = re.findall(r"\d{2}:\d{2}", block)
-            if times:
-                for idx, t in enumerate(times[:12], start=1):
-                    deadlines[idx] = t
-                return deadlines
-
-    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
-    if len(all_times) >= 12:
-        for idx, t in enumerate(all_times[:12], start=1):
-            deadlines[idx] = t
-
-    return deadlines
-
-
-def parse_single_race_deadline(jcd, race_no):
-    url = build_official_url(jcd, race_no=race_no)
+def minutes_until_start(time_str):
     try:
-        html = fetch_html(url)
-    except Exception as e:
-        log(f"[official_single_error] jcd={jcd} race_no={race_no} err={e}")
-        return ""
-
-    lines = normalize_lines(html)
-
-    for i, line in enumerate(lines):
-        if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 30])
-            times = re.findall(r"\d{2}:\d{2}", block)
-            if times:
-                return times[0]
-
-    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
-    if all_times:
-        return all_times[0]
-
-    return ""
-
-
-def parse_official_deadlines_for_jcd(jcd):
-    official_url = build_official_url(jcd, race_no=1)
-    venue = JCD_NAME_MAP.get(jcd, jcd)
-
-    try:
-        html = fetch_html(official_url)
-    except Exception as e:
-        log(f"[official_deadlines_error] jcd={jcd} venue={venue} err={e}")
-        return jcd, {}
-
-    deadlines = parse_official_deadlines_from_html(html)
-    if deadlines:
-        log(f"[official_deadlines_ok] jcd={jcd} venue={venue} count={len(deadlines)}")
-    else:
-        log(f"[official_deadlines_empty] jcd={jcd} venue={venue}")
-
-    return jcd, deadlines
-
-
-def clean_num(text):
-    if text is None:
-        return None
-    s = str(text).strip().replace("%", "")
-    m = re.search(r"\d+(?:\.\d+)?", s)
-    if not m:
-        return None
-    try:
-        return float(m.group(0))
+        return hhmm_to_minutes(time_str) - hhmm_to_minutes(current_hhmm())
     except Exception:
         return None
 
 
-def normalize_weather_text(text):
-    if not text:
-        return ""
-    text = text.strip()
-    if "晴" in text:
-        return "晴"
-    if "曇" in text:
-        return "曇"
-    if "雨" in text:
-        return "雨"
-    if "雪" in text:
-        return "雪"
-    return text
+def render_countdown_badge(time_str):
+    diff = minutes_until_start(time_str)
+    if diff is None:
+        return '<span class="countdown-badge countdown-normal">時刻不明</span>'
+    if diff < 0:
+        return '<span class="countdown-badge countdown-closed">締切後</span>'
+    if diff <= 10:
+        return '<span class="countdown-badge countdown-soon">まもなく締切</span>'
+    if diff <= 30:
+        return f'<span class="countdown-badge countdown-warning">あと{diff}分</span>'
+    return f'<span class="countdown-badge countdown-normal">あと{diff}分</span>'
 
 
-def attrs_text(el):
-    vals = []
-    for key in ("alt", "title", "aria-label", "data-label"):
-        v = el.get(key)
-        if v:
-            vals.append(str(v))
-    return " ".join(vals)
+def db_connect():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL が設定されていません")
+    return psycopg2.connect(DATABASE_URL)
 
 
-def detect_wind_direction_from_text(text):
-    if not text:
-        return ""
-
-    checks = [
-        "向かい風",
-        "追い風",
-        "左横風",
-        "右横風",
-        "横風",
-        "左追い風",
-        "右追い風",
-        "左向かい風",
-        "右向かい風",
-    ]
-    for k in checks:
-        if k in text:
-            return k
-    return ""
+def parse_json_array_text(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+    return []
 
 
-def classify_wind_type(direction_text):
-    if not direction_text:
-        return ""
-
-    if "向かい風" in direction_text:
-        return "headwind"
-    if "追い風" in direction_text:
-        return "tailwind"
-    if "横風" in direction_text:
-        return "crosswind"
-    return ""
-
-
-def parse_environment_info(html, soup, lines):
-    joined = " ".join(lines)
-    env = {
-        "weather": "",
-        "wind_speed": None,
-        "wave_height": None,
-        "water_temp": None,
-        "air_temp": None,
-        "wind_direction": "",
-        "wind_type": "",
-        "stabilizer": False,
-    }
-
-    m_air = re.search(r"気温\s*([0-9]+(?:\.[0-9]+)?)℃", joined)
-    if m_air:
-        env["air_temp"] = float(m_air.group(1))
-
-    m_weather = re.search(r"(晴れ?|曇り?|雨|雪)", joined)
-    if m_weather:
-        env["weather"] = normalize_weather_text(m_weather.group(1))
-
-    m_wind = re.search(r"風速\s*([0-9]+(?:\.[0-9]+)?)m", joined)
-    if m_wind:
-        env["wind_speed"] = float(m_wind.group(1))
-
-    m_water = re.search(r"水温\s*([0-9]+(?:\.[0-9]+)?)℃", joined)
-    if m_water:
-        env["water_temp"] = float(m_water.group(1))
-
-    m_wave = re.search(r"波高\s*([0-9]+(?:\.[0-9]+)?)cm", joined)
-    if m_wave:
-        env["wave_height"] = float(m_wave.group(1))
-
-    if "安定板使用" in joined or "安定板" in joined:
-        env["stabilizer"] = True
-
-    direction = detect_wind_direction_from_text(joined)
-
-    if not direction:
-        for el in soup.find_all(True):
-            meta = attrs_text(el)
-            direction = detect_wind_direction_from_text(meta)
-            if direction:
-                break
-
-    if not direction:
-        for el in soup.find_all("img"):
-            src = (el.get("src") or "") + " " + (el.get("data-src") or "")
-            direction = detect_wind_direction_from_text(src)
-            if direction:
-                break
-
-    env["wind_direction"] = direction
-    env["wind_type"] = classify_wind_type(direction)
-
-    return env
-
-
-def summarize_environment_for_log(env):
-    parts = []
-    if env.get("weather"):
-        parts.append(f"weather={env['weather']}")
-    if env.get("wind_speed") is not None:
-        parts.append(f"wind={env['wind_speed']}m")
-    if env.get("wind_direction"):
-        parts.append(f"dir={env['wind_direction']}")
-    else:
-        parts.append("dir=-")
-    if env.get("wave_height") is not None:
-        parts.append(f"wave={env['wave_height']}cm")
-    if env.get("stabilizer"):
-        parts.append("stb=Y")
-    else:
-        parts.append("stb=N")
-    return " ".join(parts)
-
-
-def is_probable_player_name(text):
-    s = str(text or "").strip()
-    if not s:
-        return False
-
-    compact = re.sub(r"\s+", "", s)
-    if not compact:
-        return False
-
-    ng_words = [
-        "天候", "風速", "波高", "気温", "水温", "安定板", "水面", "気象", "情報", "時点",
-        "展示", "進入", "体重", "調整", "部品", "全国", "当地", "モーター", "ボート", "勝率",
-        "連率", "ST", "級別", "能力", "今節", "成績", "平均", "欠場", "事故", "レース", "気配",
-        "晴", "雨", "曇", "曇り", "雲り", "くもり", "クモリ", "風", "波", "追い風", "向かい風", "横風",
-        "満潮", "干潮", "右横風", "左横風", "小潮", "中潮", "大潮", "若潮", "長潮", "小雨",
-    ]
-    if any(word in compact for word in ng_words):
-        return False
-
-    if re.search(r"[0-9０-９]", compact):
-        return False
-    if re.search(r"[A-Za-zＡ-Ｚａ-ｚ]", compact):
-        return False
-    if re.search(r"[\./:％%㎡㎝m-]", compact):
-        return False
-    if len(compact) < 2 or len(compact) > 8:
-        return False
-    if not re.fullmatch(r"[一-龯ぁ-んァ-ヶー\s]+", s):
-        return False
-
-    # 名前としては不自然な、ひらがな中心の単語をさらに除外
-    kanji_count = len(re.findall(r"[一-龯]", compact))
-    hira_count = len(re.findall(r"[ぁ-ん]", compact))
-    kata_count = len(re.findall(r"[ァ-ヶー]", compact))
-    if kanji_count == 0 and kata_count == 0:
-        return False
-    if hira_count >= 2 and kanji_count <= 1 and kata_count == 0:
-        return False
-    return True
-
-def normalize_player_name(text):
-    s = str(text or "").strip()
-    s = s.replace("　", " ")
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"\([A-Z0-9]+\)$", "", s).strip()
-    s = re.sub(r"^(?:登録番号|支部|年齢|体重)\s*", "", s).strip()
+def display_text(value, empty_text="未取得"):
+    if value is None:
+        return empty_text
+    s = str(value).strip()
+    if s == "" or s == "-":
+        return empty_text
     return s
 
 
-def extract_player_names_from_lines(lines):
-    result = {}
-    lane_positions = []
-    for idx, line in enumerate(lines):
-        if re.fullmatch(r"[1-6]", line):
-            lane_positions.append((idx, int(line)))
-
-    for pos_idx, lane in lane_positions:
-        segment = lines[pos_idx + 1:pos_idx + 6]
-        candidates = []
-        for i, line in enumerate(segment):
-            name = normalize_player_name(line)
-            if not is_probable_player_name(name):
-                continue
-            if len(name.replace(" ", "")) <= 1:
-                continue
-            candidates.append((i, name))
-
-        if not candidates:
-            continue
-
-        name = candidates[0][1]
-
-        if len(candidates) >= 2:
-            first_idx, first_name = candidates[0]
-            second_idx, second_name = candidates[1]
-            first_compact = first_name.replace(" ", "")
-            second_compact = second_name.replace(" ", "")
-            if (
-                second_idx == first_idx + 1
-                and " " not in first_name
-                and " " not in second_name
-                and 1 <= len(first_compact) <= 4
-                and 1 <= len(second_compact) <= 4
-            ):
-                joined = normalize_player_name(first_compact + " " + second_compact)
-                if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}\s+[一-龯ぁ-んァ-ヶー]{1,6}", joined):
-                    name = joined
-
-        if not is_probable_player_name(name):
-            continue
-        result[lane] = name
-
-    return result
-
-
-def make_player_names_text(player_names_map):
-    return " / ".join([f"{lane}:{player_names_map.get(lane, '')}" for lane in range(1, 7) if player_names_map.get(lane)])
-
-
-def parse_beforeinfo_for_key(jcd, race_no):
-    beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-
+def safe_float(value, default=0.0):
     try:
-        html = fetch_html(beforeinfo_url)
-    except Exception as e:
-        log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
-        return (jcd, race_no), {
-            "exhibition": {"times": [], "ranks": {}},
-            "boat_stats": {},
-            "player_names": {},
-            "environment": {
-                "weather": "",
-                "wind_speed": None,
-                "wave_height": None,
-                "water_temp": None,
-                "air_temp": None,
-                "wind_direction": "",
-                "wind_type": "",
-                "stabilizer": False,
-            },
-        }
-
-    soup = BeautifulSoup(html, "html.parser")
-    lines = normalize_lines(html)
-    environment = parse_environment_info(html, soup, lines)
-    player_names = extract_player_names_from_lines(lines)
-
-    time_candidates = []
-    for line in lines:
-        if re.fullmatch(r"\d\.\d{2}", line):
-            time_candidates.append(line)
-
-    if len(time_candidates) < 6:
-        for line in lines:
-            found = re.findall(r"\d\.\d{2}", line)
-            for m in found:
-                time_candidates.append(m)
-
-    times = time_candidates[:6]
-    ranks = {}
-
-    if len(times) == 6:
-        float_pairs = []
-        for lane, t in enumerate(times, start=1):
-            try:
-                float_pairs.append((lane, float(t)))
-            except Exception:
-                float_pairs = []
-                break
-
-        if float_pairs:
-            sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
-            current_rank = 1
-            prev_time = None
-
-            for idx, (lane, t) in enumerate(sorted_pairs, start=1):
-                if prev_time is None or t != prev_time:
-                    current_rank = idx
-                ranks[lane] = current_rank
-                prev_time = t
-        else:
-            times = []
-
-    if len(times) != 6:
-        times = []
-        ranks = {}
-
-    stats = {}
-    for lane in range(1, 7):
-        stats[lane] = {
-            "class": "",
-            "national_win": None,
-            "local_win": None,
-            "motor2": None,
-            "boat2": None,
-        }
-
-    lane_positions = []
-    for idx, line in enumerate(lines):
-        if re.fullmatch(r"[1-6]", line):
-            lane_positions.append((idx, int(line)))
-
-    for pos_idx, lane in lane_positions:
-        segment = lines[pos_idx:pos_idx + 40]
-        joined = " ".join(segment)
-
-        m_class = re.search(r"\b(A1|A2|B1|B2)\b", joined)
-        if m_class:
-            stats[lane]["class"] = m_class.group(1)
-
-        nums = [clean_num(x) for x in segment]
-        nums = [x for x in nums if x is not None]
-
-        win_like = [x for x in nums if 0 <= x <= 10]
-        rate_like = [x for x in nums if 0 <= x <= 100]
-
-        if len(win_like) >= 1 and stats[lane]["national_win"] is None:
-            stats[lane]["national_win"] = win_like[0]
-        if len(win_like) >= 2 and stats[lane]["local_win"] is None:
-            stats[lane]["local_win"] = win_like[1]
-
-        if len(rate_like) >= 2:
-            stats[lane]["motor2"] = rate_like[-2]
-            stats[lane]["boat2"] = rate_like[-1]
-        elif len(rate_like) == 1:
-            stats[lane]["motor2"] = rate_like[-1]
-
-    for lane in range(1, 7):
-        s = stats[lane]
-        if s["national_win"] is not None and s["national_win"] > 10:
-            s["national_win"] = None
-        if s["local_win"] is not None and s["local_win"] > 10:
-            s["local_win"] = None
-        if s["motor2"] is not None and s["motor2"] > 100:
-            s["motor2"] = None
-        if s["boat2"] is not None and s["boat2"] > 100:
-            s["boat2"] = None
-
-    log(
-        f"[beforeinfo_env] jcd={jcd} race_no={race_no} "
-        f"times={len(times)} ranks={len(ranks)} names={len(player_names)} "
-        f"{summarize_environment_for_log(environment)}"
-    )
-
-    return (jcd, race_no), {
-        "exhibition": {"times": times, "ranks": ranks},
-        "boat_stats": stats,
-        "player_names": player_names,
-        "environment": environment,
-    }
+        if value is None:
+            return float(default)
+        s = str(value).strip()
+        if s == "":
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
 
 
-def parse_racelist_race_from_html(html, race_no, jcd, venue):
-    text = normalize_text_for_class_parse(html)
-    lane_map = extract_class_block_tokens(text)
-
-    if len(lane_map) == 6:
-        log(
-            f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} "
-            f"sample={lane_map.get(1, {})}"
-        )
-        return lane_map
-
-    snippet = text[:1200].replace("\n", " / ")
-    log(
-        f"[racelist_race_lane_short] jcd={jcd} venue={venue} race_no={race_no} "
-        f"lanes={len(lane_map)} snippet={snippet}"
-    )
-    return {}
+def normalize_ai_detail(raw_detail, exhibition_list):
+    detail = (raw_detail or "").strip()
+    has_exhibition = bool(exhibition_list)
+    if has_exhibition and not detail:
+        return "展示反映"
+    if not detail:
+        return "基本補正のみ"
+    if detail in ["モーター反映", "展示反映"]:
+        return "展示補正なし"
+    return detail
 
 
-def parse_racelist_page_all_races(jcd):
-    venue = JCD_NAME_MAP.get(jcd, jcd)
-    result = {}
+def yen(n):
+    try:
+        return f"{int(n):,}円"
+    except Exception:
+        return "0円"
 
-    for race_no in range(1, 13):
-        url_candidates = [
-            build_racelist_detail_url(jcd, race_no, scheme="https"),
-            build_racelist_detail_url(jcd, race_no, scheme="http"),
-            build_info_detail_url(jcd, race_no),
-        ]
-        url_candidates = [u for u in url_candidates if u]
-
-        html = None
-        used_url = ""
-        for url in url_candidates:
-            html = try_fetch_html(url)
-            if html:
-                used_url = url
-                break
-            else:
-                log(f"[racelist_try_failed] jcd={jcd} venue={venue} race_no={race_no} url={url}")
-
-        if not html:
-            log(f"[racelist_page_error] jcd={jcd} venue={venue} race_no={race_no} all_failed=1")
-            continue
-
-        lane_map = parse_racelist_race_from_html(html, race_no, jcd, venue)
-        if lane_map:
-            result[race_no] = lane_map
-            log(f"[racelist_source_ok] jcd={jcd} venue={venue} race_no={race_no} url={used_url}")
-        else:
-            log(f"[racelist_source_parse_miss] jcd={jcd} venue={venue} race_no={race_no} url={used_url}")
-
-    log(f"[racelist_summary] jcd={jcd} venue={venue} races={len(result)}")
-    return result
+def lane_color_class(lane):
+    try:
+        lane_num = int(lane)
+    except Exception:
+        lane_num = 0
+    return f"lane-color lane-color-{lane_num}"
 
 
-def parse_racelist_for_jcd(jcd):
-    venue = JCD_NAME_MAP.get(jcd, jcd)
-
-    if jcd not in RACELIST_VENUE_SLUG_MAP:
-        log(f"[racelist_skip] jcd={jcd} venue={venue}")
-        return jcd, {}
-
-    result = parse_racelist_page_all_races(jcd)
-    return jcd, result
+def render_lane_badge(lane, suffix=""):
+    label = f"{lane}{suffix}" if suffix else str(lane)
+    return f'<span class="{lane_color_class(lane)}">{label}</span>'
 
 
-def normalize_triplet(a, b, c):
-    if a == b or a == c or b == c:
+def render_colored_pick_html(pick_text):
+    s = normalize_pick_text(pick_text)
+    if not s:
         return ""
-    return f"{a}-{b}-{c}"
-
-
-def selection_triplets(selection):
-    if not selection:
-        return []
-    return [x.strip() for x in str(selection).split(" / ") if x.strip()]
-
-
-def avg_stat(stats_list, key):
-    vals = []
-    for s in stats_list:
-        v = s.get(key)
-        if isinstance(v, (int, float)):
-            vals.append(float(v))
-    if not vals:
-        return None
-    return sum(vals) / len(vals)
-
-
-def score_to_ai_rating(score):
-    if score >= 2.0:
-        return "AI★★★★★"
-    if score >= 1.2:
-        return "AI★★★★☆"
-    if score >= 0.5:
-        return "AI★★★☆☆"
-    if score >= -0.2:
-        return "AI★★☆☆☆"
-    return "AI★☆☆☆☆"
-
-
-def decide_final_rank(official_rating, ai_score):
-    if official_rating == "★★★★★" and ai_score >= 1.2:
-        return "買い強め"
-    if official_rating == "★★★★★" and ai_score >= 0.5:
-        return "買い"
-    if ai_score >= -0.2:
-        return "様子見"
-    return "見送り寄り"
-
-
-def class_point(cls):
-    if cls == "A1":
-        return 1.25
-    if cls == "A2":
-        return 0.55
-    if cls == "B1":
-        return -0.05
-    if cls == "B2":
-        return -0.95
-    return 0.0
-
-
-def class_history_score(class_history):
-    cur = class_history.get("current_class", "")
-    prev1 = class_history.get("prev1_class", "")
-    prev2 = class_history.get("prev2_class", "")
-    prev3 = class_history.get("prev3_class", "")
-
-    score = 0.0
-    score += class_point(cur) * 1.20
-    score += class_point(prev1) * 0.85
-    score += class_point(prev2) * 0.60
-    score += class_point(prev3) * 0.45
-
-    pattern = [cur, prev1, prev2, prev3]
-    a1_count = sum(1 for x in pattern if x == "A1")
-    a2_or_better_count = sum(1 for x in pattern if x in {"A1", "A2"})
-    b2_count = sum(1 for x in pattern if x == "B2")
-
-    if pattern[:3] == ["A1", "A1", "A1"]:
-        score += 0.70
-    if pattern[:4] == ["A1", "A1", "A1", "A1"]:
-        score += 0.30
-    if a1_count >= 2:
-        score += 0.18
-    if a2_or_better_count >= 3:
-        score += 0.16
-
-    if cur == "A1" and prev1 in {"A2", "B1"}:
-        score += 0.15
-    if cur == "A2" and prev1 == "B1":
-        score += 0.10
-    if cur in {"B1", "B2"} and prev1 == "A1":
-        score -= 0.16
-    if cur == "B2":
-        score -= 0.22
-    if b2_count >= 2:
-        score -= 0.18
-
-    return round(score, 3)
-
-
-def make_class_history_text(class_history):
-    cur = class_history.get("current_class", "")
-    prev1 = class_history.get("prev1_class", "")
-    prev2 = class_history.get("prev2_class", "")
-    prev3 = class_history.get("prev3_class", "")
-    parts = [x for x in [cur, prev1, prev2, prev3] if x]
-    return " / ".join(parts)
-
-
-def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_history_map):
-    scores = {lane: 0.0 for lane in range(1, 7)}
-    exhibition_times = exhibition_info.get("times", [])
-    exhibition_ranks = exhibition_info.get("ranks", {})
-
-    lane_time_map = {}
-    for lane, t in enumerate(exhibition_times, start=1):
-        try:
-            lane_time_map[lane] = float(t)
-        except Exception:
-            pass
-
-    for lane in range(1, 7):
-        s = boat_stats.get(lane, {})
-        ch = class_history_map.get(lane, {})
-
-        national = s.get("national_win")
-        local = s.get("local_win")
-        motor2 = s.get("motor2")
-        boat2 = s.get("boat2")
-        cls = s.get("class") or ch.get("current_class") or ""
-
-        if national is not None:
-            scores[lane] += (national - 5.3) * 0.36
-        if local is not None:
-            scores[lane] += (local - 5.1) * 0.20
-        if motor2 is not None:
-            scores[lane] += (motor2 - 34.0) * 0.022
-        if boat2 is not None:
-            scores[lane] += (boat2 - 33.0) * 0.010
-
-        class_score = class_history_score(
-            {
-                "current_class": cls,
-                "prev1_class": ch.get("prev1_class", ""),
-                "prev2_class": ch.get("prev2_class", ""),
-                "prev3_class": ch.get("prev3_class", ""),
-            }
-        )
-        scores[lane] += class_score * 1.15
-
-        if cls == "A1":
-            scores[lane] += 0.22
-        elif cls == "A2":
-            scores[lane] += 0.08
-        elif cls == "B2":
-            scores[lane] -= 0.18
-
-        if lane in exhibition_ranks:
-            r = exhibition_ranks[lane]
-            if r == 1:
-                scores[lane] += 0.70
-            elif r == 2:
-                scores[lane] += 0.45
-            elif r == 3:
-                scores[lane] += 0.20
-            elif r >= 5:
-                scores[lane] -= 0.30
-
-        if lane in lane_time_map:
-            all_times = list(lane_time_map.values())
-            top_time = min(all_times)
-            gap = lane_time_map[lane] - top_time
-            if gap <= 0.00:
-                scores[lane] += 0.35
-            elif gap <= 0.03:
-                scores[lane] += 0.18
-            elif gap >= 0.10:
-                scores[lane] -= 0.12
-
-        if lane == 1:
-            scores[lane] += 0.22
-        elif lane == 2:
-            scores[lane] += 0.08
-        elif lane >= 5:
-            scores[lane] -= 0.06
-
-    env = environment or {}
-    wind_speed = env.get("wind_speed")
-    wave_height = env.get("wave_height")
-    wind_type = env.get("wind_type") or ""
-    stabilizer = bool(env.get("stabilizer"))
-
-    if wind_speed is not None:
-        if wind_speed >= 4 and wind_type == "headwind":
-            scores[1] += 0.28
-            scores[2] += 0.08
-            scores[4] -= 0.08
-            scores[5] -= 0.12
-            scores[6] -= 0.15
-        elif wind_speed >= 4 and wind_type == "tailwind":
-            scores[4] += 0.10
-            scores[5] += 0.16
-            scores[6] += 0.12
-        elif wind_speed >= 4 and wind_type == "crosswind":
-            scores[4] -= 0.08
-            scores[5] -= 0.10
-            scores[6] -= 0.12
-
-        if wind_speed >= 6:
-            scores[1] += 0.12
-            scores[5] -= 0.10
-            scores[6] -= 0.15
-
-    if wave_height is not None:
-        if wave_height >= 5:
-            scores[1] += 0.10
-            scores[4] -= 0.05
-            scores[5] -= 0.08
-            scores[6] -= 0.10
-        if wave_height >= 7:
-            scores[1] += 0.08
-            scores[5] -= 0.08
-            scores[6] -= 0.12
-
-    if stabilizer:
-        scores[1] += 0.15
-        scores[2] += 0.05
-        scores[4] -= 0.08
-        scores[5] -= 0.12
-        scores[6] -= 0.14
-
-    return scores
-
-
-def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map):
-    exhibition_info = exhibition_info or {}
-    boat_stats = boat_stats or {}
-    environment = environment or {}
-    class_history_map = class_history_map or {}
-
-    exhibition_times = exhibition_info.get("times", []) or []
-    exhibition_ranks = exhibition_info.get("ranks", {}) or {}
-
-    has_exhibition_times = len(exhibition_times) == 6
-    has_exhibition_ranks = len(exhibition_ranks) == 6
-    has_boat_stats = any(bool(boat_stats.get(lane)) for lane in range(1, 7))
-    has_class_history = any(bool(class_history_map.get(lane)) for lane in range(1, 7))
-    has_environment = any(
-        [
-            environment.get("weather"),
-            environment.get("wind_speed") is not None,
-            environment.get("wave_height") is not None,
-            environment.get("wind_direction"),
-            environment.get("stabilizer"),
-        ]
-    )
-
-    if not has_exhibition_times and not has_exhibition_ranks and not has_boat_stats and not has_class_history and not has_environment:
-        return {
-            "ai_selection": "",
-            "ai_confidence": "",
-            "ai_lane_scores": {},
-            "ai_lane_score_text": "",
-        }
-
-    lane_scores = generate_lane_ai_scores(
-        exhibition_info,
-        boat_stats,
-        environment,
-        class_history_map,
-    )
-
-    sorted_lanes = sorted(lane_scores.items(), key=lambda x: (-x[1], x[0]))
-    top_lanes = [lane for lane, _score in sorted_lanes]
-
-    if len(top_lanes) < 3:
-        return {
-            "ai_selection": "",
-            "ai_confidence": "",
-            "ai_lane_scores": lane_scores,
-            "ai_lane_score_text": "",
-        }
-
-    if has_exhibition_times or has_exhibition_ranks:
-        first_candidates = top_lanes[:3]
-        second_candidates = top_lanes[:4]
-        third_candidates = top_lanes[:5]
-    else:
-        first_candidates = top_lanes[:2]
-        second_candidates = top_lanes[:4]
-        third_candidates = top_lanes[:5]
-
-    triplets = []
-    scored_triplets = []
-
-    for a in first_candidates:
-        for b in second_candidates:
-            for c in third_candidates:
-                if len({a, b, c}) < 3:
-                    continue
-                score = lane_scores[a] * 1.25 + lane_scores[b] * 0.90 + lane_scores[c] * 0.60
-                scored_triplets.append((score, normalize_triplet(str(a), str(b), str(c))))
-
-    scored_triplets.sort(key=lambda x: (-x[0], x[1]))
-
-    for score, tri in scored_triplets:
-        if tri and tri not in triplets:
-            triplets.append(tri)
-        if len(triplets) >= 6:
-            break
-
-    top_score = sorted_lanes[0][1] if sorted_lanes else 0.0
-    second_score = sorted_lanes[1][1] if len(sorted_lanes) >= 2 else top_score
-    third_score = sorted_lanes[2][1] if len(sorted_lanes) >= 3 else second_score
-
-    confidence_gap = round(top_score - second_score, 2)
-    head_gap_3 = round(top_score - third_score, 2)
-
-    if has_exhibition_times or has_exhibition_ranks:
-        if confidence_gap >= 0.8:
-            confidence = "A"
-        elif confidence_gap >= 0.35:
-            confidence = "B"
+    parts = s.split("-")
+    html_parts = []
+    for idx, part in enumerate(parts):
+        if idx > 0:
+            html_parts.append('<span class="pick-sep">-</span>')
+        lane_text = str(part).strip()
+        if lane_text.isdigit():
+            html_parts.append(render_lane_badge(int(lane_text)))
         else:
-            confidence = "C"
-    else:
-        if confidence_gap >= 0.9 and head_gap_3 >= 1.2:
-            confidence = "B"
-        elif confidence_gap >= 0.35:
-            confidence = "C"
-        else:
-            confidence = "C"
-
-    lane_score_text = " / ".join([f"{lane}:{round(score, 2)}" for lane, score in sorted_lanes])
-
-    return {
-        "ai_selection": " / ".join(triplets[:6]),
-        "ai_confidence": confidence,
-        "ai_lane_scores": lane_scores,
-        "ai_lane_score_text": lane_score_text,
-    }
+            html_parts.append(f'<span class="pick-plain">{lane_text}</span>')
+    return f'<span class="pick-inline">{"".join(html_parts)}</span>'
 
 
-def extract_digits_from_cell(cell):
-    digits = []
-
-    for el in cell.find_all(True):
-        txt = el.get_text(strip=True)
-        if re.fullmatch(r"[1-6]", txt):
-            digits.append(txt)
-
-    if len(digits) < 18:
-        full_text = cell.get_text(" ", strip=True)
-        for d in re.findall(r"\b([1-6])\b", full_text):
-            digits.append(d)
-
-    cleaned = []
-    for d in digits:
-        if d in {"1", "2", "3", "4", "5", "6"}:
-            cleaned.append(d)
-    return cleaned
-
-
-def triplets_from_digit_sequence(digits):
-    triplets = []
-    for i in range(0, len(digits) - 2, 3):
-        a, b, c = digits[i], digits[i + 1], digits[i + 2]
-        t = normalize_triplet(a, b, c)
-        if not t:
-            continue
-        if t not in triplets:
-            triplets.append(t)
-        if len(triplets) >= 6:
-            break
-    return triplets
-
-
-def parse_race_identity_from_text(text):
-    m = re.search(r"(\d{2})\s*([^\s]+)\s*(\d{1,2})R", text)
-    if not m:
-        return None
-    return {
-        "jcd": m.group(1),
-        "venue": m.group(2).strip(),
-        "race_no": int(m.group(3)),
-    }
-
-
-def row_cells(tr):
-    return tr.find_all(["td", "th"], recursive=False)
-
-
-def parse_rating_page_dom(rating_text):
-    page = RATING_PAGE_MAP[rating_text]
-    url = f"{BASE_URL}/{page}/{today_str()}.html"
-
+def percent(n):
     try:
-        soup, _html = fetch_soup(url)
-    except Exception as e:
-        log(f"[rating_page_dom_error] rating={rating_text} url={url} err={e}")
-        return []
+        return f"{float(n):.1f}%"
+    except Exception:
+        return "0%"
 
-    rows = []
 
-    header_idx = {}
-    header_found = False
+def profit_class(value):
+    try:
+        v = int(value)
+    except Exception:
+        v = 0
+    if v > 0:
+        return "profit-plus"
+    if v < 0:
+        return "profit-minus"
+    return "profit-zero"
 
-    for tr in soup.find_all("tr"):
-        cells = row_cells(tr)
-        if not cells:
-            continue
 
-        cell_texts = [c.get_text(" ", strip=True) for c in cells]
-        joined = " | ".join(cell_texts)
+def normalize_pick_text(value):
+    return str(value or "").replace(" ", "").replace("\n", "").replace("\r", "").strip()
 
-        if (not header_found) and ("会場" in joined and "3連単" in joined and "2連単" in joined):
-            for idx, txt in enumerate(cell_texts):
-                if "会場" in txt:
-                    header_idx["race"] = idx
-                elif txt == "3連単" or "3連単" in txt:
-                    header_idx["trifecta"] = idx
-            if "race" in header_idx and "trifecta" in header_idx:
-                header_found = True
-            continue
 
-        if not header_found:
-            continue
+def selection_items(selection_text):
+    return [normalize_pick_text(x) for x in str(selection_text or "").split(" / ") if normalize_pick_text(x)]
 
-        if len(cells) <= max(header_idx["race"], header_idx["trifecta"]):
-            continue
 
-        race_cell = cells[header_idx["race"]]
-        trifecta_cell = cells[header_idx["trifecta"]]
+def unique_preserve(seq):
+    result = []
+    seen = set()
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
 
-        race_text = race_cell.get_text(" ", strip=True)
-        info = parse_race_identity_from_text(race_text)
-        if not info:
-            row_text = tr.get_text(" ", strip=True)
-            info = parse_race_identity_from_text(row_text)
 
-        if not info:
-            continue
+def merge_selected_items(official_selected, ai_selected):
+    return unique_preserve(list(official_selected) + list(ai_selected))
 
-        digits = extract_digits_from_cell(trifecta_cell)
-        triplets = triplets_from_digit_sequence(digits)
 
-        if len(triplets) < 6:
-            continue
+def get_selected_count_from_text(selection_text):
+    return len(selection_items(selection_text))
 
-        rows.append(
-            {
-                "venue": info["venue"],
-                "jcd": info["jcd"],
-                "race_no": info["race_no"],
-                "rating": rating_text,
-                "selection": " / ".join(triplets[:6]),
-            }
+
+def get_selected_total_amount(race):
+    return int(race.get("amount") or 0) * get_selected_count_from_text(
+        race.get("purchased_selection_text", "")
+    )
+
+
+def get_saved_state_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY
+            CASE
+                WHEN hit = 1 THEN 4
+                WHEN purchased = 1 THEN 3
+                WHEN payout > 0 THEN 2
+                WHEN COALESCE(memo, '') <> '' THEN 1
+                ELSE 0
+            END DESC,
+            id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    saved_map = {}
+    for row in rows:
+        key = (
+            str(row["race_date"]).strip(),
+            str(row["venue"]).strip(),
+            str(row["race_no"]).strip(),
         )
+        if key in saved_map:
+            continue
+        saved_map[key] = {
+            "purchased": int(row.get("purchased") or 0),
+            "hit": int(row.get("hit") or 0),
+            "payout": int(row.get("payout") or 0),
+            "memo": str(row.get("memo") or "").strip(),
+            "purchased_selection_text": str(row.get("purchased_selection_text") or "").strip(),
+        }
+    return saved_map
 
-    dedup = {}
-    for r in rows:
-        key = (r["venue"], r["race_no"])
-        if key not in dedup:
-            dedup[key] = r
 
-    rows = list(dedup.values())
-    log(f"[rating_page_summary_dom] {rating_text} count={len(rows)}")
+def parse_exhibition_rank_map(rank_text):
+    result = {}
+    s = (rank_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        a, b = part.split(":", 1)
+        try:
+            result[int(a.strip())] = int(b.strip())
+        except Exception:
+            continue
+    return result
+
+
+def exhibition_rank_class(rank):
+    try:
+        r = int(rank)
+    except Exception:
+        return "ex-rank-box"
+    if r == 1:
+        return "ex-rank-box ex-rank-1"
+    if r == 2:
+        return "ex-rank-box ex-rank-2"
+    if r == 3:
+        return "ex-rank-box ex-rank-3"
+    if r >= 5:
+        return "ex-rank-box ex-rank-low"
+    return "ex-rank-box"
+
+
+def render_exhibition_rank_boxes(rank_text):
+    rank_map = parse_exhibition_rank_map(rank_text)
+    if not rank_map:
+        return '<div class="ex-rank-empty">未取得</div>'
+    boxes = ""
+    for lane in range(1, 7):
+        rank = rank_map.get(lane)
+        rank_display = "-" if rank is None else str(rank)
+        boxes += f'''
+        <div class="{exhibition_rank_class(rank)}">
+          <div class="ex-lane">{render_lane_badge(lane)}</div>
+          <div class="ex-rank">{rank_display}</div>
+        </div>
+        '''
+    return f'<div class="ex-rank-grid">{boxes}</div>'
+
+
+def render_exhibition_time_chips(exhibition_list):
+    if not exhibition_list:
+        return '<div class="ex-chip-empty">未取得</div>'
+    chips = ""
+    for i, t in enumerate(exhibition_list, start=1):
+        chips += f'''
+        <div class="ex-chip">
+          <span class="ex-chip-lane">{render_lane_badge(i)}</span>
+          <span class="ex-chip-time">{t}</span>
+        </div>
+        '''
+    return f'<div class="ex-chip-wrap">{chips}</div>'
+
+
+def parse_player_names_map(player_names_text):
+    result = {}
+    s = str(player_names_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        lane_part, name = part.split(":", 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        player_name = str(name).strip()
+        if player_name:
+            result[lane] = player_name
+    return result
+
+
+def render_player_names_html(player_names_text):
+    player_map = parse_player_names_map(player_names_text)
+    if not player_map:
+        return '<div class="player-empty">未取得</div>'
+
+    items = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        items += f'''
+        <div class="player-chip player-chip-{lane}">
+          <span class="player-chip-lane">{render_lane_badge(lane)}</span>
+          <span class="player-chip-name">{name}</span>
+        </div>
+        '''
+    return f'<div class="player-chip-wrap">{items}</div>'
+
+
+def parse_class_history_rows(class_history_text):
+    rows = []
+    s = str(class_history_text or "").strip()
+    if not s:
+        return rows
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    current = None
+    classes = []
+    for part in parts:
+        if ":" in part:
+            if current:
+                rows.append(current)
+            lane_part, cls = part.split(":", 1)
+            try:
+                lane = int(lane_part.strip())
+            except Exception:
+                lane = None
+            classes = [cls.strip()] if cls.strip() else []
+            current = {"lane": lane, "classes": classes}
+        else:
+            if current and part:
+                current["classes"].append(part)
+    if current:
+        rows.append(current)
     return rows
 
 
-def extract_triplets_from_digit_lines(lines, start_idx):
-    digits = []
-    for i in range(start_idx, min(start_idx + 220, len(lines))):
-        if re.fullmatch(r"[1-6]", lines[i]):
-            digits.append(lines[i])
+def render_class_history_blocks(class_history_text):
+    rows = parse_class_history_rows(class_history_text)
+    if not rows:
+        return '<div class="class-history-empty">未取得</div>'
 
-    if len(digits) >= 26:
-        digits = digits[8:26]
+    html = ""
+    for row in rows:
+        lane = row.get("lane")
+        classes = row.get("classes", [])
+        chips = ""
+        for idx, cls in enumerate(classes):
+            cls_safe = (cls or "").lower()
+            sub = "現" if idx == 0 else f"-{idx}"
+            chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
+        html += f'''
+        <div class="class-history-row">
+          <div class="class-history-lane">{render_lane_badge(lane)}</div>
+          <div class="class-history-chips">{chips}</div>
+        </div>
+        '''
+    return f'<div class="class-history-wrap">{html}</div>'
 
-    return triplets_from_digit_sequence(digits)
+
+def parse_lane_score_items(lane_score_text):
+    items = []
+    s = str(lane_score_text or "").strip()
+    if not s:
+        return items
+    for part in [x.strip() for x in s.split("/") if x.strip()]:
+        if ":" not in part:
+            continue
+        lane, score = part.split(":", 1)
+        try:
+            lane_num = int(lane.strip())
+            score_val = float(score.strip())
+        except Exception:
+            continue
+        items.append((lane_num, score_val))
+    return items
 
 
-def parse_triplets_from_lines(lines, start_idx):
-    triplets = extract_triplets_from_digit_lines(lines, start_idx)
-    if len(triplets) >= 6:
-        return " / ".join(triplets[:6])
+def lane_score_class(score):
+    if score >= 1.5:
+        return "lane-score-chip lane-score-verygood"
+    if score >= 0.7:
+        return "lane-score-chip lane-score-good"
+    if score <= -0.4:
+        return "lane-score-chip lane-score-bad"
+    return "lane-score-chip"
+
+
+def render_lane_score_chips(lane_score_text):
+    items = parse_lane_score_items(lane_score_text)
+    if not items:
+        return '<div class="lane-score-empty">未取得</div>'
+    items = sorted(items, key=lambda x: (-x[1], x[0]))
+    chips = ""
+    for lane, score in items:
+        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{render_lane_badge(lane)}</span><span class="lane-score-value">{score:.2f}</span></div>'
+    return f'<div class="lane-score-wrap">{chips}</div>'
+
+
+def parse_detail_material_list(detail_text):
+    s = str(detail_text or "").strip()
+    if not s:
+        return []
+    return [x.strip() for x in s.split("/") if x.strip()]
+
+
+def render_detail_material_chips(detail_text):
+    items = parse_detail_material_list(detail_text)
+    if not items:
+        return '<div class="detail-chip-empty">未取得</div>'
+    chips = "".join([f'<div class="detail-chip">{item}</div>' for item in items])
+    return f'<div class="detail-chip-wrap">{chips}</div>'
+
+
+def final_rank_badge(rank_text):
+    s = (rank_text or "").strip()
+    if s == "買い強め":
+        return '<span class="final-rank final-rank-strong">買い強め</span>'
+    if s == "買い":
+        return '<span class="final-rank final-rank-buy">買い</span>'
+    if s == "様子見":
+        return '<span class="final-rank final-rank-watch">様子見</span>'
+    if s:
+        return f'<span class="final-rank final-rank-skip">{s}</span>'
     return ""
 
 
-def parse_rating_page_text_fallback(rating_text):
-    page = RATING_PAGE_MAP[rating_text]
-    url = f"{BASE_URL}/{page}/{today_str()}.html"
+def render_ai_rating_filter_options(current_value):
+    html = '<option value="">すべて</option>'
+    for value in AI_RATING_OPTIONS:
+        if not value:
+            continue
+        selected = "selected" if value == current_value else ""
+        html += f'<option value="{value}" {selected}>{value}</option>'
+    return html
 
-    try:
-        html = fetch_html(url)
-    except Exception as e:
-        log(f"[rating_page_fallback_error] rating={rating_text} url={url} err={e}")
-        return []
 
-    lines = normalize_lines(html)
+def safe_redirect_path(path, default="/"):
+    s = str(path or "").strip()
+    if not s.startswith("/") or s.startswith("//"):
+        return default
+    return s
 
-    rows = []
 
-    for i, line in enumerate(lines):
-        m = re.fullmatch(r"(\d{2})\s+(.+)", line)
-        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+def build_selection_compare_data(official_text, ai_text):
+    official_items = selection_items(official_text)
+    ai_items = selection_items(ai_text)
+    combined = official_items + ai_items
+    overlap = sorted(set(official_items) & set(ai_items), key=lambda x: combined.index(x))
+    return {
+        "official_items": official_items,
+        "ai_items": ai_items,
+        "overlap": overlap,
+    }
 
-        if m and re.fullmatch(r"\d{1,2}R", next_line):
-            jcd = m.group(1)
-            venue = m.group(2).strip()
-            race_no = int(next_line[:-1])
 
-            selection = parse_triplets_from_lines(lines, i + 2)
-            if not selection:
-                continue
+def render_selection_column(
+    own_items,
+    overlap_items,
+    source,
+    empty_text,
+    race_id_key="",
+    selected_items=None,
+    form_id="",
+):
+    if not own_items:
+        return f'<div class="selection-chip-empty">{empty_text}</div>'
 
-            row = {
-                "venue": venue,
-                "jcd": jcd,
-                "race_no": race_no,
-                "rating": rating_text,
-                "selection": selection,
-            }
-            rows.append(row)
+    selected_items = {normalize_pick_text(x) for x in (selected_items or set())}
+    overlap_set = set(overlap_items)
 
-    log(f"[rating_page_summary_fallback] {rating_text} count={len(rows)}")
+    input_name = "selected_official" if source == "official" else "selected_ai"
+    prefix = "cmp-off" if source == "official" else "cmp-ai"
+
+    chips = ""
+    for idx, item in enumerate(own_items):
+        item_clean = normalize_pick_text(item)
+        checked = "checked" if item_clean in selected_items else ""
+        item_id = f"{prefix}-{race_id_key}-{idx}"
+
+        if item_clean in overlap_set:
+            chip_kind = "overlap"
+        else:
+            chip_kind = source
+
+        chips += f'''
+        <label class="selection-choice-chip selection-choice-chip-{chip_kind}" for="{item_id}">
+          <input
+            class="selection-choice-input"
+            type="checkbox"
+            id="{item_id}"
+            name="{input_name}"
+            value="{item_clean}"
+            data-pick-value="{item_clean}"
+            data-race-group="{race_id_key}"
+            form="{form_id}"
+            {checked}
+            onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
+          >
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{render_colored_pick_html(item_clean)}</span>
+        </label>
+        '''
+
+    return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
+
+
+def render_selection_compare_html(r, race_id_key):
+    official_text = r.get("selection", "")
+    ai_text = r.get("ai_selection", "")
+    selected_items = set(selection_items(r.get("purchased_selection_text", "")))
+    form_id = f"race-form-{race_id_key}"
+
+    data = build_selection_compare_data(official_text, ai_text)
+
+    ai_html = render_selection_column(
+        data["ai_items"],
+        data["overlap"],
+        "ai",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+        form_id=form_id,
+    )
+    official_html = render_selection_column(
+        data["official_items"],
+        data["overlap"],
+        "official",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+        form_id=form_id,
+    )
+
+    return f'''
+    <div class="selection-compare-wrap ai-priority-wrap">
+      <div class="selection-compare-col selection-compare-col-ai">
+        <div class="selection-col-title selection-col-title-ai">AI買い目</div>
+        {ai_html}
+      </div>
+      <div class="selection-compare-col selection-compare-col-official">
+        <div class="selection-col-title selection-col-title-official">参考: 公式買い目</div>
+        {official_html}
+      </div>
+    </div>
+    '''
+
+
+
+def render_selected_summary_html(selected_text):
+    items = selection_items(selected_text)
+    if not items:
+        return '<div class="selection-chip-empty">未選択</div>'
+    chips = "".join([f'<div class="picked-chip">{render_colored_pick_html(item)}</div>' for item in items])
+    return f'<div class="picked-chip-wrap">{chips}</div>'
+
+
+def get_races_by_date(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT *
+        FROM races
+        WHERE race_date = %s AND venue <> 'テスト会場'
+        ORDER BY time ASC, venue ASC, race_no_num ASC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     return rows
 
 
-def parse_rating_page(rating_text):
-    try:
-        rows_dom = parse_rating_page_dom(rating_text)
-    except Exception as e:
-        log(f"[rating_page_dom_crash] rating={rating_text} err={e}")
-        rows_dom = []
-
-    if rows_dom:
-        log(f"[rating_page_summary] {rating_text} count={len(rows_dom)} mode=dom")
-        return rows_dom
-
-    try:
-        rows_fallback = parse_rating_page_text_fallback(rating_text)
-    except Exception as e:
-        log(f"[rating_page_fallback_crash] rating={rating_text} err={e}")
-        rows_fallback = []
-
-    log(f"[rating_page_summary] {rating_text} count={len(rows_fallback)} mode=fallback")
-    return rows_fallback
+def get_race_by_id(race_id):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM races WHERE id = %s", (race_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 
-def analyze_candidate(
-    official_rating,
-    selection,
-    exhibition_info,
-    boat_stats=None,
-    environment=None,
-    class_history_map=None,
+def get_today_races():
+    return get_races_by_date(today_text())
+
+
+def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
+    rows = [r for r in get_today_races() if is_star5_only(r)]
+    if ai_rating_filter:
+        rows = [r for r in rows if str(r.get("ai_rating", "")).strip() == ai_rating_filter]
+    if not show_closed:
+        rows = [r for r in rows if is_not_started(r["time"])]
+    return rows
+
+
+def delete_today_races():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE race_date = %s", (today_text(),))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def update_race_result(race_id, selected_text, hit, payout, memo):
+    selected_text = " / ".join(
+        unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
+    )
+    purchased = 1 if selected_text else 0
+    if purchased == 0:
+        hit = 0
+        payout = 0
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE races SET purchased = %s, purchased_selection_text = %s, hit = %s, payout = %s, memo = %s WHERE id = %s",
+        (purchased, selected_text, hit, payout, memo, race_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(
+        f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}"
+    )
+
+
+def delete_race(race_id):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE id = %s", (race_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_race race_id={race_id} deleted={deleted}")
+    return deleted
+
+
+def delete_races_bulk(race_ids):
+    race_ids = [int(x) for x in race_ids if str(x).strip().isdigit()]
+    if not race_ids:
+        return 0
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE id = ANY(%s)", (race_ids,))
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_races_bulk race_ids={race_ids} deleted={deleted}")
+    return deleted
+
+
+def get_summary_by_date(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT
+            COUNT(*) AS total_rows,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
+        FROM races
+        WHERE race_date = %s AND venue <> 'テスト会場'
+        ''',
+        (race_date,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    total_rows = row["total_rows"] or 0
+    total_bets = row["total_bets"] or 0
+    total_points = row["total_points"] or 0
+    total_investment = row["total_investment"] or 0
+    total_payout = row["total_payout"] or 0
+    total_hits = row["total_hits"] or 0
+    total_profit = total_payout - total_investment
+    hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+    roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+    return {
+        "total_rows": total_rows,
+        "total_bets": total_bets,
+        "total_points": total_points,
+        "total_investment": total_investment,
+        "total_payout": total_payout,
+        "total_profit": total_profit,
+        "total_hits": total_hits,
+        "hit_rate": hit_rate,
+        "roi": roi,
+        "last_imported_at": row["last_imported_at"] or "",
+    }
+
+
+def get_group_summary(race_date, group_key):
+    if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
+        return []
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f'''
+        SELECT
+            {group_key} AS group_name,
+            COUNT(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 END) AS total_bets,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout
+        FROM races
+        WHERE race_date = %s AND venue <> 'テスト会場'
+        GROUP BY {group_key}
+        ORDER BY {group_key} ASC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    results = []
+    for row in rows:
+        total_bets = row["total_bets"] or 0
+        total_hits = row["total_hits"] or 0
+        total_points = row["total_points"] or 0
+        total_investment = row["total_investment"] or 0
+        total_payout = row["total_payout"] or 0
+        total_profit = total_payout - total_investment
+        hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+        roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+        results.append(
+            {
+                "group_name": row["group_name"] or "(空白)",
+                "total_bets": total_bets,
+                "total_hits": total_hits,
+                "total_points": total_points,
+                "total_investment": total_investment,
+                "total_payout": total_payout,
+                "total_profit": total_profit,
+                "hit_rate": hit_rate,
+                "roi": roi,
+            }
+        )
+    return results
+
+
+def get_history_dates():
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [row[0] for row in rows]
+
+
+def get_history_date_summaries():
+    return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
+
+
+def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
+    filtered = list(rows)
+    if venue_filter:
+        filtered = [r for r in filtered if str(r.get("venue", "")).strip() == venue_filter]
+    if race_no_filter:
+        filtered = [r for r in filtered if str(r.get("race_no", "")).strip() == race_no_filter]
+    if purchased_only:
+        filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
+    if hit_only:
+        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+    return filtered
+
+
+def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
+    venues = sorted(set(str(r.get("venue", "")).strip() for r in rows if str(r.get("venue", "")).strip()))
+    race_nos = sorted(
+        set(str(r.get("race_no", "")).strip() for r in rows if str(r.get("race_no", "")).strip()),
+        key=lambda x: int(str(x).replace("R", "")) if str(x).replace("R", "").isdigit() else 999
+    )
+    venue_options = '<option value="">すべて</option>'
+    for venue in venues:
+        selected = "selected" if venue == selected_venue else ""
+        venue_options += f'<option value="{venue}" {selected}>{venue}</option>'
+    race_no_options = '<option value="">すべて</option>'
+    for race_no in race_nos:
+        selected = "selected" if race_no == selected_race_no else ""
+        race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
+    return venue_options, race_no_options, venues, race_nos
+
+
+def build_card_html(r, is_history=False, race_date=""):
+    checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
+    payout_value = r["payout"] if r["payout"] else ""
+    memo_value = r["memo"] if r["memo"] else ""
+    selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
+    selected_total_amount = get_selected_total_amount(r)
+
+    card_class = "card history-edit-card" if is_history else "card"
+    if int(r.get("hit") or 0) == 1:
+        card_class += " card-hit"
+    elif selected_count > 0:
+        card_class += " card-purchased"
+
+    status_parts = []
+    if selected_count > 0:
+        status_parts.append(f'<span class="status-badge status-badge-saved">購入済み {selected_count}点</span>')
+    if int(r.get("hit") or 0) == 1:
+        status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+    status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>' if status_parts else ""
+
+    ai_reasons = parse_json_array_text(r.get("ai_reasons", "[]"))
+    exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+    ai_reason_html = ""
+    if ai_reasons and not is_history:
+        items = "".join([f"<li>{x}</li>" for x in ai_reasons])
+        ai_reason_html = f'<div class="row"><span class="label">補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
+
+    race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
+
+    exhibition_time_html = render_exhibition_time_chips(exhibition)
+    exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
+    selection_compare_html = render_selection_compare_html(r, race_id_key)
+    ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
+    ai_score_value = safe_float(r.get("ai_score"), 0)
+    ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
+    class_history_html = render_class_history_blocks(r.get("class_history_text", ""))
+    player_names_html = render_player_names_html(r.get("player_names_text", ""))
+    lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
+    detail_material_html = render_detail_material_chips(ai_detail_text)
+    final_rank_html = final_rank_badge(r.get("final_rank"))
+    countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
+    selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
+    form_id = f"race-form-{race_id_key}"
+
+    top_checkbox = ""
+    if is_history:
+        top_checkbox = f'''
+        <div class="multi-check-wrap">
+          <input type="checkbox" class="bulk-checkbox" name="race_ids" value="{r['id']}" form="bulk-delete-form" onchange="updateBulkDeleteCount()">
+        </div>
+        '''
+
+    history_hidden = f'<input type="hidden" name="redirect_to" value="/history/{race_date}">' if is_history else ''
+    action_url = "/update_record" if is_history else "/save"
+
+    delete_form = ""
+    if is_history:
+        delete_form = f'''
+        <form method="post" action="/delete_record" class="delete-form" onsubmit="return confirm('この過去データを削除しますか？');">
+          <input type="hidden" name="race_id" value="{r['id']}">
+          <input type="hidden" name="redirect_to" value="/history/{race_date}">
+          <button type="submit" class="delete-btn">この1件を削除</button>
+        </form>
+        '''
+
+    return f'''
+    <div class="{card_class}">
+      {top_checkbox}
+      <div class="card-top card-top-main">
+        <div class="card-top-left">
+          <div class="time-line">
+            <div class="time">{r['time']}</div>
+            {countdown_html}
+          </div>
+          <div class="race-mainline">
+            <span class="race-spot race-spot-main">
+              <span class="race-venue">{r['venue']}</span>
+              <span class="race-rno">{r['race_no']}</span>
+            </span>
+          </div>
+        </div>
+        {status_html}
+      </div>
+
+      <div class="badge-row">
+        <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
+        <span class="ai-rating">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
+        {final_rank_html}
+      </div>
+
+      <div class="metric-badge-row">
+        <span class="metric-badge"><span class="metric-badge-label">券種</span><span class="metric-badge-value">{r['bet_type']}</span></span>
+        <span class="metric-badge"><span class="metric-badge-label">選択点数</span><span class="metric-badge-value" id="selected-count-badge-{race_id_key}">{selected_count}点</span></span>
+        <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
+        <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
+      </div>
+
+      <div class="info-box">
+        <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
+        <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
+        <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+        <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
+        <div class="row"><span class="label">選手名</span><span class="value">{player_names_html}</span></div>
+        <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
+        <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+        <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+        <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
+        <div class="row"><span class="label">詳細材料</span><span class="value">{detail_material_html}</span></div>
+        {ai_reason_html}
+      </div>
+
+      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
+        <input type="hidden" name="race_id" value="{r['id']}">
+        <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
+        {history_hidden}
+
+        <div id="detail-{race_id_key}" class="detail-box">
+          <label class="checkline">
+            <input type="checkbox" id="hit-{race_id_key}" name="hit" value="1" {checked_hit} onchange="toggleFormState('{race_id_key}')">
+            的中した
+          </label>
+
+          <div class="input-row">
+            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
+            <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
+          </div>
+
+          <div class="input-row">
+            <label>メモ</label>
+            <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
+          </div>
+        </div>
+
+        <button type="submit" class="save-btn {'half-btn' if is_history else ''}">保存</button>
+      </form>
+      {delete_form}
+    </div>
+    '''
+
+
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
+    updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
+    if message_text:
+        message_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {message_class}">{message_text}</div>'
+    else:
+        message_html = ""
+    checked_show_closed = "checked" if show_closed else ""
+    ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
+    cards_html = ''.join([build_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
+    external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
+    filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
+    filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">🏁</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">ボートレース買い候補</div>
+          </div>
+        </div>
+        <div class="topbar-status">
+          <span class="top-pill">最終取込: {updated_str}</span>
+        </div>
+      </div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の買い候補</div>
+        <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
+        {external_line}
+        {message_html}
+        <form method="get" action="/" class="filter-box">
+          <div class="filter-grid">
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
+                締切後も表示する
+              </label>
+            </div>
+            <div class="filter-item">
+              <label for="ai_rating">AI評価で絞る</label>
+              <select name="ai_rating" id="ai_rating">{ai_rating_options_html}</select>
+            </div>
+            <div class="filter-actions">
+              <button type="submit" class="filter-btn">フィルター適用</button>
+              <a href="/" class="filter-reset">解除</a>
+            </div>
+          </div>
+        </form>
+        <div class="nav nav-app">
+          <a href="/" class="nav-card active">今日の候補</a>
+          <a href="/stats" class="nav-card">今日の集計</a>
+          <a href="/history" class="nav-card">過去データ</a>
+        </div>
+        <div class="summary">
+          <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
+        </div>
+      </div>
+      {cards_html}
+    </div>
+    '''
+    return render_layout("今日の買い候補", content)
+
+
+def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
+    def make_table(rows):
+        if not rows:
+            return '<div class="empty">データがありません</div>'
+        body = ""
+        for r in rows:
+            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_points']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
+        return f"<div class='table-wrap'><table><thead><tr><th>区分</th><th>購入レース</th><th>購入点数</th><th>的中</th><th>投資</th><th>払戻</th><th>収支</th><th>的中率</th><th>回収率</th></tr></thead><tbody>{body}</tbody></table></div>"
+
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">📊</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">今日の集計</div>
+          </div>
+        </div>
+        <div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div>
+      </div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の集計</div>
+        <div class="sub">対象日: {race_date}</div>
+        <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+        <div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card active">今日の集計</a><a href="/history" class="nav-card">過去データ</a></div>
+        <div class="summary six">
+          <div class="summary-box"><div class="summary-label">全候補数</div><div class="summary-value">{summary['total_rows']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
+          <div class="summary-box"><div class="summary-label">的中数</div><div class="summary-value">{summary['total_hits']}</div></div>
+          <div class="summary-box"><div class="summary-label">投資額</div><div class="summary-value">{yen(summary['total_investment'])}</div></div>
+          <div class="summary-box"><div class="summary-label">払戻額</div><div class="summary-value">{yen(summary['total_payout'])}</div></div>
+        </div>
+        <div class="summary" style="margin-top:8px;">
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
+          <div class="summary-box"><div class="summary-label">的中率</div><div class="summary-value">{percent(summary['hit_rate'])}</div></div>
+          <div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div>
+          <div class="summary-box"><div class="summary-label">1点あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_points']) if summary['total_points'] else 0)}</div></div>
+        </div>
+      </div>
+      <div class="stats-grid"><div><div class="header"><div class="section-title">公式星別集計</div></div>{make_table(by_rating)}</div><div><div class="header"><div class="section-title">AI補正星別集計</div></div>{make_table(by_ai_rating)}</div></div>
+      <div class="stats-grid"><div><div class="header"><div class="section-title">最終判定別集計</div></div>{make_table(by_final_rank)}</div><div><div class="header"><div class="section-title">会場別集計</div></div>{make_table(by_venue)}</div></div>
+    </div>
+    '''
+    return render_layout("今日の集計", content)
+
+
+def render_history_page(date_summaries):
+    if not date_summaries:
+        list_html = '<div class="empty">過去データはありません</div>'
+    else:
+        items = ""
+        for item in date_summaries:
+            d = item["race_date"]
+            s = item["summary"]
+            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div></div></div>'''
+        list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
+    return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
+
+
+def render_history_detail_page(
+    race_date,
+    races,
+    summary,
+    message_type="",
+    message_text="",
+    venue_filter="",
+    race_no_filter="",
+    purchased_only=False,
+    hit_only=False,
 ):
-    score = 0.0
-    reasons = []
-    details = []
+    if message_text:
+        message_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {message_class}">{message_text}</div>'
+    else:
+        message_html = ""
 
-    triplets = selection_triplets(selection)
-    heads = []
-    seconds = []
-    thirds = []
+    venue_options_html, race_no_options_html, _all_venues, _all_race_nos = make_history_filter_options(
+        races,
+        selected_venue=venue_filter,
+        selected_race_no=race_no_filter,
+    )
 
-    for t in triplets:
-        parts = t.split("-")
-        if len(parts) != 3:
-            continue
-        a, b, c = parts
-        try:
-            heads.append(int(a))
-            seconds.append(int(b))
-            thirds.append(int(c))
-        except Exception:
-            continue
+    filtered_races = filter_history_races(
+        races,
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
 
-    unique_heads = sorted(set(heads))
-    unique_seconds = sorted(set(seconds))
-    unique_thirds = sorted(set(thirds))
-    all_targets = sorted(set(unique_heads + unique_seconds + unique_thirds))
+    checked_purchased = "checked" if purchased_only else ""
+    checked_hit = "checked" if hit_only else ""
 
-    if len(unique_heads) == 1 and heads:
-        score += 0.9
-        reasons.append("1着候補がかなり絞れている")
-    elif len(unique_heads) == 2 and heads:
-        score += 0.5
-        reasons.append("1着候補が比較的絞れている")
-    elif len(unique_heads) >= 4:
-        score -= 0.6
-        reasons.append("1着候補が散っている")
+    jump_items = []
+    seen_race_nos = set()
+    for r in filtered_races:
+        race_no = str(r.get("race_no", "")).strip()
+        if race_no and race_no not in seen_race_nos:
+            seen_race_nos.add(race_no)
+            jump_items.append(f'<a class="jump-chip" href="#race-card-{r["id"]}">{race_no}</a>')
+    jump_html = "".join(jump_items) if jump_items else '<span class="jump-empty">ジャンプ候補なし</span>'
 
-    if len(unique_seconds) <= 3 and seconds:
-        score += 0.3
-        reasons.append("2着候補が比較的絞れている")
-    elif len(unique_seconds) >= 5:
-        score -= 0.2
-        reasons.append("2着候補が広い")
+    if not filtered_races:
+        body = '<div class="empty">条件に合うデータがありません</div>'
+    else:
+        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
+        body = f'''
+        <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();"><input type="hidden" name="redirect_to" value="/history/{race_date}"></form>
+        <div class="header history-filter-box">
+          <div class="section-title">絞り込み</div>
+          <form method="get" action="/history/{race_date}" class="filter-box">
+            <div class="history-filter-grid">
+              <div class="filter-item"><label for="venue">会場</label><select name="venue" id="venue">{venue_options_html}</select></div>
+              <div class="filter-item"><label for="race_no">R</label><select name="race_no" id="race_no">{race_no_options_html}</select></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="purchased_only" value="1" {checked_purchased}>購入済みのみ</label></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="hit_only" value="1" {checked_hit}>的中のみ</label></div>
+              <div class="filter-actions"><button type="submit" class="filter-btn">絞り込む</button><a href="/history/{race_date}" class="filter-reset">解除</a></div>
+            </div>
+          </form>
+          <div class="history-filter-meta"><div class="history-filter-count">表示中 {len(filtered_races)} / 全{len(races)}件</div><div class="jump-wrap">{jump_html}</div></div>
+        </div>
+        <div class="bulk-toolbar"><div class="bulk-toolbar-left"><button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button><button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button></div><div class="bulk-toolbar-right"><span class="bulk-count" id="bulk-delete-count">0件選択中</span><button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button></div></div>
+        {cards_html}
+        '''
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar"><div class="brand"><div class="brand-logo">🧾</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ詳細</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
+      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div></div></div>
+      {body}
+    </div>
+    '''
+    return render_layout("過去データ詳細", content)
 
-    if len(unique_thirds) <= 4 and thirds:
-        score += 0.2
-        reasons.append("3着候補が比較的整理されている")
 
-    if unique_heads and min(unique_heads) >= 4:
-        score -= 0.6
-        reasons.append("外枠1着中心")
 
-    exhibition_times = exhibition_info.get("times", [])
-    exhibition_ranks = exhibition_info.get("ranks", {})
+def render_layout(title, body_html):
+    home_active = "active" if title == "今日の買い候補" else ""
+    stats_active = "active" if title == "今日の集計" else ""
+    history_active = "active" if title in ["過去データ", "過去データ詳細"] else ""
 
-    if exhibition_times:
-        details.append("展示あり")
+    css = """
+    <style>
+      *{box-sizing:border-box}
+      html{padding-top:env(safe-area-inset-top,0px);background:#f5f7fb}
+      body{
+        margin:0;
+        background:#f5f7fb;
+        font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;
+        color:#222;
+        -webkit-text-size-adjust:100%;
+      }
+      .container{
+        max-width:980px;
+        margin:0 auto;
+        padding:calc(16px + env(safe-area-inset-top,0px)) 12px calc(92px + env(safe-area-inset-bottom,0px));
+      }
+      .app-shell{display:flex;flex-direction:column;gap:14px}
+      .topbar,.header,.card,.history-item{background:#fff;border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .hero-strong{background:linear-gradient(180deg,#fff,#f8fbff)}
+      .brand{display:flex;align-items:center;gap:10px;min-width:0}
+      .brand-logo{font-size:28px;flex:0 0 auto}
+      .brand-title{font-weight:700}
+      .brand-sub,.sub{font-size:13px;color:#667085}
+      .topbar{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:10px;
+      }
+      .topbar-status{
+        min-width:0;
+        display:flex;
+        justify-content:flex-end;
+      }
+      .top-pill{
+        background:#eef4ff;
+        color:#2f5bd2;
+        padding:6px 10px;
+        border-radius:999px;
+        font-size:12px;
+        display:inline-block;
+        max-width:100%;
+        white-space:normal;
+        word-break:break-word;
+        line-height:1.4;
+      }
+      .title{font-size:24px;font-weight:800;margin-bottom:4px}
+      .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+      .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
+      .nav-card.active{background:#2f5bd2;color:#fff}
+      .summary,.summary.six{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+      .summary.six{grid-template-columns:repeat(6,1fr)}
+      .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
+      .summary-label,.history-mini-label{font-size:12px;color:#667085}
+      .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
+      .profit-plus{color:#d92d20}
+      .profit-minus{color:#175cd3}
+      .profit-zero{color:#344054}
+      .filter-box,.info-box{margin-top:10px}
+      .filter-grid{display:grid;grid-template-columns:1.5fr 1fr auto;gap:10px;align-items:end}
+      .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .filter-check{display:flex;align-items:center;gap:8px}
+      select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
+      .filter-btn,.save-btn,.toolbar-delete-btn,.delete-btn,.toolbar-btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+      .filter-btn,.save-btn,.toolbar-delete-btn{background:#2f5bd2;color:#fff}
+      .delete-btn,.toolbar-btn-muted{background:#fee4e2;color:#b42318}
+      .toolbar-btn{background:#eef2ff;color:#344054}
+      .filter-reset{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;background:#f2f4f7;color:#344054;border-radius:10px}
+      .card-top-main{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .time{font-size:24px;font-weight:800}
+      .countdown-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}
+      .countdown-normal{background:#eef2ff;color:#3538cd}
+      .countdown-warning{background:#fff4e5;color:#b54708}
+      .countdown-soon{background:#ffead5;color:#c4320a}
+      .countdown-closed{background:#f2f4f7;color:#475467}
+      .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
+      .race-venue{font-size:22px}
+      .race-rno{font-size:22px}
+      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .status-badge-saved{background:#ecfdf3;color:#067647}
+      .status-badge-hit{background:#fff1f3;color:#c11574}
+      .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+      .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating{background:#fff6e5;color:#b54708}
+      .ai-rating{background:#eef4ff;color:#175cd3}
+      .final-rank-strong{background:#ecfdf3;color:#027a48}
+      .final-rank-buy{background:#e0f2fe;color:#0369a1}
+      .final-rank-watch{background:#f2f4f7;color:#475467}
+      .final-rank-skip{background:#fef3f2;color:#b42318}
+      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}
+      .metric-badge-strong{background:#eef4ff}
+      .metric-badge-score{background:#fff6e5}
+      .metric-badge-label{color:#667085}
+      .metric-badge-value{font-weight:800}
+      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
+      .row:first-child{border-top:none}
+      .label{font-weight:700;color:#344054}
+      .value{min-width:0}
+      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
+      .selection-choice-chip{
+        display:inline-block;
+        cursor:pointer;
+        user-select:none;
+        -webkit-tap-highlight-color:transparent;
+      }
+      .selection-choice-input{
+        position:absolute;
+        opacity:0;
+        pointer-events:none;
+        width:1px;
+        height:1px;
+      }
+      .selection-choice-body{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        padding:8px 10px;
+        border-radius:999px;
+        font-weight:700;
+        border:2px solid #d0d5dd;
+        background:#fff;
+        color:#344054;
+        white-space:nowrap;
+        line-height:1.2;
+        transition:all .15s ease;
+      }
+      .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
+      .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
 
-    head_avg_rank = None
-    head_time_gap_from_top = None
-    exhibition_spread = None
+      .selection-choice-body-overlap{
+        background:#f3fbf6;
+        border-color:#bfe7cc;
+        color:#5f7a68;
+      }
+      .selection-choice-input:checked + .selection-choice-body-overlap{
+        background:#dcfae6;
+        border-color:#6fd69a;
+        color:#05603a;
+        box-shadow:0 0 0 2px rgba(5,96,58,.08) inset;
+      }
+      .selection-choice-input:checked + .selection-choice-body-official{
+        background:#e7f0ff;
+        border-color:#8fb4ff;
+        color:#124fc2;
+        box-shadow:0 0 0 2px rgba(18,79,194,.08) inset;
+      }
+      .selection-choice-input:checked + .selection-choice-body-ai{
+        background:#fff1db;
+        border-color:#f2b96b;
+        color:#a64b00;
+        box-shadow:0 0 0 2px rgba(166,75,0,.08) inset;
+      }
 
-    if exhibition_ranks:
-        if 1 in exhibition_ranks:
-            r1 = exhibition_ranks[1]
-            if r1 == 1:
-                score += 0.8
-                reasons.append("1号艇の展示順位が1位")
-            elif r1 <= 2:
-                score += 0.4
-                reasons.append("1号艇の展示順位が上位")
-            elif r1 >= 5:
-                score -= 0.6
-                reasons.append("1号艇の展示順位が下位")
+      
+      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 4px;border-radius:2px;font-weight:800;font-size:14px;line-height:1;border:1px solid rgba(0,0,0,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+      .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
+      .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
+      .lane-color-3{background:#ef4444;color:#ffffff;border-color:#ef4444}
+      .lane-color-4{background:#3b82f6;color:#ffffff;border-color:#3b82f6}
+      .lane-color-5{background:#fde047;color:#111827;border-color:#eab308}
+      .lane-color-6{background:#22c55e;color:#ffffff;border-color:#22c55e}
+      .pick-inline .lane-color{min-width:22px;height:22px;font-size:14px;border-radius:2px;padding:0 3px}
+      .picked-chip .pick-inline .lane-color,.selection-choice-body .pick-inline .lane-color{min-width:21px;height:21px;font-size:13px}
+      .player-chip .lane-color,.class-history-lane .lane-color,.ex-chip-lane .lane-color,.ex-lane .lane-color{min-width:28px;height:24px;font-size:14px;border-radius:2px}
+      .ex-chip{display:inline-flex;align-items:center;gap:8px}
+      .ex-chip-time{font-weight:700}
+      .ex-lane{display:flex;justify-content:center;margin-bottom:6px}
+      .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
+      .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
+      .pick-plain{font-weight:800;color:#344054}
+      .player-chip-wrap{display:flex;flex-direction:column;gap:6px}
+      .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .player-chip-lane{flex:0 0 auto}
+      .player-chip-name{font-weight:700;color:#172033}
+.picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip{white-space:nowrap}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty{color:#667085}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
+      .lane-score-verygood{background:#ecfdf3}
+      .lane-score-good{background:#eef4ff}
+      .lane-score-bad{background:#fef3f2}
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:10px;padding:8px;text-align:center}
+      .ex-rank-1{background:#ecfdf3}
+      .ex-rank-2{background:#eef4ff}
+      .ex-rank-3{background:#fff6e5}
+      .ex-rank-low{background:#fef3f2}
+      .class-history-wrap{display:flex;flex-direction:column;gap:8px}
+      .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
+      .class-history-lane{font-weight:800;display:flex;align-items:center}
+      .class-history-chips{display:flex;gap:5px;flex-wrap:wrap}
+      .class-chip{display:inline-flex;gap:5px;align-items:center;border-radius:10px;padding:6px 8px;border:1px solid #d0d5dd;background:#fff}
+      .class-chip-a1{background:#ecfdf3}
+      .class-chip-a2{background:#eef4ff}
+      .class-chip-b1{background:#fff6e5}
+      .class-chip-b2{background:#fef3f2}
+      .class-chip-sub{font-size:11px;color:#667085}
+      .class-chip-main{font-weight:800}
+      .form{margin-top:12px}
+      .detail-box{display:flex;flex-direction:column;gap:10px}
+      .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
+      .input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .save-btn{width:100%;margin-top:10px}
+      .half-btn{width:100%}
+      .delete-form{margin-top:8px}
+      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}
+      .message-success{background:#ecfdf3;color:#027a48}
+      .message-error{background:#fef3f2;color:#b42318}
+      .empty{background:#fff;border-radius:16px;padding:24px;text-align:center;color:#667085;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .history-list{display:flex;flex-direction:column;gap:10px}
+      .history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .history-date{font-size:20px;font-weight:800}
+      .history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
+      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+      .table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      table{width:100%;border-collapse:collapse;background:#fff}
+      th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap}
+      th{background:#f8fafc}
+      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+      .section-title{font-size:18px;font-weight:800}
+      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .history-filter-box{padding:16px}
+      .history-filter-grid{display:grid;grid-template-columns:1.2fr 180px auto auto auto;gap:12px;align-items:end;margin-top:10px}
+      .filter-item-check{display:flex;align-items:end}
+      .history-filter-meta{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:14px;flex-wrap:wrap}
+      .history-filter-count{font-size:13px;font-weight:800;color:#475467}
+      .jump-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .jump-chip{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:8px 12px;border-radius:999px;text-decoration:none;background:#eef4ff;color:#175cd3;border:1px solid #cdddff;font-weight:800}
+      .jump-empty{color:#98a2b3;font-size:13px}
+      .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
+      .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
+      .bottom-nav{
+        position:fixed;
+        left:0;
+        right:0;
+        bottom:0;
+        display:grid;
+        grid-template-columns:repeat(3,1fr);
+        background:#fff;
+        border-top:1px solid #eaecf0;
+        padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
+        z-index:50;
+      }
+      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
+      .bottom-nav-item.active{color:#175cd3;font-weight:800}
 
-        head_ranks = [exhibition_ranks[h] for h in unique_heads if h in exhibition_ranks]
-        if head_ranks:
-            head_avg_rank = sum(head_ranks) / len(head_ranks)
-            details.append(f"1着展示平均{round(head_avg_rank, 2)}位")
+      @media (max-width: 760px){
+        html{background:#f5f7fb}
+        .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
+        .topbar{flex-direction:column;align-items:flex-start;padding:14px;border-radius:18px;}
+        .topbar-status{width:100%;justify-content:flex-start;}
+        .top-pill{width:100%;border-radius:12px;}
+        .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid{grid-template-columns:1fr;}
+        .row{grid-template-columns:1fr;gap:8px;}
+        .race-venue,.race-rno{font-size:20px}
+        .time{font-size:22px}
+        .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
+        .card-top-main{flex-direction:column;align-items:flex-start}
+        .status-wrap{margin-top:2px}
+        .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
+        .class-history-lane{font-size:15px;line-height:1.2;margin-bottom:2px;}
+        .class-history-chips{gap:8px}
+        .class-chip{padding:6px 8px;min-height:36px;border-radius:10px}
+        .class-chip-sub{font-size:12px;font-weight:700;color:#667085;min-width:auto;text-align:center;background:none;padding:0}
+        .class-chip-main{font-size:15px;font-weight:900}
+        .class-history-row .class-history-chips .class-chip:first-child{padding-left:10px;padding-right:10px;border-width:2px}
+        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:18px;font-weight:900;letter-spacing:.01em}
+        .history-filter-meta{flex-direction:column;align-items:flex-start}
+        .jump-wrap{width:100%}
+        .jump-chip{min-width:48px;padding:8px 11px}
+        .bulk-toolbar{flex-direction:column;align-items:stretch}
+        .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
+        .player-chip{align-items:flex-start}
+        .player-chip-name{font-size:14px;line-height:1.45}
+        .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
+        .pick-inline{gap:5px}
+        .pick-sep{font-size:13px}
+        .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
+        .bottom-nav-item{border-radius:12px}
+        .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
 
-            if head_avg_rank <= 1.8:
-                score += 1.2
-                reasons.append("1着候補の展示順位がかなり良い")
-            elif head_avg_rank <= 2.5:
-                score += 0.7
-                reasons.append("1着候補の展示順位が良い")
-            elif head_avg_rank <= 3.2:
-                score += 0.3
-                reasons.append("1着候補の展示順位がまずまず")
-            elif head_avg_rank >= 4.5:
-                score -= 1.0
-                reasons.append("1着候補の展示順位が悪い")
+      }
+    </style>
+    """
 
-            if all(x <= 3 for x in head_ranks):
-                score += 0.4
-                reasons.append("1着候補が展示上位に寄っている")
-            elif all(x >= 4 for x in head_ranks):
-                score -= 0.5
-                reasons.append("1着候補が展示下位に寄っている")
+    js = """
+    <script>
+      function getCardRootByRaceId(raceId){
+        return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
+      }
 
-        second_ranks = [exhibition_ranks[s] for s in unique_seconds if s in exhibition_ranks]
-        if second_ranks:
-            avg_second_rank = sum(second_ranks) / len(second_ranks)
-            details.append(f"2着展示平均{round(avg_second_rank, 2)}位")
-            if avg_second_rank <= 3.0:
-                score += 0.2
-                reasons.append("2着候補の展示も悪くない")
-            elif avg_second_rank >= 5.0:
-                score -= 0.2
-                reasons.append("2着候補の展示が弱い")
+      function getCheckedValues(raceId){
+        const checked = document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]:checked');
+        return Array.from(checked)
+          .map(x => (x.getAttribute('data-pick-value') || '').trim())
+          .filter(Boolean);
+      }
 
-        third_ranks = [exhibition_ranks[t] for t in unique_thirds if t in exhibition_ranks]
-        if third_ranks:
-            avg_third_rank = sum(third_ranks) / len(third_ranks)
-            details.append(f"3着展示平均{round(avg_third_rank, 2)}位")
-            if avg_third_rank <= 3.5:
-                score += 0.1
-            elif avg_third_rank >= 5.2:
-                score -= 0.2
-                reasons.append("3着候補の展示が弱い")
+      function syncSelectionValue(el, raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return true; }
+        const values = getCheckedValues(raceId);
+        hidden.value = values.join(' / ');
+        return true;
+      }
 
-        sorted_rank_pairs = sorted(exhibition_ranks.items(), key=lambda x: x[1])
-        top3_lanes = [lane for lane, _ in sorted_rank_pairs[:3]]
-        included_top3 = sum(1 for lane in top3_lanes if lane in all_targets)
-        if included_top3 >= 3:
-            score += 0.5
-            reasons.append("展示上位3艇が買い目にうまく入っている")
-        elif included_top3 == 2:
-            score += 0.2
-            reasons.append("展示上位艇が買い目にある程度入っている")
+      function updateSelectionSummary(raceId){
+        const root = getCardRootByRaceId(raceId);
+        if(!root){ return; }
 
-        if top3_lanes:
-            if any(h == top3_lanes[0] for h in unique_heads):
-                score += 0.4
-                reasons.append("展示1位の艇が1着候補に入っている")
+        const values = getCheckedValues(raceId);
+        const summaryEl = document.getElementById('selected-summary-' + raceId);
+        const countEl = document.getElementById('selected-count-badge-' + raceId);
+        const totalEl = document.getElementById('selected-total-badge-' + raceId);
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
+        const hidden = document.getElementById('selected-hidden-' + raceId);
 
-    if exhibition_times and unique_heads:
-        lane_time_map = {}
-        for lane, t in enumerate(exhibition_times, start=1):
-            try:
-                lane_time_map[lane] = float(t)
-            except Exception:
-                pass
+        if(summaryEl){
+          if(values.length === 0){
+            summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
+          }else{
+            summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + v + '</div>').join('') + '</div>';
+          }
+        }
 
-        head_times = [lane_time_map[h] for h in unique_heads if h in lane_time_map]
-        all_times = list(lane_time_map.values())
+        if(countEl){
+          countEl.textContent = values.length + '点';
+        }
 
-        if head_times and all_times:
-            top_time = min(all_times)
-            bottom_time = max(all_times)
-            exhibition_spread = bottom_time - top_time
-            head_avg_time = sum(head_times) / len(head_times)
-            head_time_gap_from_top = head_avg_time - top_time
+        if(totalEl){
+          totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
+        }
 
-            details.append(f"1着展示タイム平均{round(head_avg_time, 2)}")
-            details.append(f"展示差{round(exhibition_spread, 2)}")
+        if(hidden){
+          hidden.value = values.join(' / ');
+        }
+      }
 
-            if exhibition_spread >= 0.18:
-                if head_time_gap_from_top <= 0.03:
-                    score += 0.35
-                    reasons.append("展示タイム差が大きく1着候補がかなり優勢")
-                elif head_time_gap_from_top <= 0.06:
-                    score += 0.2
-                    reasons.append("展示タイム差があり1着候補が上位")
-                elif head_time_gap_from_top >= 0.12:
-                    score -= 0.25
-                    reasons.append("展示タイム差がある中で1着候補が遅い")
-            elif exhibition_spread >= 0.12:
-                if head_time_gap_from_top <= 0.03:
-                    score += 0.18
-                    reasons.append("展示タイム差の中で1着候補が上位")
-                elif head_time_gap_from_top >= 0.10:
-                    score -= 0.12
-                    reasons.append("展示タイム差の中で1着候補が遅め")
+      function toggleFormState(raceId){
+        return true;
+      }
 
-    if boat_stats:
-        head_stats = [boat_stats[h] for h in unique_heads if h in boat_stats]
-        second_stats = [boat_stats[s] for s in unique_seconds if s in boat_stats]
-        third_stats = [boat_stats[t] for t in unique_thirds if t in boat_stats]
+      function updateBulkDeleteCount(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        const el = document.getElementById('bulk-delete-count');
+        if(el){
+          el.textContent = count + '件選択中';
+        }
+      }
 
-        head_national = avg_stat(head_stats, "national_win")
-        head_local = avg_stat(head_stats, "local_win")
-        head_motor = avg_stat(head_stats, "motor2")
-        head_boat = avg_stat(head_stats, "boat2")
+      function toggleAllBulk(checked){
+        document.querySelectorAll('.bulk-checkbox').forEach(el => {
+          el.checked = checked;
+        });
+        updateBulkDeleteCount();
+      }
 
-        second_national = avg_stat(second_stats, "national_win")
-        second_local = avg_stat(second_stats, "local_win")
-        second_motor = avg_stat(second_stats, "motor2")
+      function confirmBulkDelete(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        if(count <= 0){
+          alert('削除するデータを選んでください');
+          return false;
+        }
+        return confirm(count + '件を削除しますか？');
+      }
 
-        third_national = avg_stat(third_stats, "national_win")
-        third_local = avg_stat(third_stats, "local_win")
-        third_motor = avg_stat(third_stats, "motor2")
+      document.addEventListener('DOMContentLoaded', function(){
+        document.querySelectorAll('form[data-race-id]').forEach(form => {
+          updateSelectionSummary(form.getAttribute('data-race-id'));
+        });
+        updateBulkDeleteCount();
+      });
+    </script>
+    """
 
-        if head_national is not None:
-            details.append(f"1着全国勝率平均{round(head_national, 2)}")
-            if head_national >= 6.2:
-                score += 0.9
-                reasons.append("1着候補の全国勝率がかなり高い")
-            elif head_national >= 5.5:
-                score += 0.5
-                reasons.append("1着候補の全国勝率が高い")
-            elif head_national < 4.8:
-                score -= 0.5
-                reasons.append("1着候補の全国勝率が低い")
+    bottom_nav_html = f'''
+    <nav class="bottom-nav">
+      <a href="/" class="bottom-nav-item {home_active}"><span class="bottom-nav-icon">🏁</span><span class="bottom-nav-label">候補</span></a>
+      <a href="/stats" class="bottom-nav-item {stats_active}"><span class="bottom-nav-icon">📊</span><span class="bottom-nav-label">集計</span></a>
+      <a href="/history" class="bottom-nav-item {history_active}"><span class="bottom-nav-icon">🗂️</span><span class="bottom-nav-label">過去</span></a>
+    </nav>
+    '''
+    return """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>{}</title>{}</head><body><div class="container">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
-        if head_local is not None:
-            details.append(f"1着当地勝率平均{round(head_local, 2)}")
-            if head_local >= 6.0:
-                score += 0.5
-                reasons.append("1着候補の当地勝率が高い")
-            elif head_local >= 5.5:
-                score += 0.3
-                reasons.append("1着候補の当地勝率がまずまず高い")
-            elif head_local < 4.8:
-                score -= 0.3
-                reasons.append("1着候補の当地勝率が低い")
 
-        if head_motor is not None:
-            details.append(f"1着モーター2連率平均{round(head_motor, 1)}")
-            if head_motor >= 42:
-                score += 0.6
-                reasons.append("1着候補のモーター気配が良い")
-            elif head_motor >= 35:
-                score += 0.3
-                reasons.append("1着候補のモーターがまずまず")
-            elif head_motor < 30:
-                score -= 0.3
-                reasons.append("1着候補のモーターが弱い")
+def is_valid_import_token(req):
+    sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
+    return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
-        if head_boat is not None:
-            details.append(f"1着ボート2連率平均{round(head_boat, 1)}")
-            if head_boat >= 38:
-                score += 0.2
-                reasons.append("1着候補のボート気配が良い")
-            elif head_boat < 30:
-                score -= 0.2
-                reasons.append("1着候補のボート気配が弱い")
 
-        if second_national is not None:
-            details.append(f"2着全国勝率平均{round(second_national, 2)}")
-            if second_national >= 5.4:
-                score += 0.25
-                reasons.append("2着候補の全国勝率が高い")
-            elif second_national >= 4.8:
-                score += 0.1
-            elif second_national < 4.2:
-                score -= 0.2
-                reasons.append("2着候補の全国勝率が弱い")
+def init_db():
+    conn = db_connect()
+    cur = conn.cursor()
 
-        if second_local is not None:
-            details.append(f"2着当地勝率平均{round(second_local, 2)}")
-            if second_local >= 5.2:
-                score += 0.15
-            elif second_local < 4.2:
-                score -= 0.1
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS races (
+            id SERIAL PRIMARY KEY,
+            race_date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            venue TEXT NOT NULL,
+            race_no TEXT NOT NULL,
+            race_no_num INTEGER NOT NULL DEFAULT 0,
+            rating TEXT NOT NULL DEFAULT '',
+            bet_type TEXT NOT NULL DEFAULT '',
+            selection TEXT NOT NULL DEFAULT '',
+            amount INTEGER NOT NULL DEFAULT 100,
 
-        if second_motor is not None:
-            details.append(f"2着モーター2連率平均{round(second_motor, 1)}")
-            if second_motor >= 38:
-                score += 0.15
-            elif second_motor < 28:
-                score -= 0.1
+            ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            ai_rating TEXT NOT NULL DEFAULT '',
+            ai_label TEXT NOT NULL DEFAULT '',
+            final_rank TEXT NOT NULL DEFAULT '',
+            ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition_rank TEXT NOT NULL DEFAULT '',
+            motor_rank TEXT NOT NULL DEFAULT '',
+            ai_detail TEXT NOT NULL DEFAULT '',
+            ai_selection TEXT NOT NULL DEFAULT '',
+            ai_confidence TEXT NOT NULL DEFAULT '',
+            ai_lane_score_text TEXT NOT NULL DEFAULT '',
+            class_history_text TEXT NOT NULL DEFAULT '',
+            player_names_text TEXT NOT NULL DEFAULT '',
 
-        if third_national is not None:
-            details.append(f"3着全国勝率平均{round(third_national, 2)}")
-            if third_national >= 5.0:
-                score += 0.1
-            elif third_national < 4.0:
-                score -= 0.1
+            purchased INTEGER NOT NULL DEFAULT 0,
+            purchased_selection_text TEXT NOT NULL DEFAULT '',
+            hit INTEGER NOT NULL DEFAULT 0,
+            payout INTEGER NOT NULL DEFAULT 0,
+            memo TEXT NOT NULL DEFAULT '',
+            imported_at TEXT NOT NULL DEFAULT ''
+        )
+        '''
+    )
 
-        if third_local is not None:
-            details.append(f"3着当地勝率平均{round(third_local, 2)}")
-            if third_local >= 4.8:
-                score += 0.08
-            elif third_local < 4.0:
-                score -= 0.08
+    alter_sqls = [
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_no_num INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS memo TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT NOT NULL DEFAULT ''",
+    ]
+    for sql in alter_sqls:
+        cur.execute(sql)
 
-        if third_motor is not None:
-            details.append(f"3着モーター2連率平均{round(third_motor, 1)}")
-            if third_motor >= 35:
-                score += 0.08
-            elif third_motor < 26:
-                score -= 0.08
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
 
-    class_history_map = class_history_map or {}
-    head_histories = [class_history_map[h] for h in unique_heads if h in class_history_map]
-    second_histories = [class_history_map[s] for s in unique_seconds if s in class_history_map]
+    conn.commit()
+    cur.close()
+    conn.close()
 
-    if head_histories:
-        head_class_scores = [class_history_score(x) for x in head_histories]
-        avg_head_class = sum(head_class_scores) / len(head_class_scores)
-        details.append(f"1着級別3期平均{round(avg_head_class, 2)}")
 
-        head_current_classes = [x.get("current_class", "") for x in head_histories if x.get("current_class")]
-        head_a1_count = sum(1 for x in head_current_classes if x == "A1")
-        head_b2_count = sum(1 for x in head_current_classes if x == "B2")
+def replace_today_candidates(cleaned):
+    if not cleaned:
+        return {"inserted": 0, "updated": 0, "deleted": 0}
 
-        if avg_head_class >= 1.6:
-            score += 0.95
-            reasons.append("1着候補の級別3期傾向がかなり強い")
-        elif avg_head_class >= 1.0:
-            score += 0.55
-            reasons.append("1着候補の級別3期傾向が良い")
-        elif avg_head_class >= 0.5:
-            score += 0.25
-            reasons.append("1着候補の級別3期傾向がまずまず")
-        elif avg_head_class <= -0.3:
-            score -= 0.50
-            reasons.append("1着候補の級別3期傾向が弱い")
+    race_date = str(cleaned[0]["race_date"]).strip()
+    saved_map = get_saved_state_map_by_race(race_date)
 
-        if head_a1_count >= 2:
-            score += 0.32
-            reasons.append("1着候補に現A1が複数いる")
-        elif head_a1_count >= 1 and len(unique_heads) == 1:
-            score += 0.18
-            reasons.append("頭本線が現A1")
+    conn = db_connect()
+    cur = conn.cursor()
 
-        if head_b2_count >= 1:
-            score -= 0.22
-            reasons.append("1着候補に現B2が含まれる")
+    cur.execute("DELETE FROM races WHERE race_date = %s", (race_date,))
+    deleted = cur.rowcount
 
-    avg_second_class = None
-    if second_histories:
-        second_class_scores = [class_history_score(x) for x in second_histories]
-        avg_second_class = sum(second_class_scores) / len(second_class_scores)
-        details.append(f"2着級別3期平均{round(avg_second_class, 2)}")
-        if avg_second_class >= 0.9:
-            score += 0.18
-        elif avg_second_class <= -0.2:
-            score -= 0.12
+    inserted = 0
+    updated = 0
+    imported_at = jst_now_str()
 
-    if head_histories and avg_second_class is not None:
-        class_gap = avg_head_class - avg_second_class
-        details.append(f"1-2着級別差{round(class_gap, 2)}")
-        if class_gap >= 0.7:
-            score += 0.22
-            reasons.append("1着候補の級別優位がある")
-        elif class_gap <= -0.5:
-            score -= 0.18
-            reasons.append("1着候補の級別優位が薄い")
+    for r in cleaned:
+        key = (
+            str(r["race_date"]).strip(),
+            str(r["venue"]).strip(),
+            str(r["race_no"]).strip(),
+        )
+        saved = saved_map.get(key, {})
 
-    env = environment or {}
-    wind_speed = env.get("wind_speed")
-    wave_height = env.get("wave_height")
-    wind_type = env.get("wind_type") or ""
-    wind_direction = env.get("wind_direction") or ""
-    weather = env.get("weather") or ""
-    stabilizer = bool(env.get("stabilizer"))
+        purchased = int(saved.get("purchased") or 0)
+        purchased_selection_text = str(saved.get("purchased_selection_text") or "").strip()
+        hit = int(saved.get("hit") or 0)
+        payout = int(saved.get("payout") or 0)
+        memo = str(saved.get("memo") or "").strip()
 
-    if weather:
-        details.append(f"天候{weather}")
-    if wind_speed is not None:
-        details.append(f"風速{wind_speed:g}m")
-    if wind_direction:
-        details.append(f"風向{wind_direction}")
-    if wave_height is not None:
-        details.append(f"波高{wave_height:g}cm")
-    if stabilizer:
-        details.append("安定板あり")
-
-    outer_heads = [h for h in unique_heads if h >= 4]
-    very_outer_heads = [h for h in unique_heads if h >= 5]
-
-    if wind_speed is not None:
-        if wind_speed >= 4:
-            if wind_type == "headwind":
-                if 1 in unique_heads:
-                    score += 0.35
-                    reasons.append("向かい風で1号艇寄り")
-                if 2 in unique_heads and 1 in unique_heads:
-                    score += 0.10
-                if outer_heads:
-                    score -= 0.12
-                    reasons.append("向かい風で外頭は少し不利")
-
-            elif wind_type == "tailwind":
-                if outer_heads:
-                    score += 0.25
-                    reasons.append("追い風で外の一撃候補を少し評価")
-                if 1 in unique_heads and len(unique_heads) == 1:
-                    score -= 0.05
-
-            elif wind_type == "crosswind":
-                if outer_heads:
-                    score -= 0.12
-                    reasons.append("横風で外頭は少し割引")
-
-        if wind_speed >= 6:
-            if 1 in unique_heads:
-                score += 0.15
-                reasons.append("強風で内寄りを少し評価")
-            if very_outer_heads:
-                score -= 0.20
-                reasons.append("強風で大外頭は少し厳しい")
-
-            if head_avg_rank is not None:
-                if head_avg_rank <= 2.5:
-                    score += 0.20
-                    reasons.append("強風なので展示順位上位を強め評価")
-                elif head_avg_rank >= 4.0:
-                    score -= 0.20
-                    reasons.append("強風で展示下位頭は割引")
-
-            if exhibition_spread is not None:
-                if exhibition_spread >= 0.12 and head_time_gap_from_top is not None:
-                    if head_time_gap_from_top <= 0.03:
-                        score += 0.15
-                        reasons.append("強風で展示タイム上位を少し強め評価")
-                    elif head_time_gap_from_top >= 0.10:
-                        score -= 0.12
-                        reasons.append("強風で展示タイム遅め頭は割引")
-
-    if wave_height is not None:
-        if wave_height >= 5:
-            if 1 in unique_heads:
-                score += 0.12
-            if outer_heads:
-                score -= 0.12
-                reasons.append("波高高めで外頭を少し割引")
-
-            if head_avg_rank is not None:
-                if head_avg_rank <= 2.5:
-                    score += 0.12
-                    reasons.append("波高高めで展示上位を少し重視")
-                elif head_avg_rank >= 4.0:
-                    score -= 0.10
-
-        if wave_height >= 7:
-            if 1 in unique_heads:
-                score += 0.10
-            if very_outer_heads:
-                score -= 0.15
-                reasons.append("波高かなり高めで大外頭をさらに割引")
-
-    if stabilizer:
-        if 1 in unique_heads:
-            score += 0.18
-            reasons.append("安定板ありでイン寄りを少し評価")
-        if outer_heads:
-            score -= 0.18
-            reasons.append("安定板ありで外のまくり頭を少し割引")
-
-        if head_avg_rank is not None and head_avg_rank <= 2.5:
-            score += 0.15
-            reasons.append("安定板ありで展示上位を少し重視")
-
-    if wind_speed is not None and wind_speed >= 4 and wind_type == "tailwind":
-        if outer_heads and head_avg_rank is not None and head_avg_rank <= 2.8:
-            score += 0.10
-            reasons.append("追い風×展示上位の外頭候補を軽く加点")
-
-    ai_rating = score_to_ai_rating(score)
-    final_rank = decide_final_rank(official_rating, score)
-
-    exhibition_rank_text = ""
-    if exhibition_ranks:
-        exhibition_rank_text = " / ".join(
-            [f"{lane}:{exhibition_ranks.get(lane, '-')}" for lane in range(1, 7)]
+        cur.execute(
+            '''
+            INSERT INTO races (
+                race_date, time, venue, race_no, race_no_num,
+                rating, bet_type, selection, amount,
+                ai_score, ai_rating, ai_label, final_rank,
+                ai_reasons, exhibition, exhibition_rank, motor_rank,
+                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
+                purchased, purchased_selection_text, hit, payout, memo, imported_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
+            ''',
+            (
+                str(r["race_date"]).strip(),
+                str(r["time"]).strip(),
+                str(r["venue"]).strip(),
+                str(r["race_no"]).strip(),
+                int(r["race_no_num"]),
+                str(r["rating"]).strip(),
+                str(r["bet_type"]).strip(),
+                str(r["selection"]).strip(),
+                int(r["amount"]),
+                safe_float(r.get("ai_score", 0), 0),
+                str(r.get("ai_rating", "")).strip(),
+                str(r.get("ai_label", "")).strip(),
+                str(r.get("final_rank", "")).strip(),
+                json.dumps(r.get("ai_reasons", []), ensure_ascii=False),
+                json.dumps(r.get("exhibition", []), ensure_ascii=False),
+                str(r.get("exhibition_rank", "")).strip(),
+                str(r.get("motor_rank", "")).strip(),
+                str(r.get("ai_detail", "")).strip(),
+                str(r.get("ai_selection", "")).strip(),
+                str(r.get("ai_confidence", "")).strip(),
+                str(r.get("ai_lane_score_text", "")).strip(),
+                str(r.get("class_history_text", "")).strip(),
+                str(r.get("player_names_text", "")).strip(),
+                purchased,
+                purchased_selection_text,
+                hit,
+                payout,
+                memo,
+                imported_at,
+            )
         )
 
-    ai_detail = " / ".join(details) if details else ""
+        inserted += 1
+        if key in saved_map:
+            updated += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
     return {
-        "ai_score": round(score, 2),
-        "ai_rating": ai_rating,
-        "ai_label": "",
-        "final_rank": final_rank,
-        "ai_reasons": reasons,
-        "exhibition": exhibition_times,
-        "exhibition_rank": exhibition_rank_text,
-        "motor_rank": "",
-        "ai_detail": ai_detail,
+        "inserted": inserted,
+        "updated": updated,
+        "deleted": deleted,
     }
 
 
-def fill_missing_deadlines(rows, deadlines_cache):
-    filled = 0
-
-    for row in rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
-
-        if not jcd:
-            continue
-
-        current = deadlines_cache.get(jcd, {}).get(race_no, "")
-        if current:
-            continue
-
-        single_deadline = parse_single_race_deadline(jcd, race_no)
-        if single_deadline:
-            deadlines_cache.setdefault(jcd, {})[race_no] = single_deadline
-            filled += 1
-            log(f"[official_single_ok] jcd={jcd} venue={venue} race_no={race_no} time={single_deadline}")
-        else:
-            log(f"[official_single_empty] jcd={jcd} venue={venue} race_no={race_no}")
-
-    log(f"[official_single_fill_summary] filled={filled}")
-    return deadlines_cache
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
 
 
-def fetch_deadlines_parallel(jcds):
-    results = {}
-    with ThreadPoolExecutor(max_workers=OFFICIAL_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_official_deadlines_for_jcd, jcd) for jcd in sorted(jcds)]
-        for future in as_completed(futures):
-            jcd, deadlines = future.result()
-            results[jcd] = deadlines
-    return results
+@app.route("/reset_today")
+def reset_today():
+    delete_today_races()
+    return redirect("/")
 
 
-def fetch_beforeinfo_parallel(keys):
-    results = {}
-    with ThreadPoolExecutor(max_workers=BEFOREINFO_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_beforeinfo_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
-        for future in as_completed(futures):
-            key, info = future.result()
-            results[key] = info
-    return results
-
-
-def fetch_racelist_parallel(jcds):
-    results = {}
-    supported = [jcd for jcd in sorted(jcds) if jcd in RACELIST_VENUE_SLUG_MAP]
-
-    if not supported:
-        log("[racelist_parallel] supported=0")
-        return results
-
-    log(f"[racelist_parallel] supported={supported}")
-
-    with ThreadPoolExecutor(max_workers=RACELIST_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_racelist_for_jcd, jcd) for jcd in supported]
-        for future in as_completed(futures):
-            try:
-                jcd, info = future.result()
-                results[jcd] = info
-            except Exception as e:
-                log(f"[racelist_parallel_error] err={e}")
-
-    return results
-
-
-def log_beforeinfo_summary(beforeinfo_cache, future_keys):
-    total = len(future_keys)
-    fetched = len(beforeinfo_cache)
-
-    weather_count = 0
-    wind_speed_count = 0
-    wind_dir_count = 0
-    wave_count = 0
-    stabilizer_count = 0
-    exhibition_time_count = 0
-    exhibition_rank_count = 0
-
-    for _key, info in beforeinfo_cache.items():
-        env = info.get("environment", {})
-        exhibition = info.get("exhibition", {})
-
-        if env.get("weather"):
-            weather_count += 1
-        if env.get("wind_speed") is not None:
-            wind_speed_count += 1
-        if env.get("wind_direction"):
-            wind_dir_count += 1
-        if env.get("wave_height") is not None:
-            wave_count += 1
-        if env.get("stabilizer"):
-            stabilizer_count += 1
-        if exhibition.get("times"):
-            exhibition_time_count += 1
-        if exhibition.get("ranks"):
-            exhibition_rank_count += 1
-
-    log(
-        "[beforeinfo_summary] "
-        f"targets={total} fetched={fetched} "
-        f"weather={weather_count} wind_speed={wind_speed_count} "
-        f"wind_dir={wind_dir_count} wave={wave_count} "
-        f"stabilizer={stabilizer_count} "
-        f"ex_times={exhibition_time_count} ex_ranks={exhibition_rank_count}"
+@app.route("/")
+def index():
+    show_closed = request.args.get("show_closed", "").strip() == "1"
+    ai_rating_filter = request.args.get("ai_rating", "").strip()
+    if ai_rating_filter not in AI_RATING_OPTIONS:
+        ai_rating_filter = ""
+    races = get_filtered_today_races(show_closed=show_closed, ai_rating_filter=ai_rating_filter)
+    summary = get_summary_by_date(today_text())
+    return render_home(
+        races,
+        summary,
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
     )
 
 
-def build_candidates():
-    log("========== build_candidates start ==========")
-    log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
+def parse_selected_from_request():
+    selected_text = normalize_pick_text(request.form.get("selected_text", ""))
+    if selected_text:
+        return " / ".join(unique_preserve(selection_items(selected_text)))
 
-    raw_rows = []
-    raw_rows.extend(parse_rating_page("★★★★★"))
+    official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
+    ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
+    return " / ".join(merge_selected_items(official, ai))
 
-    dedup = {}
-    for row in raw_rows:
-        key = (row["venue"], row["race_no"])
-        if key not in dedup:
-            dedup[key] = row
 
-    rows = list(dedup.values())
-    log(f"[dedup_summary] count={len(rows)}")
+@app.route("/save", methods=["POST"])
+def save():
+    race_id = int(request.form.get("race_id", "0"))
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect("/?type=error&msg=" + quote("データが見つかりません"))
 
-    valid_rows = []
-    for row in rows:
-        triplets = selection_triplets(row["selection"])
-        if len(triplets) < 6:
-            continue
+    selected_text = parse_selected_from_request()
+    purchased = 1 if selected_text else 0
+    hit = 1 if request.form.get("hit") == "1" else 0
+    payout_raw = request.form.get("payout", "").strip()
+    payout = int(payout_raw) if payout_raw else 0
+    memo = request.form.get("memo", "").strip()
 
-        bad_triplet = False
-        for t in triplets:
-            parts = t.split("-")
-            if len(parts) != 3:
-                bad_triplet = True
-                break
-            a, b, c = parts
-            if a == b or a == c or b == c:
-                bad_triplet = True
-                break
+    if purchased == 0:
+        hit = 0
+        payout = 0
 
-        if bad_triplet:
-            continue
+    if purchased == 1 and hit == 1 and payout <= 0:
+        redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+        sep = "&" if "?" in redirect_base else "?"
+        return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
 
-        valid_rows.append(row)
+    update_race_result(race_id, selected_text, hit, payout, memo)
 
-    rows = valid_rows
-    log(f"[selection_clean_summary] count={len(rows)}")
+    redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+    sep = "&" if "?" in redirect_base else "?"
+    return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
 
-    needed_jcds = set()
-    for row in rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if jcd:
-            needed_jcds.add(jcd)
 
-    if USE_RACELIST:
-        racelist_cache = fetch_racelist_parallel(needed_jcds)
-    else:
-        racelist_cache = {}
-        log("[racelist_parallel] skipped by USE_RACELIST=False")
+@app.route("/update_record", methods=["POST"])
+def update_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
+    selected_text = parse_selected_from_request()
+    purchased = 1 if selected_text else 0
+    hit = 1 if request.form.get("hit") == "1" else 0
+    payout_raw = request.form.get("payout", "").strip()
+    payout = int(payout_raw) if payout_raw else 0
+    memo = request.form.get("memo", "").strip()
+    if purchased == 0:
+        hit = 0
+        payout = 0
+    if purchased == 1 and hit == 1 and payout <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+    update_race_result(race_id, selected_text, hit, payout, memo)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
-    deadlines_cache = fetch_deadlines_parallel(needed_jcds)
-    deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
-    filtered_rows = []
-    future_keys = set()
-    beforeinfo_keys = set()
-    missing_deadline_rows = []
+@app.route("/delete_record", methods=["POST"])
+def delete_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除対象が見つかりません"))
+    delete_race(race_id)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("削除しました"))
 
-    for row in rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
 
-        if not jcd:
-            continue
+@app.route("/delete_records_bulk", methods=["POST"])
+def delete_records_bulk():
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    deleted = delete_races_bulk(request.form.getlist("race_ids"))
+    if deleted <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除するデータを選んでください"))
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote(f"{deleted}件削除しました"))
 
-        deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
-        if not deadline:
-            missing_deadline_rows.append(f"{venue}{race_no}R")
-            continue
 
-        row["time"] = deadline
-        filtered_rows.append(row)
-        beforeinfo_keys.add((jcd, race_no))
-
-        if is_future_or_now(deadline):
-            future_keys.add((jcd, race_no))
-
-    rows = filtered_rows
-    log(
-        f"[deadline_filtered_summary] count={len(rows)} "
-        f"future_beforeinfo_count={len(future_keys)} all_beforeinfo_count={len(beforeinfo_keys)}"
+@app.route("/stats")
+def stats():
+    race_date = today_text()
+    return render_stats_page(
+        race_date,
+        get_summary_by_date(race_date),
+        get_group_summary(race_date, "rating"),
+        get_group_summary(race_date, "venue"),
+        get_group_summary(race_date, "ai_rating"),
+        get_group_summary(race_date, "final_rank"),
     )
 
-    if missing_deadline_rows:
-        log(f"[missing_deadline_rows] count={len(missing_deadline_rows)} rows={missing_deadline_rows}")
 
-    beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
-    if beforeinfo_keys:
-        log_beforeinfo_summary(beforeinfo_cache, beforeinfo_keys)
+@app.route("/history")
+def history():
+    return render_history_page(get_history_date_summaries())
 
-    results = []
-    env_detail_count = 0
-    wind_speed_used_count = 0
-    wave_used_count = 0
-    stabilizer_used_count = 0
-    class3_rows = 0
-    ai_selection_rows = 0
 
-    for row in rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        rating = row["rating"]
-        selection = row["selection"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
-        deadline = row["time"]
+@app.route("/history/<race_date>")
+def history_detail(race_date):
+    venue_filter = request.args.get("venue", "").strip()
+    race_no_filter = request.args.get("race_no", "").strip()
+    purchased_only = request.args.get("purchased_only", "").strip() == "1"
+    hit_only = request.args.get("hit_only", "").strip() == "1"
+    races = get_races_by_date(race_date)
+    return render_history_detail_page(
+        race_date,
+        races,
+        get_summary_by_date(race_date),
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
 
-        beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
-        exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
-        boat_stats = beforeinfo.get("boat_stats", {})
-        environment = beforeinfo.get("environment", {})
-        player_names = beforeinfo.get("player_names", {})
-        class_history_map = racelist_cache.get(jcd, {}).get(race_no, {})
 
-        analyzed = analyze_candidate(
-            rating,
-            selection,
-            exhibition_info,
-            boat_stats,
-            environment,
-            class_history_map,
+@app.route("/api/import_candidates", methods=["POST"])
+def import_candidates():
+    if not is_valid_import_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    races = data.get("races", [])
+    if not isinstance(races, list):
+        return jsonify({"ok": False, "error": "races must be a list"}), 400
+
+    required_keys = {"race_date", "time", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
+    cleaned = []
+    for i, r in enumerate(races):
+        if not isinstance(r, dict):
+            return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
+        missing = required_keys - set(r.keys())
+        if missing:
+            return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+        cleaned.append(
+            {
+                "race_date": str(r["race_date"]).strip(),
+                "time": str(r["time"]).strip(),
+                "venue": str(r["venue"]).strip(),
+                "race_no": str(r["race_no"]).strip(),
+                "race_no_num": int(r["race_no_num"]),
+                "rating": str(r["rating"]).strip(),
+                "bet_type": str(r["bet_type"]).strip(),
+                "selection": str(r["selection"]).strip(),
+                "amount": int(r["amount"]),
+                "ai_score": safe_float(r.get("ai_score", 0), 0),
+                "ai_rating": str(r.get("ai_rating", "")).strip(),
+                "ai_label": str(r.get("ai_label", "")).strip(),
+                "final_rank": str(r.get("final_rank", "")).strip(),
+                "ai_reasons": r.get("ai_reasons", []),
+                "exhibition": r.get("exhibition", []),
+                "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
+                "motor_rank": str(r.get("motor_rank", "")).strip(),
+                "ai_detail": str(r.get("ai_detail", "")).strip(),
+                "ai_selection": str(r.get("ai_selection", "")).strip(),
+                "ai_confidence": str(r.get("ai_confidence", "")).strip(),
+                "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
+                "class_history_text": str(r.get("class_history_text", "")).strip(),
+                "player_names_text": str(r.get("player_names_text", "")).strip(),
+            }
         )
+    if not cleaned:
+        return jsonify({"ok": False, "error": "races is empty"}), 400
 
-        ai_generated = generate_ai_selection(
-            exhibition_info,
-            boat_stats,
-            environment,
-            class_history_map,
-        )
+    race_dates = sorted(set(r["race_date"] for r in cleaned))
+    if len(race_dates) != 1:
+        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
 
-        ai_detail_text = analyzed["ai_detail"]
-        if "風速" in ai_detail_text:
-            wind_speed_used_count += 1
-        if "波高" in ai_detail_text:
-            wave_used_count += 1
-        if "安定板あり" in ai_detail_text:
-            stabilizer_used_count += 1
-        if "1着級別3期平均" in ai_detail_text:
-            class3_rows += 1
-        if ai_detail_text:
-            env_detail_count += 1
-        if ai_generated["ai_selection"]:
-            ai_selection_rows += 1
-
-        class_history_text = ""
-        if class_history_map:
-            class_history_text = " / ".join(
-                [
-                    f"{lane}:{make_class_history_text(class_history_map.get(lane, {}))}"
-                    for lane in range(1, 7)
-                    if class_history_map.get(lane)
-                ]
-            )
-
-        player_names_text = make_player_names_text(player_names)
-
-        candidate = {
-            "race_date": today_text(),
-            "time": deadline,
-            "venue": venue,
-            "race_no": f"{race_no}R",
-            "race_no_num": race_no,
-            "rating": rating,
-            "bet_type": BET_TYPE,
-            "selection": selection,
-            "amount": BET_AMOUNT,
-            "ai_score": analyzed["ai_score"],
-            "ai_rating": analyzed["ai_rating"],
-            "ai_label": analyzed["ai_label"],
-            "final_rank": analyzed["final_rank"],
-            "ai_reasons": analyzed["ai_reasons"],
-            "exhibition": analyzed["exhibition"],
-            "exhibition_rank": analyzed["exhibition_rank"],
-            "motor_rank": analyzed["motor_rank"],
-            "ai_detail": analyzed["ai_detail"],
-            "ai_selection": ai_generated["ai_selection"],
-            "ai_confidence": ai_generated["ai_confidence"],
-            "ai_lane_score_text": ai_generated["ai_lane_score_text"],
-            "class_history_text": class_history_text,
-            "player_names_text": player_names_text,
+    result = replace_today_candidates(cleaned)
+    log(f"import api success count={len(cleaned)}")
+    return jsonify(
+        {
+            "ok": True,
+            "received": len(cleaned),
+            "inserted": result["inserted"],
+            "updated": result["updated"],
+            "deleted": result["deleted"],
+            "imported_at": jst_now_str(),
         }
-        results.append(candidate)
-
-    log(
-        "[ai_detail_summary] "
-        f"rows={len(results)} detail_rows={env_detail_count} "
-        f"wind_speed_rows={wind_speed_used_count} "
-        f"wave_rows={wave_used_count} stabilizer_rows={stabilizer_used_count} "
-        f"class3_rows={class3_rows} ai_selection_rows={ai_selection_rows}"
     )
 
-    official_rating_counts = {}
-    for r in results:
-        official_rating_counts[r["rating"]] = official_rating_counts.get(r["rating"], 0) + 1
-    log(f"[summary_official_ratings] {official_rating_counts}")
 
-    venue_counts = {}
-    for r in results:
-        venue_counts[r["venue"]] = venue_counts.get(r["venue"], 0) + 1
-    log(f"[summary_venues] {venue_counts}")
-
-    results.sort(key=lambda x: (to_minutes(x["time"]), x["venue"], x["race_no_num"]))
-    log(f"build_candidates final_count={len(results)}")
-    log("========== build_candidates end ==========")
-    return results
-
-
-def send_to_render(races):
-    if not RENDER_IMPORT_URL:
-        raise RuntimeError("RENDER_IMPORT_URL が未設定です")
-    if not IMPORT_TOKEN:
-        raise RuntimeError("IMPORT_TOKEN が未設定です")
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-IMPORT-TOKEN": IMPORT_TOKEN,
-    }
-    payload = {"races": races}
-
-    res = SESSION.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
-    print("status_code =", res.status_code)
-    print("response =", res.text)
-    res.raise_for_status()
-
-
-def main():
-    log("[collector_version] player_names_v6_compactfix")
-    races = build_candidates()
-    if not races:
-        print("候補が0件でした")
-        return
-
-    send_to_render(races)
-
+init_db()
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
