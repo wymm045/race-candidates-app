@@ -2189,7 +2189,7 @@ def log_beforeinfo_summary(beforeinfo_cache, future_keys):
 
 
 def build_candidates():
-    log("[collector_version] ai_recent_course_v1")
+    log("[collector_version] ai_recent_course_v2_debug")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
@@ -2282,6 +2282,18 @@ def build_candidates():
     beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
     if beforeinfo_keys:
         log_beforeinfo_summary(beforeinfo_cache, beforeinfo_keys)
+
+    debug_sample_logged = 0
+    for key in sorted(beforeinfo_cache.keys()):
+        info = beforeinfo_cache.get(key, {})
+        extra = info.get("racer_extra_stats", {})
+        if extra and debug_sample_logged < 3:
+            sample_parts = []
+            for lane in range(1,7):
+                e = extra.get(lane, {})
+                sample_parts.append(f"{lane}:course={e.get('course_3rentai_rate')} st={e.get('course_avg_st')} recent={e.get('recent_avg_finish')} top3={e.get('recent_top3_rate')}")
+            log(f"[extra_stats_sample] jcd={key[0]} race_no={key[1]} " + " | ".join(sample_parts))
+            debug_sample_logged += 1
 
     results = []
     env_detail_count = 0
@@ -2386,7 +2398,7 @@ def build_candidates():
         f"rows={len(results)} detail_rows={env_detail_count} "
         f"wind_speed_rows={wind_speed_used_count} "
         f"wave_rows={wave_used_count} stabilizer_rows={stabilizer_used_count} "
-        f"class3_rows={class3_rows} ai_selection_rows={ai_selection_rows}"
+        f"class3_rows={class3_rows} ai_selection_rows={ai_selection_rows} course_rows={course_rows} recent_rows={recent_rows}"
     )
 
     official_rating_counts = {}
@@ -2424,7 +2436,8 @@ def send_to_render(races):
 
 
 def main():
-    log("[collector_version] player_names_v6_compactfix")
+    log("[collector_version] ai_recent_course_v2_debug")
+    log("[debug] expecting course_rows / recent_rows in ai_detail_summary")
     races = build_candidates()
     if not races:
         print("候補が0件でした")
