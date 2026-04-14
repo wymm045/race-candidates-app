@@ -750,7 +750,43 @@ def get_history_dates():
 
 def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
+    
+def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
+    filtered = list(rows)
 
+    if venue_filter:
+        filtered = [r for r in filtered if str(r.get("venue", "")).strip() == venue_filter]
+
+    if race_no_filter:
+        filtered = [r for r in filtered if str(r.get("race_no", "")).strip() == race_no_filter]
+
+    if purchased_only:
+        filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
+
+    if hit_only:
+        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+
+    return filtered
+
+
+def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
+    venues = sorted(set(str(r.get("venue", "")).strip() for r in rows if str(r.get("venue", "")).strip()))
+    race_nos = sorted(
+        set(str(r.get("race_no", "")).strip() for r in rows if str(r.get("race_no", "")).strip()),
+        key=lambda x: int(str(x).replace("R", "")) if str(x).replace("R", "").isdigit() else 999
+    )
+
+    venue_options = '<option value="">すべて</option>'
+    for venue in venues:
+        selected = "selected" if venue == selected_venue else ""
+        venue_options += f'<option value="{venue}" {selected}>{venue}</option>'
+
+    race_no_options = '<option value="">すべて</option>'
+    for race_no in race_nos:
+        selected = "selected" if race_no == selected_race_no else ""
+        race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
+
+    return venue_options, race_no_options, venues, race_nos
 
 def build_card_html(r, is_history=False, race_date=""):
     checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
@@ -780,6 +816,7 @@ def build_card_html(r, is_history=False, race_date=""):
         ai_reason_html = f'<div class="row"><span class="label">AI補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
 
     race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
+    card_anchor_id = f"race-card-{r['id']}"
 
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
@@ -822,7 +859,7 @@ def build_card_html(r, is_history=False, race_date=""):
         '''
 
     return f'''
-    <div class="{card_class}">
+    <div id="{card_anchor_id}" class="{card_class}">
       {top_checkbox}
       <div class="card-top card-top-main">
         <div class="card-top-left">
