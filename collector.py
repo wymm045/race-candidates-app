@@ -482,31 +482,47 @@ def is_probable_player_name(text):
     if not s:
         return False
 
+    compact = re.sub(r"\s+", "", s)
+    if not compact:
+        return False
+
     ng_words = [
         "天候", "風速", "波高", "気温", "水温", "安定板", "水面", "気象", "情報", "時点",
         "展示", "進入", "体重", "調整", "部品", "全国", "当地", "モーター", "ボート", "勝率",
-        "連率", "ST", "級別", "能力", "今節", "成績", "F", "L", "平均", "欠場", "事故",
-        "晴", "雨", "曇", "くもり", "雲り", "くも", "風", "波", "cm", "m",
+        "連率", "ST", "級別", "能力", "今節", "成績", "平均", "欠場", "事故", "レース", "気配",
+        "晴", "雨", "曇", "曇り", "雲り", "くもり", "クモリ", "風", "波", "追い風", "向かい風", "横風",
+        "満潮", "干潮", "右横風", "左横風", "小潮", "中潮", "大潮", "若潮", "長潮", "小雨",
     ]
-    if any(word in s for word in ng_words):
+    if any(word in compact for word in ng_words):
         return False
 
-    if re.search(r"[0-9０-９]", s):
+    if re.search(r"[0-9０-９]", compact):
         return False
-    if re.search(r"[A-Za-zＡ-Ｚａ-ｚ]", s):
+    if re.search(r"[A-Za-zＡ-Ｚａ-ｚ]", compact):
         return False
-    if re.search(r"[\./:％%㎡㎝m-]", s):
+    if re.search(r"[\./:％%㎡㎝m-]", compact):
         return False
-    if len(s.replace(" ", "")) < 2 or len(s.replace(" ", "")) > 8:
+    if len(compact) < 2 or len(compact) > 8:
         return False
     if not re.fullmatch(r"[一-龯ぁ-んァ-ヶー\s]+", s):
+        return False
+
+    # 名前としては不自然な、ひらがな中心の単語をさらに除外
+    kanji_count = len(re.findall(r"[一-龯]", compact))
+    hira_count = len(re.findall(r"[ぁ-ん]", compact))
+    kata_count = len(re.findall(r"[ァ-ヶー]", compact))
+    if kanji_count == 0 and kata_count == 0:
+        return False
+    if hira_count >= 2 and kanji_count <= 1 and kata_count == 0:
         return False
     return True
 
 def normalize_player_name(text):
     s = str(text or "").strip()
+    s = s.replace("　", " ")
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"\([A-Z0-9]+\)$", "", s).strip()
+    s = re.sub(r"^(?:登録番号|支部|年齢|体重)\s*", "", s).strip()
     return s
 
 
@@ -518,7 +534,7 @@ def extract_player_names_from_lines(lines):
             lane_positions.append((idx, int(line)))
 
     for pos_idx, lane in lane_positions:
-        segment = lines[pos_idx + 1:pos_idx + 8]
+        segment = lines[pos_idx + 1:pos_idx + 6]
         candidates = []
         for i, line in enumerate(segment):
             name = normalize_player_name(line)
@@ -2128,7 +2144,7 @@ def send_to_render(races):
 
 
 def main():
-    log("[collector_version] player_names_v4_namefix")
+    log("[collector_version] player_names_v6_compactfix")
     races = build_candidates()
     if not races:
         print("候補が0件でした")
