@@ -87,41 +87,6 @@ def db_connect():
     return psycopg2.connect(DATABASE_URL)
 
 
-def parse_selection_items(selection_text):
-    if not selection_text:
-        return []
-    return [x.strip() for x in str(selection_text).split(" / ") if x.strip()]
-
-
-def join_selection_items(items):
-    return " / ".join([x.strip() for x in items if str(x).strip()])
-
-
-def normalize_selection_text(selection_text):
-    return join_selection_items(parse_selection_items(selection_text))
-
-
-def get_point_count(selection):
-    return len(parse_selection_items(selection))
-
-
-def get_selected_count(race):
-    selected_text = normalize_selection_text(race.get("purchased_selection_text", ""))
-    if selected_text:
-        return get_point_count(selected_text)
-    if int(race.get("purchased") or 0) == 1:
-        return get_point_count(race.get("selection", ""))
-    return 0
-
-
-def get_total_amount(race):
-    return int(race["amount"]) * get_point_count(race["selection"])
-
-
-def get_selected_total_amount(race):
-    return int(race["amount"]) * get_selected_count(race)
-
-
 def parse_json_array_text(value):
     if not value:
         return []
@@ -160,7 +125,6 @@ def safe_float(value, default=0.0):
 def normalize_ai_detail(raw_detail, exhibition_list):
     detail = (raw_detail or "").strip()
     has_exhibition = bool(exhibition_list)
-
     if has_exhibition and not detail:
         return "展示反映"
     if not detail:
@@ -196,11 +160,37 @@ def profit_class(value):
     return "profit-zero"
 
 
+def selection_items(selection_text):
+    return [x.strip() for x in str(selection_text or "").split(" / ") if x.strip()]
+
+
+def unique_preserve(seq):
+    result = []
+    seen = set()
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
+
+
+def merge_selected_items(official_selected, ai_selected):
+    return unique_preserve(list(official_selected) + list(ai_selected))
+
+
+def get_selected_count_from_text(selection_text):
+    return len(selection_items(selection_text))
+
+
+def get_selected_total_amount(race):
+    return int(race.get("amount") or 0) * get_selected_count_from_text(race.get("purchased_selection_text", ""))
+
+
 def get_saved_state_map_by_race(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """
+        '''
         SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
         FROM races
         WHERE race_date = %s
@@ -214,7 +204,7 @@ def get_saved_state_map_by_race(race_date):
                 ELSE 0
             END DESC,
             id DESC
-        """,
+        ''',
         (race_date,),
     )
     rows = cur.fetchall()
@@ -235,7 +225,7 @@ def get_saved_state_map_by_race(race_date):
             "hit": int(row.get("hit") or 0),
             "payout": int(row.get("payout") or 0),
             "memo": str(row.get("memo") or "").strip(),
-            "purchased_selection_text": normalize_selection_text(row.get("purchased_selection_text") or ""),
+            "purchased_selection_text": str(row.get("purchased_selection_text") or "").strip(),
         }
     return saved_map
 
@@ -302,47 +292,6 @@ def render_exhibition_time_chips(exhibition_list):
         </div>
         '''
     return f'<div class="ex-chip-wrap">{chips}</div>'
-
-
-def build_selection_meta(selection_text, ai_selection_text="", selected_text=""):
-    official_items = parse_selection_items(selection_text)
-    ai_items = parse_selection_items(ai_selection_text)
-    selected_items = set(parse_selection_items(selected_text))
-    overlap_items = set(official_items) & set(ai_items)
-    return {
-        "official_items": official_items,
-        "ai_items": ai_items,
-        "selected_items": selected_items,
-        "overlap_items": overlap_items,
-    }
-
-
-def render_selection_chips(selection_text, ai_selection_text="", selected_text="", selectable=False, input_name="selected_items", block_id=""):
-    meta = build_selection_meta(selection_text, ai_selection_text, selected_text)
-    items = parse_selection_items(selection_text)
-    if not items:
-        return '<div class="selection-chip-empty">未取得</div>'
-
-    chips = ""
-    for idx, item in enumerate(items, start=1):
-        classes = ["selection-chip"]
-        if item in meta["overlap_items"]:
-            classes.append("selection-chip-overlap")
-        if item in meta["selected_items"]:
-            classes.append("selection-chip-selected")
-        cls = " ".join(classes)
-        if selectable:
-            checked = "checked" if item in meta["selected_items"] else ""
-            chip_id = f"{block_id}-{idx}-{item.replace('-', '_')}"
-            chips += f'''
-            <label class="{cls} selection-chip-checkable" for="{chip_id}">
-              <input type="checkbox" id="{chip_id}" name="{input_name}" value="{item}" {checked} onchange="updateSelectionSummary('{block_id}')">
-              <span class="selection-chip-text">{item}</span>
-            </label>
-            '''
-        else:
-            chips += f'<div class="{cls}"><span class="selection-chip-text">{item}</span></div>'
-    return f'<div class="selection-chip-grid">{chips}</div>'
 
 
 def parse_class_history_rows(class_history_text):
@@ -478,11 +427,104 @@ def safe_redirect_path(path, default="/"):
     return s
 
 
+def chip_class_for_compare(source):
+    if source == "overlap":
+        return "selection-chip selection-chip-overlap"
+    if source == "official":
+        return "selection-chip selection-chip-official"
+    return "selection-chip selection-chip-ai"
+
+
+def render_selection_column(own_items, overlap_items, source, empty_text):
+    if not own_items:
+        return f'<div class="selection-chip-empty">{empty_text}</div>'
+    overlap_set = set(overlap_items)
+    chips = ""
+    for item in own_items:
+        source_name = "overlap" if item in overlap_set else source
+        chips += f'<div class="{chip_class_for_compare(source_name)}">{item}</div>'
+    return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
+
+
+def build_selection_compare_data(official_text, ai_text):
+    official_items = selection_items(official_text)
+    ai_items = selection_items(ai_text)
+    combined = official_items + ai_items
+    overlap = sorted(set(official_items) & set(ai_items), key=lambda x: combined.index(x))
+    return {
+        "official_items": official_items,
+        "ai_items": ai_items,
+        "overlap": overlap,
+    }
+
+
+def render_selection_compare_html(official_text, ai_text):
+    data = build_selection_compare_data(official_text, ai_text)
+    official_html = render_selection_column(data["official_items"], data["overlap"], "official", "未取得")
+    ai_html = render_selection_column(data["ai_items"], data["overlap"], "ai", "未取得")
+    return f'''
+    <div class="selection-compare-wrap">
+      <div class="selection-compare-col">
+        <div class="selection-col-title">公式買い目</div>
+        {official_html}
+      </div>
+      <div class="selection-compare-col">
+        <div class="selection-col-title">AI買い目</div>
+        {ai_html}
+      </div>
+    </div>
+    '''
+
+
+def render_selected_summary_html(selected_text):
+    items = selection_items(selected_text)
+    if not items:
+        return '<div class="selection-chip-empty">未選択</div>'
+    chips = "".join([f'<div class="picked-chip">{item}</div>' for item in items])
+    return f'<div class="picked-chip-wrap">{chips}</div>'
+
+
+def render_selection_picker_html(r, race_id_key):
+    official_items = selection_items(r.get("selection", ""))
+    ai_items = selection_items(r.get("ai_selection", ""))
+    selected_items = set(selection_items(r.get("purchased_selection_text", "")))
+    overlap = set(official_items) & set(ai_items)
+
+    def make_checkboxes(items, input_name, input_prefix, source_class):
+        if not items:
+            return '<div class="selection-picker-empty">未取得</div>'
+        html = ""
+        for idx, item in enumerate(items):
+            checked = "checked" if item in selected_items else ""
+            overlap_class = " is-overlap" if item in overlap else ""
+            item_id = f"{input_prefix}-{race_id_key}-{idx}"
+            html += f'''
+            <label class="picker-chip {source_class}{overlap_class}">
+              <input type="checkbox" id="{item_id}" name="{input_name}" value="{item}" data-pick-value="{item}" {checked} onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')">
+              <span class="picker-chip-text">{item}</span>
+            </label>
+            '''
+        return f'<div class="picker-grid">{html}</div>'
+
+    return f'''
+    <div class="picker-wrap">
+      <div class="picker-col">
+        <div class="picker-title">公式から選ぶ</div>
+        {make_checkboxes(official_items, "selected_official", "off", "picker-official")}
+      </div>
+      <div class="picker-col">
+        <div class="picker-title">AIから選ぶ</div>
+        {make_checkboxes(ai_items, "selected_ai", "ai", "picker-ai")}
+      </div>
+    </div>
+    '''
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
-        """
+        '''
         CREATE TABLE IF NOT EXISTS races (
             id SERIAL PRIMARY KEY,
             race_date TEXT NOT NULL,
@@ -515,7 +557,7 @@ def init_db():
             purchased_selection_text TEXT DEFAULT '',
             UNIQUE(race_date, venue, race_no, selection)
         )
-        """
+        '''
     )
     for sql in [
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT DEFAULT ''",
@@ -537,11 +579,11 @@ def init_db():
         cur.execute(sql)
     try:
         cur.execute(
-            """
+            '''
             ALTER TABLE races
             ALTER COLUMN ai_confidence TYPE TEXT
             USING ai_confidence::TEXT
-            """
+            '''
         )
     except Exception as e:
         log(f"ai_confidence type alter skipped: {e}")
@@ -570,28 +612,27 @@ def replace_today_candidates(races):
 
     for r in races:
         race_key = (str(r["race_date"]).strip(), str(r["venue"]).strip(), str(r["race_no"]).strip())
-        saved_state = saved_state_map.get(
-            race_key,
-            {"purchased": 0, "hit": 0, "payout": 0, "memo": "", "purchased_selection_text": ""},
-        )
+        saved_state = saved_state_map.get(race_key, {"purchased": 0, "hit": 0, "payout": 0, "memo": "", "purchased_selection_text": ""})
 
         ai_reasons_json = json.dumps(r.get("ai_reasons", []), ensure_ascii=False)
         exhibition_json = json.dumps(r.get("exhibition", []), ensure_ascii=False)
 
         cur.execute(
-            """
+            '''
             INSERT INTO races (
                 race_date, time, venue, race_no, race_no_num, rating, bet_type, selection, amount,
                 purchased, hit, payout, memo,
                 imported_at, ai_score, ai_rating, ai_label, final_rank, ai_reasons,
                 exhibition, exhibition_rank, motor_rank, ai_detail,
-                ai_selection, ai_confidence, ai_lane_score_text, class_history_text, purchased_selection_text
+                ai_selection, ai_confidence, ai_lane_score_text, class_history_text,
+                purchased_selection_text
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s,
+                %s
             )
             ON CONFLICT (race_date, venue, race_no, selection)
             DO UPDATE SET
@@ -615,19 +656,19 @@ def replace_today_candidates(races):
                 ai_lane_score_text = CASE WHEN COALESCE(EXCLUDED.ai_lane_score_text, '') <> '' THEN EXCLUDED.ai_lane_score_text ELSE races.ai_lane_score_text END,
                 class_history_text = CASE WHEN COALESCE(EXCLUDED.class_history_text, '') <> '' THEN EXCLUDED.class_history_text ELSE races.class_history_text END,
                 purchased_selection_text = races.purchased_selection_text,
-                purchased = races.purchased,
+                purchased = CASE WHEN COALESCE(races.purchased_selection_text, '') <> '' THEN 1 ELSE races.purchased END,
                 hit = races.hit,
                 payout = races.payout,
                 memo = races.memo
             RETURNING xmax = 0 AS inserted_flag
-            """,
+            ''',
             (
                 r["race_date"], r["time"], r["venue"], r["race_no"], r["race_no_num"], r["rating"], r["bet_type"], r["selection"], r["amount"],
                 int(saved_state.get("purchased", 0) or 0), int(saved_state.get("hit", 0) or 0), int(saved_state.get("payout", 0) or 0), str(saved_state.get("memo", "") or ""),
                 imported_at, safe_float(r.get("ai_score", 0), 0), str(r.get("ai_rating", "")).strip(), str(r.get("ai_label", "")).strip(), str(r.get("final_rank", "")).strip(), ai_reasons_json,
                 exhibition_json, str(r.get("exhibition_rank", "")).strip(), str(r.get("motor_rank", "")).strip(), str(r.get("ai_detail", "")).strip(),
                 str(r.get("ai_selection", "")).strip(), str(r.get("ai_confidence", "")).strip(), str(r.get("ai_lane_score_text", "")).strip(), str(r.get("class_history_text", "")).strip(),
-                str(saved_state.get("purchased_selection_text", "")).strip(),
+                str(saved_state.get("purchased_selection_text", "") or ""),
             ),
         )
         row = cur.fetchone()
@@ -656,12 +697,12 @@ def get_races_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """
+        '''
         SELECT *
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
         ORDER BY time ASC, venue ASC, race_no_num ASC
-        """,
+        ''',
         (race_date,),
     )
     rows = cur.fetchall()
@@ -702,8 +743,8 @@ def delete_today_races():
     conn.close()
 
 
-def update_race_result(race_id, selected_items, hit, payout, memo):
-    selected_text = normalize_selection_text(join_selection_items(selected_items))
+def update_race_result(race_id, selected_text, hit, payout, memo):
+    selected_text = " / ".join(unique_preserve(selection_items(selected_text)))
     purchased = 1 if selected_text else 0
     if purchased == 0:
         hit = 0
@@ -718,10 +759,7 @@ def update_race_result(race_id, selected_items, hit, payout, memo):
     conn.commit()
     cur.close()
     conn.close()
-    log(
-        f"update_race_result race_id={race_id} purchased={purchased} "
-        f"selected_text={selected_text} hit={hit} payout={payout} memo={memo}"
-    )
+    log(f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}")
 
 
 def delete_race(race_id):
@@ -755,26 +793,18 @@ def get_summary_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """
+        '''
         SELECT
             COUNT(*) AS total_rows,
-            COALESCE(SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END), 0) AS total_bets,
-            COALESCE(SUM(
-                CASE
-                    WHEN purchased = 1 THEN
-                        amount * CASE
-                            WHEN COALESCE(purchased_selection_text, '') = '' THEN 0
-                            ELSE COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0)
-                        END
-                    ELSE 0
-                END
-            ), 0) AS total_investment,
-            COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
-        """,
+        ''',
         (race_date,),
     )
     row = cur.fetchone()
@@ -782,6 +812,7 @@ def get_summary_by_date(race_date):
     conn.close()
     total_rows = row["total_rows"] or 0
     total_bets = row["total_bets"] or 0
+    total_points = row["total_points"] or 0
     total_investment = row["total_investment"] or 0
     total_payout = row["total_payout"] or 0
     total_hits = row["total_hits"] or 0
@@ -791,6 +822,7 @@ def get_summary_by_date(race_date):
     return {
         "total_rows": total_rows,
         "total_bets": total_bets,
+        "total_points": total_points,
         "total_investment": total_investment,
         "total_payout": total_payout,
         "total_profit": total_profit,
@@ -807,27 +839,19 @@ def get_group_summary(race_date, group_key):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f"""
+        f'''
         SELECT
             {group_key} AS group_name,
-            COUNT(CASE WHEN purchased = 1 THEN 1 END) AS total_bets,
-            COALESCE(SUM(CASE WHEN purchased = 1 AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            COALESCE(SUM(
-                CASE
-                    WHEN purchased = 1 THEN
-                        amount * CASE
-                            WHEN COALESCE(purchased_selection_text, '') = '' THEN 0
-                            ELSE COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0)
-                        END
-                    ELSE 0
-                END
-            ), 0) AS total_investment,
-            COALESCE(SUM(CASE WHEN purchased = 1 THEN payout ELSE 0 END), 0) AS total_payout
+            COUNT(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 END) AS total_bets,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
         GROUP BY {group_key}
         ORDER BY {group_key} ASC
-        """,
+        ''',
         (race_date,),
     )
     rows = cur.fetchall()
@@ -837,6 +861,7 @@ def get_group_summary(race_date, group_key):
     for row in rows:
         total_bets = row["total_bets"] or 0
         total_hits = row["total_hits"] or 0
+        total_points = row["total_points"] or 0
         total_investment = row["total_investment"] or 0
         total_payout = row["total_payout"] or 0
         total_profit = total_payout - total_investment
@@ -846,6 +871,7 @@ def get_group_summary(race_date, group_key):
             "group_name": row["group_name"] or "(空白)",
             "total_bets": total_bets,
             "total_hits": total_hits,
+            "total_points": total_points,
             "total_investment": total_investment,
             "total_payout": total_payout,
             "total_profit": total_profit,
@@ -869,68 +895,23 @@ def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
 
 
-def build_purchase_choice_html(r, race_id_key):
-    selected_text = r.get("purchased_selection_text", "")
-    official_html = render_selection_chips(
-        r.get("selection", ""),
-        ai_selection_text=r.get("ai_selection", ""),
-        selected_text=selected_text,
-        selectable=True,
-        input_name="selected_items",
-        block_id=race_id_key,
-    )
-    ai_html = render_selection_chips(
-        r.get("ai_selection", ""),
-        ai_selection_text=r.get("selection", ""),
-        selected_text=selected_text,
-        selectable=True,
-        input_name="selected_items",
-        block_id=race_id_key,
-    )
-    selected_count = get_selected_count(r)
-    selected_total_amount = get_selected_total_amount(r)
-    return f'''
-    <div class="purchase-select-box" id="purchase-box-{race_id_key}" data-amount="{int(r['amount'])}">
-      <div class="purchase-select-head">
-        <div class="purchase-select-title">買う買い目を選ぶ</div>
-        <div class="purchase-summary">
-          <span class="purchase-summary-pill"><span id="selected-count-{race_id_key}">{selected_count}</span>点選択</span>
-          <span class="purchase-summary-pill purchase-summary-pill-strong"><span id="selected-amount-{race_id_key}">{selected_total_amount}</span>円</span>
-        </div>
-      </div>
-      <div class="purchase-choice-grid">
-        <div class="purchase-choice-col">
-          <div class="purchase-choice-label">公式から選ぶ</div>
-          {official_html}
-        </div>
-        <div class="purchase-choice-col">
-          <div class="purchase-choice-label">AIから選ぶ</div>
-          {ai_html}
-        </div>
-      </div>
-    </div>
-    '''
-
-
 def build_card_html(r, is_history=False, race_date=""):
-    checked_hit = "checked" if r["hit"] == 1 else ""
+    checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
     payout_value = r["payout"] if r["payout"] else ""
     memo_value = r["memo"] if r["memo"] else ""
-    point_count = get_point_count(r["selection"])
-    total_amount = get_total_amount(r)
-    selected_count = get_selected_count(r)
+    selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
     selected_total_amount = get_selected_total_amount(r)
 
     card_class = "card history-edit-card" if is_history else "card"
-    if r["hit"] == 1:
+    if int(r.get("hit") or 0) == 1:
         card_class += " card-hit"
-    elif int(r.get("purchased") or 0) == 1:
+    elif selected_count > 0:
         card_class += " card-purchased"
 
     status_parts = []
-    if int(r.get("purchased") or 0) == 1:
-        status_parts.append('<span class="status-badge status-badge-saved">購入済み</span>')
-    if r["hit"] == 1:
+    if selected_count > 0:
+        status_parts.append(f'<span class="status-badge status-badge-saved">購入済み {selected_count}点</span>')
+    if int(r.get("hit") or 0) == 1:
         status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
     status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>' if status_parts else ""
 
@@ -943,8 +924,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
-    selection_html = render_selection_chips(r.get("selection", ""), ai_selection_text=r.get("ai_selection", ""))
-    ai_selection_html = render_selection_chips(r.get("ai_selection", ""), ai_selection_text=r.get("selection", ""))
+    selection_compare_html = render_selection_compare_html(r.get("selection", ""), r.get("ai_selection", ""))
     ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("ai_score"), 0)
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
@@ -953,6 +933,8 @@ def build_card_html(r, is_history=False, race_date=""):
     detail_material_html = render_detail_material_chips(ai_detail_text)
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
+    selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
+    picker_html = render_selection_picker_html(r, f"history-{r['id']}" if is_history else str(r["id"]))
 
     top_checkbox = ""
     if is_history:
@@ -975,8 +957,6 @@ def build_card_html(r, is_history=False, race_date=""):
           <button type="submit" class="delete-btn">この1件を削除</button>
         </form>
         '''
-
-    purchase_choice_html = build_purchase_choice_html(r, race_id_key)
 
     return f'''
     <div class="{card_class}">
@@ -1005,23 +985,14 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <div class="metric-badge-row">
         <span class="metric-badge"><span class="metric-badge-label">券種</span><span class="metric-badge-value">{r['bet_type']}</span></span>
-        <span class="metric-badge"><span class="metric-badge-label">公式点数</span><span class="metric-badge-value">{point_count}点</span></span>
-        <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">公式合計</span><span class="metric-badge-value">{yen(total_amount)}</span></span>
-        <span class="metric-badge metric-badge-selected"><span class="metric-badge-label">選択購入</span><span class="metric-badge-value">{selected_count}点 / {yen(selected_total_amount)}</span></span>
+        <span class="metric-badge"><span class="metric-badge-label">選択点数</span><span class="metric-badge-value" id="selected-count-badge-{race_id_key}">{selected_count}点</span></span>
+        <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
         <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
       </div>
 
       <div class="info-box">
-        <div class="row row-selection-dual">
-          <div class="selection-panel">
-            <div class="selection-panel-title">公式買い目</div>
-            <div class="value">{selection_html}</div>
-          </div>
-          <div class="selection-panel">
-            <div class="selection-panel-title">AI買い目</div>
-            <div class="value">{ai_selection_html}</div>
-          </div>
-        </div>
+        <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
+        <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
         <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
@@ -1032,11 +1003,15 @@ def build_card_html(r, is_history=False, race_date=""):
         {ai_reason_html}
       </div>
 
-      <form method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}">
+      <form method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
         <input type="hidden" name="race_id" value="{r['id']}">
         {history_hidden}
 
-        {purchase_choice_html}
+        <div class="purchase-box">
+          <div class="purchase-box-title">買う買い目を選ぶ</div>
+          {picker_html}
+          <div class="purchase-help">重複している買い目はオレンジ表示。公式側とAI側の両方で選んでも1点として計算します。</div>
+        </div>
 
         <div id="detail-{race_id_key}" class="detail-box">
           <label class="checkline">
@@ -1045,7 +1020,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </label>
 
           <div class="input-row">
-            <label>{'払戻額' if is_history else '払戻額（レース全体の合計）'}</label>
+            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
             <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
           </div>
 
@@ -1097,9 +1072,9 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="nav nav-app"><a href="/" class="nav-card active">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card">過去データ</a></div>
         <div class="summary">
           <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
-          <div class="summary-box"><div class="summary-label">購入数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
           <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
-          <div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div>
         </div>
       </div>
       {cards_html}
@@ -1114,8 +1089,8 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
             return '<div class="empty">データがありません</div>'
         body = ""
         for r in rows:
-            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
-        return f"<div class='table-wrap'><table><thead><tr><th>区分</th><th>購入</th><th>的中</th><th>投資</th><th>払戻</th><th>収支</th><th>的中率</th><th>回収率</th></tr></thead><tbody>{body}</tbody></table></div>"
+            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_points']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
+        return f"<div class='table-wrap'><table><thead><tr><th>区分</th><th>購入レース</th><th>購入点数</th><th>的中</th><th>投資</th><th>払戻</th><th>収支</th><th>的中率</th><th>回収率</th></tr></thead><tbody>{body}</tbody></table></div>"
 
     content = f'''
     <div class="app-shell">
@@ -1127,17 +1102,17 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         <div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card active">今日の集計</a><a href="/history" class="nav-card">過去データ</a></div>
         <div class="summary six">
           <div class="summary-box"><div class="summary-label">全候補数</div><div class="summary-value">{summary['total_rows']}</div></div>
-          <div class="summary-box"><div class="summary-label">購入数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
           <div class="summary-box"><div class="summary-label">的中数</div><div class="summary-value">{summary['total_hits']}</div></div>
           <div class="summary-box"><div class="summary-label">投資額</div><div class="summary-value">{yen(summary['total_investment'])}</div></div>
           <div class="summary-box"><div class="summary-label">払戻額</div><div class="summary-value">{yen(summary['total_payout'])}</div></div>
-          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
         </div>
         <div class="summary" style="margin-top:8px;">
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
           <div class="summary-box"><div class="summary-label">的中率</div><div class="summary-value">{percent(summary['hit_rate'])}</div></div>
           <div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div>
-          <div class="summary-box"><div class="summary-label">1件あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_bets']) if summary['total_bets'] else 0)}</div></div>
-          <div class="summary-box"><div class="summary-label">1件あたり平均払戻</div><div class="summary-value">{yen(round(summary['total_payout'] / summary['total_hits']) if summary['total_hits'] else 0)}</div></div>
+          <div class="summary-box"><div class="summary-label">1点あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_points']) if summary['total_points'] else 0)}</div></div>
         </div>
       </div>
       <div class="stats-grid"><div><div class="header"><div class="section-title">公式星別集計</div></div>{make_table(by_rating)}</div><div><div class="header"><div class="section-title">AI補正星別集計</div></div>{make_table(by_ai_rating)}</div></div>
@@ -1155,7 +1130,7 @@ def render_history_page(date_summaries):
         for item in date_summaries:
             d = item["race_date"]
             s = item["summary"]
-            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入数</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div><div class="history-mini-box"><div class="history-mini-label">回収率</div><div class="history-mini-value">{percent(s['roi'])}</div></div></div></div>'''
+            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div></div></div>'''
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
 
@@ -1178,7 +1153,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
     content = f'''
     <div class="app-shell">
       <div class="topbar"><div class="brand"><div class="brand-logo">🧾</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ詳細</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
-      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入数</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div><div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div></div></div>
+      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div></div></div>
       {body}
     </div>
     '''
@@ -1198,48 +1173,49 @@ def render_layout(title, body_html):
     '''
     return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title><style>
 * {{ box-sizing: border-box; }}
-body {{ margin:0; background:#f3f6fb; color:#172033; font-family:-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; line-height:1.5; }}
+body {{ margin:0; background:radial-gradient(circle at top left, rgba(59,130,246,.12), transparent 22%), radial-gradient(circle at top right, rgba(14,165,233,.10), transparent 18%), linear-gradient(180deg, #eef4ff 0%, #f7faff 42%, #f3f6fb 100%); color:#172033; font-family:-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; line-height:1.5; }}
 a {{ color:#2563eb; text-decoration:none; }}
 .container {{ max-width:1100px; margin:0 auto; padding:16px 16px 92px; }}
 .app-shell {{ display:flex; flex-direction:column; gap:16px; }}
 .topbar {{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 18px; border-radius:22px; background:linear-gradient(135deg,#0f172a 0%,#1d4ed8 52%,#38bdf8 100%); color:#fff; box-shadow:0 20px 44px rgba(29,78,216,.22); }}
 .brand {{ display:flex; align-items:center; gap:12px; }}
-.brand-logo {{ width:46px; height:46px; border-radius:14px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.16); font-size:24px; }}
+.brand-logo {{ width:46px; height:46px; border-radius:14px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.16); backdrop-filter:blur(8px); font-size:24px; }}
 .brand-title {{ font-size:18px; font-weight:900; line-height:1.1; }}
 .brand-sub {{ font-size:12px; opacity:.86; margin-top:3px; }}
-.top-pill {{ display:inline-flex; align-items:center; padding:8px 12px; border-radius:999px; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.18); font-size:12px; font-weight:900; }}
-.header {{ background:rgba(255,255,255,.92); border:1px solid rgba(255,255,255,.7); border-radius:24px; padding:20px; box-shadow:0 14px 36px rgba(15,23,42,.08); }}
+.top-pill {{ display:inline-flex; align-items:center; padding:8px 12px; border-radius:999px; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.18); font-size:12px; font-weight:900; backdrop-filter:blur(8px); }}
+.header {{ background:rgba(255,255,255,.88); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,.68); border-radius:24px; padding:20px; box-shadow:0 14px 36px rgba(15,23,42,.08); }}
 .hero-strong {{ position:relative; overflow:hidden; }}
 .hero-strong::before {{ content:""; position:absolute; inset:0 0 auto 0; height:5px; background:linear-gradient(90deg,#2563eb,#38bdf8,#6366f1); }}
 .title {{ font-size:30px; font-weight:900; margin-bottom:8px; color:#0f172a; }}
 .sub {{ font-size:13px; color:#64748b; margin-top:4px; }}
-.filter-box {{ margin-top:16px; background:#fff; border:1px solid #dce7f7; border-radius:18px; padding:14px; }}
+.filter-box {{ margin-top:16px; background:linear-gradient(180deg,#fff 0%,#f9fbff 100%); border:1px solid #dce7f7; border-radius:18px; padding:14px; }}
 .filter-grid {{ display:grid; grid-template-columns:1.3fr 1fr auto; gap:12px; align-items:end; }}
 .filter-item {{ display:flex; flex-direction:column; gap:6px; }}
 .filter-item-wide {{ justify-content:center; }}
 .filter-item label {{ font-size:13px; color:#64748b; font-weight:800; }}
 .filter-check {{ display:inline-flex; align-items:center; gap:8px; font-size:14px; color:#0f172a; font-weight:900; }}
 select, input[type="number"], input[type="text"] {{ width:100%; padding:11px 12px; border:1px solid #cfd8e3; border-radius:12px; font-size:15px; background:#fff; color:#0f172a; }}
+select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:none; border-color:#93c5fd; box-shadow:0 0 0 4px rgba(147,197,253,.18); }}
 .filter-actions {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }}
-.filter-btn, .save-btn {{ border:none; background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; }}
+.filter-btn, .save-btn {{ border:none; background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; box-shadow:0 10px 20px rgba(37,99,235,.18); }}
 .filter-btn {{ padding:11px 14px; font-size:14px; border-radius:12px; }}
 .filter-reset {{ display:inline-flex; align-items:center; justify-content:center; padding:10px 12px; background:#f1f5f9; border:1px solid #dbe3ee; border-radius:12px; color:#334155; font-size:14px; font-weight:900; }}
 .nav {{ display:flex; gap:12px; flex-wrap:wrap; margin-top:16px; }}
-.nav-card {{ display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:12px 15px; background:#eef4ff; color:#2743b4; border-radius:16px; font-size:14px; font-weight:900; border:1px solid #d7e2ff; }}
+.nav-card {{ display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:12px 15px; background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); color:#2743b4; border-radius:16px; font-size:14px; font-weight:900; border:1px solid #d7e2ff; box-shadow:0 8px 18px rgba(59,130,246,.09); }}
 .nav-card.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }}
 .summary {{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin-top:18px; }}
 .summary.six {{ grid-template-columns:repeat(6, minmax(0,1fr)); }}
-.summary-box, .history-mini-box {{ background:#fff; border:1px solid #dce7f7; border-radius:18px; padding:14px; }}
+.summary-box, .history-mini-box {{ background:linear-gradient(180deg,#fff 0%,#f9fbff 100%); border:1px solid #dce7f7; border-radius:18px; padding:14px; box-shadow:0 8px 18px rgba(15,23,42,.04); }}
 .summary-label, .history-mini-label {{ font-size:12px; color:#64748b; margin-bottom:6px; }}
 .summary-value {{ font-size:21px; font-weight:900; }}
 .profit-plus {{ color:#16a34a; }} .profit-minus {{ color:#dc2626; }} .profit-zero {{ color:#334155; }}
 .message {{ margin-top:12px; padding:12px 14px; border-radius:14px; font-size:14px; font-weight:800; }}
 .message-success {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }} .message-error {{ background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }}
-.empty {{ background:#fff; border-radius:20px; padding:18px; color:#6b7280; border:1px solid #e5e7eb; }}
-.card {{ background:#fff; border-radius:24px; padding:18px; margin-bottom:18px; box-shadow:0 18px 42px rgba(15,23,42,.08); border:1px solid #e4ebf5; position:relative; overflow:hidden; }}
+.empty {{ background:rgba(255,255,255,.92); border-radius:20px; padding:18px; color:#6b7280; box-shadow:0 10px 28px rgba(15,23,42,.05); border:1px solid #e5e7eb; }}
+.card {{ background:linear-gradient(180deg,rgba(255,255,255,.99) 0%,rgba(248,251,255,.97) 100%); border-radius:24px; padding:18px; margin-bottom:18px; box-shadow:0 18px 42px rgba(15,23,42,.08), 0 4px 14px rgba(37,99,235,.06); border:1px solid #e4ebf5; position:relative; overflow:hidden; }}
 .card::before {{ content:""; position:absolute; left:0; top:0; width:100%; height:5px; background:linear-gradient(90deg,#60a5fa,#818cf8); opacity:.35; }}
-.card-purchased {{ border-color:#b8d4ff; background:#fbfdff; }}
-.card-hit {{ border-color:#a7f3d0; background:#f6fffa; }}
+.card-purchased {{ border-color:#b8d4ff; background:linear-gradient(180deg,#fbfdff 0%,#f1f7ff 100%); }}
+.card-hit {{ border-color:#a7f3d0; background:linear-gradient(180deg,#f6fffa 0%,#ecfdf5 100%); }}
 .card-hit::before {{ background:linear-gradient(90deg,#22c55e,#34d399); opacity:.95; }}
 .history-edit-card {{ padding-top:26px; }}
 .multi-check-wrap {{ position:absolute; top:12px; right:14px; z-index:2; }}
@@ -1249,140 +1225,175 @@ select, input[type="number"], input[type="text"] {{ width:100%; padding:11px 12p
 .time-line {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
 .time {{ font-size:36px; font-weight:900; line-height:1; color:#13294b; }}
 .countdown-badge, .rating, .ai-rating, .final-rank, .status-badge {{ display:inline-flex; align-items:center; padding:7px 12px; border-radius:999px; font-size:12px; font-weight:900; }}
-.countdown-normal, .ai-rating, .status-badge-saved {{ background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; }}
-.countdown-warning, .final-rank-watch {{ background:#fffbeb; color:#92400e; border:1px solid #fde68a; }}
-.countdown-soon {{ background:#fff1f2; color:#be123c; border:1px solid #fecdd3; }}
-.countdown-closed, .final-rank-skip {{ background:#f8fafc; color:#475569; border:1px solid #e2e8f0; }}
-.rating {{ background:#fff4e8; color:#c2410c; border:1px solid #fed7aa; }}
-.final-rank-strong, .status-badge-hit {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }}
-.final-rank-buy {{ background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; }}
-.race-spot-main {{ display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border-radius:18px; background:#eff6ff; border:1px solid #bfdbfe; }}
+.countdown-normal, .ai-rating, .status-badge-saved {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); color:#1d4ed8; border:1px solid #bfdbfe; }}
+.countdown-warning, .final-rank-watch {{ background:linear-gradient(180deg,#fffbeb 0%,#fef3c7 100%); color:#92400e; border:1px solid #fde68a; }}
+.countdown-soon {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); color:#be123c; border:1px solid #fecdd3; }}
+.countdown-closed, .final-rank-skip {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#475569; border:1px solid #e2e8f0; }}
+.rating {{ background:linear-gradient(180deg,#fff4e8 0%,#ffedd5 100%); color:#c2410c; border:1px solid #fed7aa; }}
+.final-rank-strong, .status-badge-hit {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); color:#166534; border:1px solid #bbf7d0; }}
+.final-rank-buy {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); color:#1d4ed8; border:1px solid #bfdbfe; }}
+.race-spot-main {{ display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border-radius:18px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border:1px solid #bfdbfe; }}
 .race-venue {{ font-size:22px; font-weight:900; color:#0f172a; }}
 .race-rno {{ display:inline-flex; align-items:center; justify-content:center; min-width:58px; padding:6px 10px; border-radius:999px; background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; font-size:18px; font-weight:900; }}
 .badge-row, .metric-badge-row, .status-wrap, .ex-chip-wrap, .detail-chip-wrap, .lane-score-wrap {{ display:flex; flex-wrap:wrap; gap:8px; }}
-.metric-badge {{ display:inline-flex; align-items:center; gap:8px; padding:9px 12px; border-radius:14px; background:#fff; border:1px solid #dbe3ee; }}
+.metric-badge {{ display:inline-flex; align-items:center; gap:8px; padding:9px 12px; border-radius:14px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #dbe3ee; }}
 .metric-badge-label {{ font-size:11px; font-weight:900; color:#64748b; }}
 .metric-badge-value {{ font-size:14px; font-weight:900; color:#0f172a; }}
-.metric-badge-strong {{ background:#eff6ff; border-color:#bfdbfe; }}
+.metric-badge-strong {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#bfdbfe; }}
 .metric-badge-strong .metric-badge-value {{ color:#1d4ed8; }}
-.metric-badge-selected {{ background:#fff7ed; border-color:#fdba74; }}
-.metric-badge-selected .metric-badge-value {{ color:#c2410c; }}
-.metric-badge-score {{ background:#eefcf7; border-color:#bbf7d0; }}
+.metric-badge-score {{ background:linear-gradient(180deg,#eefcf7 0%,#dcfce7 100%); border-color:#bbf7d0; }}
 .metric-badge-score .metric-badge-value {{ color:#166534; }}
-.info-box {{ background:#fff; border:1px solid #dfe8f4; border-radius:18px; padding:12px 14px; }}
+.info-box {{ background:linear-gradient(180deg,#fff 0%,#f9fbff 100%); border:1px solid #dfe8f4; border-radius:18px; padding:12px 14px; }}
 .row {{ display:grid; grid-template-columns:112px 1fr; gap:12px; padding:10px 0; border-bottom:1px solid #edf2f7; }}
 .row:last-child {{ border-bottom:none; }}
-.row-selection-dual {{ grid-template-columns:1fr 1fr; gap:14px; background:#eef6ff; border-radius:14px; padding:12px 10px; margin-bottom:4px; border-bottom:none; }}
-.selection-panel {{ min-width:0; }}
-.selection-panel-title {{ font-size:13px; font-weight:900; color:#475569; margin-bottom:8px; }}
+.row-selection-highlight {{ background:linear-gradient(180deg,rgba(239,246,255,.72) 0%, rgba(219,234,254,.46) 100%); border-radius:14px; padding:12px 10px; margin-bottom:4px; border-bottom:none; }}
 .label {{ font-size:13px; color:#64748b; font-weight:800; }}
 .value {{ font-size:14px; font-weight:800; white-space:pre-wrap; word-break:break-word; }}
 .text-left {{ text-align:left; }}
-.selection-chip-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; width:100%; max-width:100%; }}
-.selection-chip {{ display:flex; align-items:center; justify-content:center; min-height:38px; padding:6px 8px; border-radius:12px; background:#eef4ff; border:1px solid #bfdbfe; color:#153eaf; font-size:18px; font-weight:900; position:relative; }}
-.selection-chip .selection-chip-text {{ display:block; width:100%; text-align:center; }}
-.selection-chip-overlap {{ background:#fff7ed; border-color:#fdba74; color:#c2410c; }}
-.selection-chip-selected {{ box-shadow:0 0 0 3px rgba(37,99,235,.14); }}
-.selection-chip-checkable {{ cursor:pointer; }}
-.selection-chip-checkable input {{ position:absolute; opacity:0; pointer-events:none; }}
-.selection-chip-checkable.selection-chip-selected {{ background:#bfdbfe; border-color:#60a5fa; }}
-.selection-chip-checkable.selection-chip-overlap.selection-chip-selected {{ background:#fdba74; border-color:#fb923c; }}
-.selection-chip-empty, .ex-rank-empty, .ex-chip-empty, .lane-score-empty, .detail-chip-empty, .class-history-empty {{ font-size:13px; color:#6b7280; }}
+.selection-compare-wrap {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; width:100%; }}
+.selection-col-title {{ font-size:12px; font-weight:900; color:#475569; margin-bottom:6px; }}
+.selection-chip-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; width:100%; }}
+.compact-grid .selection-chip {{ min-height:34px; font-size:17px; padding:6px 8px; }}
+.selection-chip {{ display:flex; align-items:center; justify-content:center; min-height:42px; padding:8px 10px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); border:1px solid #bfdbfe; color:#153eaf; font-size:22px; font-weight:900; }}
+.selection-chip-official {{ background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); border-color:#bfdbfe; color:#153eaf; }}
+.selection-chip-ai {{ background:linear-gradient(180deg,#eefcf7 0%,#dcfce7 100%); border-color:#bbf7d0; color:#166534; }}
+.selection-chip-overlap {{ background:linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%); border-color:#fdba74; color:#c2410c; }}
+.selection-chip-empty, .ex-rank-empty, .ex-chip-empty, .lane-score-empty, .detail-chip-empty, .class-history-empty, .selection-picker-empty {{ font-size:13px; color:#6b7280; }}
+.picked-chip-wrap {{ display:flex; flex-wrap:wrap; gap:8px; }}
+.picked-chip {{ display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:6px 10px; border-radius:999px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border:1px solid #93c5fd; color:#1d4ed8; font-size:13px; font-weight:900; }}
+.purchase-box {{ margin-top:14px; background:linear-gradient(180deg,#fff 0%,#f8fbff 100%); border:1px solid #dbe7f6; border-radius:18px; padding:14px; }}
+.purchase-box-title {{ font-size:15px; font-weight:900; color:#0f172a; margin-bottom:10px; }}
+.picker-wrap {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+.picker-col {{ background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:10px; }}
+.picker-title {{ font-size:13px; font-weight:900; color:#475569; margin-bottom:8px; }}
+.picker-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+.picker-chip {{ display:flex; align-items:center; gap:8px; min-height:40px; padding:8px 10px; border-radius:12px; border:1px solid #dbe3ee; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); cursor:pointer; }}
+.picker-chip input {{ margin:0; }}
+.picker-chip-text {{ font-size:15px; font-weight:900; color:#0f172a; }}
+.picker-official {{ background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); border-color:#bfdbfe; }}
+.picker-ai {{ background:linear-gradient(180deg,#f5fff9 0%,#ecfdf5 100%); border-color:#bbf7d0; }}
+.picker-chip.is-overlap {{ background:linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%); border-color:#fdba74; }}
+.purchase-help {{ margin-top:10px; font-size:12px; color:#64748b; }}
 .ex-rank-grid {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; width:100%; }}
-.ex-rank-box {{ border:1px solid #d7dee8; border-radius:12px; background:#fff; padding:7px 4px; text-align:center; }}
-.ex-rank-1 {{ background:#ecfdf5; border-color:#86efac; }}
-.ex-rank-2 {{ background:#eff6ff; border-color:#93c5fd; }}
-.ex-rank-3 {{ background:#fffbeb; border-color:#fcd34d; }}
-.ex-rank-low {{ background:#f8fafc; color:#6b7280; }}
+.ex-rank-box {{ border:1px solid #d7dee8; border-radius:12px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); padding:7px 4px; text-align:center; }}
+.ex-rank-1 {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); border-color:#86efac; }}
+.ex-rank-2 {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
+.ex-rank-3 {{ background:linear-gradient(180deg,#fffbeb 0%,#fef3c7 100%); border-color:#fcd34d; }}
+.ex-rank-low {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#6b7280; }}
 .ex-lane {{ font-size:10px; color:#64748b; font-weight:800; }} .ex-rank {{ font-size:18px; font-weight:900; margin-top:3px; color:#0f172a; }}
-.ex-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; background:#fff; border:1px solid #d7dee8; font-size:12px; font-weight:800; }}
-.ex-chip-lane {{ display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:999px; background:#eff6ff; color:#1d4ed8; font-size:11px; font-weight:900; border:1px solid #bfdbfe; }}
+.ex-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; }}
+.ex-chip-lane {{ display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:999px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); color:#1d4ed8; font-size:11px; font-weight:900; border:1px solid #bfdbfe; }}
 .class-history-wrap {{ display:flex; flex-direction:column; gap:8px; width:100%; }}
 .class-history-row {{ display:grid; grid-template-columns:58px 1fr; gap:8px; align-items:start; }}
 .class-history-lane {{ font-size:12px; font-weight:900; color:#475569; padding-top:5px; }}
 .class-history-chips {{ display:flex; flex-wrap:wrap; gap:6px; }}
-.class-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; border:1px solid #d7dee8; background:#fff; }}
-.class-chip-a1 {{ background:#eefcf7; border-color:#86efac; }}
-.class-chip-a2 {{ background:#eff6ff; border-color:#93c5fd; }}
-.class-chip-b1 {{ background:#f8fafc; border-color:#cbd5e1; }}
-.class-chip-b2 {{ background:#fff1f2; border-color:#fecdd3; }}
+.class-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; border:1px solid #d7dee8; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); }}
+.class-chip-a1 {{ background:linear-gradient(180deg,#eefcf7 0%,#dcfce7 100%); border-color:#86efac; }}
+.class-chip-a2 {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
+.class-chip-b1 {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); border-color:#cbd5e1; }}
+.class-chip-b2 {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
 .class-chip-sub {{ font-size:10px; font-weight:900; color:#64748b; }} .class-chip-main {{ font-size:13px; font-weight:900; color:#0f172a; }}
-.lane-score-chip {{ display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border-radius:999px; background:#fff; border:1px solid #d7dee8; }}
-.lane-score-good {{ background:#eff6ff; border-color:#93c5fd; }}
-.lane-score-verygood {{ background:#ecfdf5; border-color:#86efac; }}
-.lane-score-bad {{ background:#fff1f2; border-color:#fecdd3; }}
+.lane-score-chip {{ display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; }}
+.lane-score-good {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
+.lane-score-verygood {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); border-color:#86efac; }}
+.lane-score-bad {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
 .lane-score-lane {{ font-size:12px; font-weight:900; color:#475569; }} .lane-score-value {{ font-size:13px; font-weight:900; color:#0f172a; }}
-.detail-chip {{ display:inline-flex; align-items:center; padding:7px 10px; border-radius:12px; background:#fff; border:1px solid #d7dee8; font-size:12px; font-weight:800; color:#334155; }}
+.detail-chip {{ display:inline-flex; align-items:center; padding:7px 10px; border-radius:12px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; color:#334155; }}
 .reason-list {{ margin:0; padding-left:18px; }}
-.form {{ margin-top:14px; background:#fff; border:1px solid #e2e8f0; border-radius:16px; padding:14px; }}
+.form {{ margin-top:14px; background:linear-gradient(180deg,#fff 0%,#fbfcff 100%); border:1px solid #e2e8f0; border-radius:16px; padding:14px; }}
 .checkline {{ display:flex; align-items:center; gap:8px; font-size:14px; margin-bottom:10px; }}
 .input-row {{ margin-top:10px; }} .input-row label {{ display:block; font-size:13px; color:#64748b; margin-bottom:6px; font-weight:800; }}
-.purchase-select-box {{ margin-bottom:12px; padding:12px; border-radius:16px; background:#f8fbff; border:1px solid #dbe3ee; }}
-.purchase-select-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }}
-.purchase-select-title {{ font-size:14px; font-weight:900; color:#0f172a; }}
-.purchase-summary {{ display:flex; gap:8px; flex-wrap:wrap; }}
-.purchase-summary-pill {{ display:inline-flex; align-items:center; padding:7px 10px; border-radius:999px; background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; font-size:12px; font-weight:900; }}
-.purchase-summary-pill-strong {{ background:#fff7ed; color:#c2410c; border-color:#fdba74; }}
-.purchase-choice-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
-.purchase-choice-col {{ min-width:0; }}
-.purchase-choice-label {{ font-size:12px; color:#64748b; font-weight:900; margin-bottom:6px; }}
-.delete-btn, .toolbar-delete-btn {{ border:none; background:linear-gradient(180deg,#ef4444 0%,#dc2626 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; width:100%; }}
-.bulk-toolbar {{ position:sticky; top:10px; z-index:20; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; padding:14px 16px; border-radius:18px; background:rgba(255,255,255,.92); border:1px solid rgba(226,232,240,.95); box-shadow:0 14px 30px rgba(15,23,42,.08); }}
+.delete-btn, .toolbar-delete-btn {{ border:none; background:linear-gradient(180deg,#ef4444 0%,#dc2626 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; box-shadow:0 10px 20px rgba(220,38,38,.14); width:100%; }}
+.bulk-toolbar {{ position:sticky; top:10px; z-index:20; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; padding:14px 16px; border-radius:18px; background:rgba(255,255,255,.92); backdrop-filter:blur(10px); border:1px solid rgba(226,232,240,.95); box-shadow:0 14px 30px rgba(15,23,42,.08); }}
 .bulk-toolbar-left,.bulk-toolbar-right {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
-.toolbar-btn {{ border:none; background:#dbeafe; color:#1d4ed8; border-radius:12px; padding:10px 13px; font-size:13px; font-weight:900; cursor:pointer; border:1px solid #bfdbfe; }}
-.toolbar-btn-muted {{ background:#f8fafc; color:#475569; border-color:#e2e8f0; }}
+.toolbar-btn {{ border:none; background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); color:#1d4ed8; border-radius:12px; padding:10px 13px; font-size:13px; font-weight:900; cursor:pointer; border:1px solid #bfdbfe; }}
+.toolbar-btn-muted {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#475569; border-color:#e2e8f0; }}
 .bulk-count {{ font-size:13px; font-weight:900; color:#334155; }}
-.table-wrap {{ overflow-x:auto; background:rgba(255,255,255,.94); border-radius:18px; border:1px solid #e5e7eb; }}
-table {{ width:100%; border-collapse:collapse; min-width:720px; }} th, td {{ padding:12px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; vertical-align:top; }} th {{ background:#f8fafc; color:#475569; font-weight:900; }}
+.table-wrap {{ overflow-x:auto; background:rgba(255,255,255,.94); border-radius:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); border:1px solid #e5e7eb; }}
+table {{ width:100%; border-collapse:collapse; min-width:820px; }} th, td {{ padding:12px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; vertical-align:top; }} th {{ background:#f8fafc; color:#475569; font-weight:900; }}
 .stats-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }} .section-title {{ font-size:18px; font-weight:900; }}
-.history-list {{ display:flex; flex-direction:column; gap:12px; }} .history-item {{ background:#fff; border:1px solid #e5e7eb; border-radius:20px; padding:14px; }} .history-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }} .history-date {{ font-size:18px; font-weight:900; }} .history-link {{ display:inline-block; padding:9px 12px; border-radius:12px; background:#eef4ff; color:#3730a3; font-size:13px; font-weight:900; border:1px solid #d7e2ff; }} .history-mini {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
-.bottom-nav {{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); width:calc(100% - 24px); max-width:560px; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:10px; border-radius:22px; background:rgba(255,255,255,.92); border:1px solid rgba(226,232,240,.95); box-shadow:0 18px 40px rgba(15,23,42,.16); z-index:999; }}
-.bottom-nav-item {{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:58px; border-radius:16px; background:#eef4ff; color:#334155; font-size:12px; font-weight:900; border:1px solid #dbe7fb; }}
+.history-list {{ display:flex; flex-direction:column; gap:12px; }} .history-item {{ background:rgba(255,255,255,.94); border:1px solid #e5e7eb; border-radius:20px; padding:14px; box-shadow:0 10px 24px rgba(15,23,42,.05); }} .history-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }} .history-date {{ font-size:18px; font-weight:900; }} .history-link {{ display:inline-block; padding:9px 12px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#e5edff 100%); color:#3730a3; font-size:13px; font-weight:900; border:1px solid #d7e2ff; }} .history-mini {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
+.bottom-nav {{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); width:calc(100% - 24px); max-width:560px; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:10px; border-radius:22px; background:rgba(255,255,255,.92); backdrop-filter:blur(12px); border:1px solid rgba(226,232,240,.95); box-shadow:0 18px 40px rgba(15,23,42,.16); z-index:999; }}
+.bottom-nav-item {{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:58px; border-radius:16px; background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); color:#334155; font-size:12px; font-weight:900; border:1px solid #dbe7fb; }}
 .bottom-nav-item.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }} .bottom-nav-icon {{ font-size:18px; }}
-@media (max-width: 820px) {{ .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}} .row{{grid-template-columns:96px 1fr;}} .time{{font-size:30px;}} .card-top{{flex-direction:column; align-items:flex-start;}} .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}} .filter-grid{{grid-template-columns:1fr;}} .topbar{{flex-direction:column; align-items:flex-start;}} .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}} .row-selection-dual,.purchase-choice-grid{{grid-template-columns:1fr;}} }}
-@media (max-width: 560px) {{ .container{{padding:12px 12px 92px;}} .title{{font-size:24px;}} .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}} .row{{grid-template-columns:1fr; gap:4px;}} .race-venue{{font-size:20px;}} .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr)); max-width:100%;}} .selection-chip{{font-size:16px; min-height:34px;}} .class-history-row{{grid-template-columns:1fr; gap:4px;}} .bulk-toolbar{{flex-direction:column; align-items:stretch;}} .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}} }}
+@media (max-width: 820px) {{ .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}} .row{{grid-template-columns:96px 1fr;}} .time{{font-size:30px;}} .card-top{{flex-direction:column; align-items:flex-start;}} .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}} .filter-grid{{grid-template-columns:1fr;}} .topbar{{flex-direction:column; align-items:flex-start;}} .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}} .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr;}} }}
+@media (max-width: 560px) {{ .container{{padding:12px 12px 92px;}} .title{{font-size:24px;}} .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}} .row{{grid-template-columns:1fr; gap:4px;}} .race-venue{{font-size:20px;}} .selection-chip{{font-size:18px; min-height:36px;}} .class-history-row{{grid-template-columns:1fr; gap:4px;}} .bulk-toolbar{{flex-direction:column; align-items:stretch;}} .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}} .picker-grid{{grid-template-columns:1fr;}} }}
 </style></head><body><div class="container">{body_html}</div>{bottom_nav_html}<script>
+function uniqueValues(arr) {{
+  const seen = new Set();
+  const result = [];
+  arr.forEach(v => {{
+    if (!seen.has(v)) {{
+      seen.add(v);
+      result.push(v);
+    }}
+  }});
+  return result;
+}}
+function getSelectedValuesForRace(raceId) {{
+  const values = [];
+  document.querySelectorAll(`[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_official"]:checked, [data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_ai"]:checked`).forEach(function(el) {{
+    values.push(el.value);
+  }});
+  return uniqueValues(values);
+}}
+function renderPickedSummary(values) {{
+  if (!values.length) return '<div class="selection-chip-empty">未選択</div>';
+  return '<div class="picked-chip-wrap">' + values.map(v => `<div class="picked-chip">${{v}}</div>`).join('') + '</div>';
+}}
 function updateSelectionSummary(raceId) {{
   const form = document.querySelector(`[data-race-id="${{raceId}}"]`);
   if (!form) return;
-  const checkboxes = form.querySelectorAll('input[name="selected_items"]');
-  let count = 0;
-  checkboxes.forEach(function(cb) {{
-    const label = cb.closest('.selection-chip-checkable');
-    if (cb.checked) {{
-      count += 1;
-      if (label) label.classList.add('selection-chip-selected');
-    }} else {{
-      if (label) label.classList.remove('selection-chip-selected');
-    }}
-  }});
-  const box = document.getElementById(`purchase-box-${{raceId}}`);
-  const amount = box ? parseInt(box.getAttribute('data-amount') || '100', 10) : 100;
-  const countEl = document.getElementById(`selected-count-${{raceId}}`);
-  const amountEl = document.getElementById(`selected-amount-${{raceId}}`);
-  if (countEl) countEl.textContent = count;
-  if (amountEl) amountEl.textContent = count * amount;
+  const values = getSelectedValuesForRace(raceId);
+  const count = values.length;
+  const amount = parseInt(form.getAttribute('data-amount') || '0', 10);
+  const countEl = document.getElementById(`selected-count-badge-${{raceId}}`);
+  const totalEl = document.getElementById(`selected-total-badge-${{raceId}}`);
+  const summaryEl = document.getElementById(`selected-summary-${{raceId}}`);
+  if (countEl) countEl.textContent = `${{count}}点`;
+  if (totalEl) totalEl.textContent = `${{(count * amount).toLocaleString()}}円`;
+  if (summaryEl) summaryEl.innerHTML = renderPickedSummary(values);
   toggleFormState(raceId);
 }}
 function toggleFormState(raceId) {{
-  const detail = document.getElementById(`detail-${{raceId}}`);
-  const hit = document.getElementById(`hit-${{raceId}}`);
-  const payout = document.getElementById(`payout-${{raceId}}`);
-  const selectedCountEl = document.getElementById(`selected-count-${{raceId}}`);
-  const count = selectedCountEl ? parseInt(selectedCountEl.textContent || '0', 10) : 0;
-  if (!detail) return;
-  if (count > 0) {{
-    detail.style.display = 'block';
+  const hit=document.getElementById(`hit-${{raceId}}`);
+  const detail=document.getElementById(`detail-${{raceId}}`);
+  const payout=document.getElementById(`payout-${{raceId}}`);
+  if(!detail) return;
+  const selectedValues = getSelectedValuesForRace(raceId);
+  if(selectedValues.length > 0) {{
+    detail.style.display='block';
   }} else {{
-    detail.style.display = 'none';
-    if (hit) hit.checked = false;
-    if (payout) payout.value = '';
+    detail.style.display='none';
+    if(hit) hit.checked=false;
+    if(payout) payout.value='';
   }}
 }}
-function updateBulkDeleteCount() {{ const checked=document.querySelectorAll('.bulk-checkbox:checked').length; const target=document.getElementById('bulk-delete-count'); if(target) target.textContent=`${{checked}}件選択中`; }}
-function toggleAllBulk(checked) {{ document.querySelectorAll('.bulk-checkbox').forEach(function(el){{ el.checked=checked; }}); updateBulkDeleteCount(); }}
-function confirmBulkDelete() {{ const checked=document.querySelectorAll('.bulk-checkbox:checked').length; if(checked<=0){{ alert('削除するデータを選んでください'); return false; }} return confirm(`${{checked}}件を削除しますか？`); }}
-document.addEventListener('DOMContentLoaded', function() {{ document.querySelectorAll('[data-race-id]').forEach(function(form) {{ updateSelectionSummary(form.getAttribute('data-race-id')); }}); updateBulkDeleteCount(); }});
+function updateBulkDeleteCount() {{
+  const checked=document.querySelectorAll('.bulk-checkbox:checked').length;
+  const target=document.getElementById('bulk-delete-count');
+  if(target) target.textContent=`${{checked}}件選択中`;
+}}
+function toggleAllBulk(checked) {{
+  document.querySelectorAll('.bulk-checkbox').forEach(function(el){{ el.checked=checked; }});
+  updateBulkDeleteCount();
+}}
+function confirmBulkDelete() {{
+  const checked=document.querySelectorAll('.bulk-checkbox:checked').length;
+  if(checked<=0){{ alert('削除するデータを選んでください'); return false; }}
+  return confirm(`${{checked}}件を削除しますか？`);
+}}
+document.addEventListener('DOMContentLoaded', function() {{
+  document.querySelectorAll('[data-race-id]').forEach(function(form) {{
+    const raceId = form.getAttribute('data-race-id');
+    const prechecked = form.querySelector('input[type="checkbox"][name="selected_official"]:checked, input[type="checkbox"][name="selected_ai"]:checked');
+    if (prechecked) {{
+      syncSelectionValue(prechecked, raceId);
+    }}
+    updateSelectionSummary(raceId);
+  }});
+  updateBulkDeleteCount();
+}});
 </script></body></html>'''
 
 
@@ -1413,17 +1424,27 @@ def index():
     return render_home(races, summary, request.args.get("type", "").strip(), request.args.get("msg", "").strip(), show_closed=show_closed, ai_rating_filter=ai_rating_filter)
 
 
+def parse_selected_from_request():
+    official = request.form.getlist("selected_official")
+    ai = request.form.getlist("selected_ai")
+    return " / ".join(merge_selected_items(official, ai))
+
+
 @app.route("/save", methods=["POST"])
 def save():
     race_id = int(request.form.get("race_id", "0"))
-    selected_items = request.form.getlist("selected_items")
+    selected_text = parse_selected_from_request()
+    purchased = 1 if selected_text else 0
     hit = 1 if request.form.get("hit") == "1" else 0
     payout_raw = request.form.get("payout", "").strip()
     payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
-    if selected_items and hit == 1 and payout <= 0:
+    if purchased == 0:
+        hit = 0
+        payout = 0
+    if purchased == 1 and hit == 1 and payout <= 0:
         return redirect("/?type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
-    update_race_result(race_id, selected_items, hit, payout, memo)
+    update_race_result(race_id, selected_text, hit, payout, memo)
     return redirect("/?type=success&msg=" + quote("保存しました"))
 
 
@@ -1434,14 +1455,18 @@ def update_record():
     race = get_race_by_id(race_id)
     if not race:
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
-    selected_items = request.form.getlist("selected_items")
+    selected_text = parse_selected_from_request()
+    purchased = 1 if selected_text else 0
     hit = 1 if request.form.get("hit") == "1" else 0
     payout_raw = request.form.get("payout", "").strip()
     payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
-    if selected_items and hit == 1 and payout <= 0:
+    if purchased == 0:
+        hit = 0
+        payout = 0
+    if purchased == 1 and hit == 1 and payout <= 0:
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
-    update_race_result(race_id, selected_items, hit, payout, memo)
+    update_race_result(race_id, selected_text, hit, payout, memo)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
 
