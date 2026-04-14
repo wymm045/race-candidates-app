@@ -1012,6 +1012,129 @@ def render_layout(title, body_html):
     stats_active = "active" if title == "今日の集計" else ""
     history_active = "active" if title in ["過去データ", "過去データ詳細"] else ""
 
+    css = """
+    <style>
+      *{box-sizing:border-box}
+      body{margin:0;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;color:#222}
+      .container{max-width:980px;margin:0 auto;padding:16px 12px 92px}
+      .app-shell{display:flex;flex-direction:column;gap:14px}
+      .topbar,.header,.card,.history-item{background:#fff;border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .hero-strong{background:linear-gradient(180deg,#fff,#f8fbff)}
+      .brand{display:flex;align-items:center;gap:10px}
+      .brand-logo{font-size:28px}
+      .brand-title{font-weight:700}
+      .brand-sub,.sub{font-size:13px;color:#667085}
+      .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
+      .top-pill{background:#eef4ff;color:#2f5bd2;padding:6px 10px;border-radius:999px;font-size:12px}
+      .title{font-size:24px;font-weight:800;margin-bottom:4px}
+      .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+      .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
+      .nav-card.active{background:#2f5bd2;color:#fff}
+      .summary,.summary.six{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+      .summary.six{grid-template-columns:repeat(6,1fr)}
+      .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
+      .summary-label,.history-mini-label{font-size:12px;color:#667085}
+      .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
+      .profit-plus{color:#d92d20}.profit-minus{color:#175cd3}.profit-zero{color:#344054}
+      .filter-box,.info-box{margin-top:10px}
+      .filter-grid{display:grid;grid-template-columns:1.5fr 1fr auto;gap:10px;align-items:end}
+      .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .filter-check{display:flex;align-items:center;gap:8px}
+      select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
+      .filter-btn,.save-btn,.toolbar-delete-btn,.delete-btn,.toolbar-btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+      .filter-btn,.save-btn,.toolbar-delete-btn{background:#2f5bd2;color:#fff}
+      .delete-btn,.toolbar-btn-muted{background:#fee4e2;color:#b42318}
+      .toolbar-btn{background:#eef2ff;color:#344054}
+      .filter-reset{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;background:#f2f4f7;color:#344054;border-radius:10px}
+      .card-top-main{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.time{font-size:24px;font-weight:800}
+      .countdown-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}
+      .countdown-normal{background:#eef2ff;color:#3538cd}.countdown-warning{background:#fff4e5;color:#b54708}.countdown-soon{background:#ffead5;color:#c4320a}.countdown-closed{background:#f2f4f7;color:#475467}
+      .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
+      .race-venue{font-size:22px}.race-rno{font-size:22px}
+      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}.status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .status-badge-saved{background:#ecfdf3;color:#067647}.status-badge-hit{background:#fff1f3;color:#c11574}
+      .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+      .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating{background:#fff6e5;color:#b54708}.ai-rating{background:#eef4ff;color:#175cd3}.final-rank-strong{background:#ecfdf3;color:#027a48}.final-rank-buy{background:#e0f2fe;color:#0369a1}.final-rank-watch{background:#f2f4f7;color:#475467}.final-rank-skip{background:#fef3f2;color:#b42318}
+      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}.metric-badge-strong{background:#eef4ff}.metric-badge-score{background:#fff6e5}.metric-badge-label{color:#667085}.metric-badge-value{font-weight:800}
+      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}.row:first-child{border-top:none}.label{font-weight:700;color:#344054}.value{min-width:0}
+      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}.selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}.selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}.selection-choice-chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:8px 10px;font-weight:700;border:1px solid #d0d5dd;background:#fff}
+      .selection-chip-overlap{background:#ecfdf3;border-color:#abefc6}.selection-chip-official{background:#eef4ff}.selection-chip-ai{background:#fff6e5}.selection-choice-chip input{margin:0}
+      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty{color:#667085}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}.lane-score-verygood{background:#ecfdf3}.lane-score-good{background:#eef4ff}.lane-score-bad{background:#fef3f2}
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}.ex-rank-1{background:#ecfdf3}.ex-rank-2{background:#eef4ff}.ex-rank-3{background:#fff6e5}.ex-rank-low{background:#fef3f2}
+      .class-history-wrap{display:flex;flex-direction:column;gap:8px}.class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}.class-history-lane{font-weight:800}.class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
+      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}.class-chip-a1{background:#ecfdf3}.class-chip-a2{background:#eef4ff}.class-chip-b1{background:#fff6e5}.class-chip-b2{background:#fef3f2}.class-chip-sub{font-size:11px;color:#667085}.class-chip-main{font-weight:800}
+      .form{margin-top:12px}.detail-box{display:flex;flex-direction:column;gap:10px}.checkline{display:flex;align-items:center;gap:8px;font-weight:700}.input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .save-btn{width:100%;margin-top:10px}.half-btn{width:100%}.delete-form{margin-top:8px}
+      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}.message-success{background:#ecfdf3;color:#027a48}.message-error{background:#fef3f2;color:#b42318}
+      .empty{background:#fff;border-radius:16px;padding:24px;text-align:center;color:#667085;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .history-list{display:flex;flex-direction:column;gap:10px}.history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}.history-date{font-size:20px;font-weight:800}.history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
+      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)} table{width:100%;border-collapse:collapse;background:#fff} th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap} th{background:#f8fafc}
+      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.section-title{font-size:18px;font-weight:800}
+      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)} .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px;z-index:50}
+      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}.bottom-nav-item.active{color:#175cd3;font-weight:800}
+      @media (max-width: 760px){.container{padding:12px 10px 92px}.summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{grid-template-columns:1fr}.row{grid-template-columns:1fr}.race-venue,.race-rno{font-size:20px}.time{font-size:22px}.ex-rank-grid{grid-template-columns:repeat(2,1fr)}}
+    </style>
+    """
+
+    js = """
+    <script>
+      function getCardRootByRaceId(raceId){
+        return document.querySelector('[data-race-id="' + raceId + '"]');
+      }
+      function getCheckedValues(raceId){
+        const root = getCardRootByRaceId(raceId);
+        if(!root){ return []; }
+        const checked = root.querySelectorAll('input[type="checkbox"][data-pick-value]:checked');
+        return Array.from(checked).map(x => (x.getAttribute('data-pick-value') || '').trim()).filter(Boolean);
+      }
+      function syncSelectionValue(el, raceId){ return true; }
+      function updateSelectionSummary(raceId){
+        const root = getCardRootByRaceId(raceId);
+        if(!root){ return; }
+        const values = getCheckedValues(raceId);
+        const summaryEl = document.getElementById('selected-summary-' + raceId);
+        const countEl = document.getElementById('selected-count-badge-' + raceId);
+        const totalEl = document.getElementById('selected-total-badge-' + raceId);
+        const amount = parseInt(root.getAttribute('data-amount') || '0', 10);
+        if(summaryEl){
+          if(values.length === 0){
+            summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
+          }else{
+            summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + v + '</div>').join('') + '</div>';
+          }
+        }
+        if(countEl){ countEl.textContent = values.length + '点'; }
+        if(totalEl){ totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円'; }
+      }
+      function toggleFormState(raceId){ return true; }
+      function updateBulkDeleteCount(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        const el = document.getElementById('bulk-delete-count');
+        if(el){ el.textContent = count + '件選択中'; }
+      }
+      function toggleAllBulk(checked){
+        document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
+        updateBulkDeleteCount();
+      }
+      function confirmBulkDelete(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        if(count <= 0){ alert('削除するデータを選んでください'); return false; }
+        return confirm(count + '件を削除しますか？');
+      }
+      document.addEventListener('DOMContentLoaded', function(){
+        document.querySelectorAll('form[data-race-id]').forEach(form => { updateSelectionSummary(form.getAttribute('data-race-id')); });
+        updateBulkDeleteCount();
+      });
+    </script>
+    """
+
     bottom_nav_html = f'''
     <nav class="bottom-nav">
       <a href="/" class="bottom-nav-item {home_active}"><span class="bottom-nav-icon">🏁</span><span class="bottom-nav-label">候補</span></a>
@@ -1019,7 +1142,7 @@ def render_layout(title, body_html):
       <a href="/history" class="bottom-nav-item {history_active}"><span class="bottom-nav-icon">🗂️</span><span class="bottom-nav-label">過去</span></a>
     </nav>
     '''
-    return """<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title></head><body><div class=\"container\">{}</div>{}</body></html>""".format(title, body_html, bottom_nav_html)
+    return """<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title>{}</head><body><div class=\"container\">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
 
 def is_valid_import_token(req):
