@@ -437,9 +437,7 @@ def safe_redirect_path(path, default="/"):
 def chip_class_for_compare(source):
     if source == "overlap":
         return "selection-choice-chip selection-chip-overlap"
-    if source == "official":
-        return "selection-choice-chip selection-chip-official"
-    return "selection-choice-chip selection-chip-ai"
+    return "selection-choice-chip"
 
 
 def build_selection_compare_data(official_text, ai_text):
