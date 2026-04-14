@@ -500,7 +500,7 @@ def render_selection_picker_html(r, race_id_key):
             item_id = f"{input_prefix}-{race_id_key}-{idx}"
             html += f'''
             <label class="picker-chip {source_class}{overlap_class}">
-              <input type="checkbox" id="{item_id}" name="{input_name}" value="{item}" data-pick-value="{item}" {checked} onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')">
+              <input type="checkbox" id="{item_id}" name="{input_name}" value="{item}" data-pick-value="{item}" {checked} onchange="updateSelectionSummary('{race_id_key}')">
               <span class="picker-chip-text">{item}</span>
             </label>
             '''
@@ -1280,7 +1280,8 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .ex-rank-2 {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
 .ex-rank-3 {{ background:linear-gradient(180deg,#fffbeb 0%,#fef3c7 100%); border-color:#fcd34d; }}
 .ex-rank-low {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#6b7280; }}
-.ex-lane {{ font-size:10px; color:#64748b; font-weight:800; }} .ex-rank {{ font-size:18px; font-weight:900; margin-top:3px; color:#0f172a; }}
+.ex-lane {{ font-size:10px; color:#64748b; font-weight:800; }}
+.ex-rank {{ font-size:18px; font-weight:900; margin-top:3px; color:#0f172a; }}
 .ex-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; }}
 .ex-chip-lane {{ display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:999px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); color:#1d4ed8; font-size:11px; font-weight:900; border:1px solid #bfdbfe; }}
 .class-history-wrap {{ display:flex; flex-direction:column; gap:8px; width:100%; }}
@@ -1292,17 +1293,21 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .class-chip-a2 {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
 .class-chip-b1 {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); border-color:#cbd5e1; }}
 .class-chip-b2 {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
-.class-chip-sub {{ font-size:10px; font-weight:900; color:#64748b; }} .class-chip-main {{ font-size:13px; font-weight:900; color:#0f172a; }}
+.class-chip-sub {{ font-size:10px; font-weight:900; color:#64748b; }}
+.class-chip-main {{ font-size:13px; font-weight:900; color:#0f172a; }}
 .lane-score-chip {{ display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; }}
 .lane-score-good {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
 .lane-score-verygood {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); border-color:#86efac; }}
 .lane-score-bad {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
-.lane-score-lane {{ font-size:12px; font-weight:900; color:#475569; }} .lane-score-value {{ font-size:13px; font-weight:900; color:#0f172a; }}
+.lane-score-lane {{ font-size:12px; font-weight:900; color:#475569; }}
+.lane-score-value {{ font-size:13px; font-weight:900; color:#0f172a; }}
 .detail-chip {{ display:inline-flex; align-items:center; padding:7px 10px; border-radius:12px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; color:#334155; }}
 .reason-list {{ margin:0; padding-left:18px; }}
 .form {{ margin-top:14px; background:linear-gradient(180deg,#fff 0%,#fbfcff 100%); border:1px solid #e2e8f0; border-radius:16px; padding:14px; }}
 .checkline {{ display:flex; align-items:center; gap:8px; font-size:14px; margin-bottom:10px; }}
-.input-row {{ margin-top:10px; }} .input-row label {{ display:block; font-size:13px; color:#64748b; margin-bottom:6px; font-weight:800; }}
+.detail-box {{ margin-top:10px; }}
+.input-row {{ margin-top:10px; }}
+.input-row label {{ display:block; font-size:13px; color:#64748b; margin-bottom:6px; font-weight:800; }}
 .delete-btn, .toolbar-delete-btn {{ border:none; background:linear-gradient(180deg,#ef4444 0%,#dc2626 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; box-shadow:0 10px 20px rgba(220,38,38,.14); width:100%; }}
 .bulk-toolbar {{ position:sticky; top:10px; z-index:20; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; padding:14px 16px; border-radius:18px; background:rgba(255,255,255,.92); backdrop-filter:blur(10px); border:1px solid rgba(226,232,240,.95); box-shadow:0 14px 30px rgba(15,23,42,.08); }}
 .bulk-toolbar-left,.bulk-toolbar-right {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
@@ -1310,51 +1315,52 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .toolbar-btn-muted {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#475569; border-color:#e2e8f0; }}
 .bulk-count {{ font-size:13px; font-weight:900; color:#334155; }}
 .table-wrap {{ overflow-x:auto; background:rgba(255,255,255,.94); border-radius:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); border:1px solid #e5e7eb; }}
-table {{ width:100%; border-collapse:collapse; min-width:820px; }} th, td {{ padding:12px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; vertical-align:top; }} th {{ background:#f8fafc; color:#475569; font-weight:900; }}
-.stats-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }} .section-title {{ font-size:18px; font-weight:900; }}
-.history-list {{ display:flex; flex-direction:column; gap:12px; }} .history-item {{ background:rgba(255,255,255,.94); border:1px solid #e5e7eb; border-radius:20px; padding:14px; box-shadow:0 10px 24px rgba(15,23,42,.05); }} .history-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }} .history-date {{ font-size:18px; font-weight:900; }} .history-link {{ display:inline-block; padding:9px 12px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#e5edff 100%); color:#3730a3; font-size:13px; font-weight:900; border:1px solid #d7e2ff; }} .history-mini {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
+table {{ width:100%; border-collapse:collapse; min-width:820px; }}
+th, td {{ padding:12px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; vertical-align:top; }}
+th {{ background:#f8fafc; color:#475569; font-weight:900; }}
+.stats-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }}
+.section-title {{ font-size:18px; font-weight:900; }}
+.history-list {{ display:flex; flex-direction:column; gap:12px; }}
+.history-item {{ background:rgba(255,255,255,.94); border:1px solid #e5e7eb; border-radius:20px; padding:14px; box-shadow:0 10px 24px rgba(15,23,42,.05); }}
+.history-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
+.history-date {{ font-size:18px; font-weight:900; }}
+.history-link {{ display:inline-block; padding:9px 12px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#e5edff 100%); color:#3730a3; font-size:13px; font-weight:900; border:1px solid #d7e2ff; }}
+.history-mini {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
 .bottom-nav {{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); width:calc(100% - 24px); max-width:560px; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:10px; border-radius:22px; background:rgba(255,255,255,.92); backdrop-filter:blur(12px); border:1px solid rgba(226,232,240,.95); box-shadow:0 18px 40px rgba(15,23,42,.16); z-index:999; }}
 .bottom-nav-item {{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:58px; border-radius:16px; background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); color:#334155; font-size:12px; font-weight:900; border:1px solid #dbe7fb; }}
-.bottom-nav-item.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }} .bottom-nav-icon {{ font-size:18px; }}
-@media (max-width: 820px) {{ .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}} .row{{grid-template-columns:96px 1fr;}} .time{{font-size:30px;}} .card-top{{flex-direction:column; align-items:flex-start;}} .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}} .filter-grid{{grid-template-columns:1fr;}} .topbar{{flex-direction:column; align-items:flex-start;}} .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}} .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr;}} }}
-@media (max-width: 560px) {{ .container{{padding:12px 12px 92px;}} .title{{font-size:24px;}} .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}} .row{{grid-template-columns:1fr; gap:4px;}} .race-venue{{font-size:20px;}} .selection-chip{{font-size:18px; min-height:36px;}} .class-history-row{{grid-template-columns:1fr; gap:4px;}} .bulk-toolbar{{flex-direction:column; align-items:stretch;}} .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}} .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr 1fr; gap:8px;}} .selection-compare-col,.picker-col{{min-width:0; padding:10px;}} .picker-grid{{grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px;}} .picker-chip{{min-height:36px; padding:6px 8px;}} .picker-chip-text{{font-size:16px;}} .selection-chip{{font-size:16px; min-height:34px;}} .selection-col-title,.picker-title{{font-size:12px;}} }}
+.bottom-nav-item.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }}
+.bottom-nav-icon {{ font-size:18px; }}
 
-@media (max-width: 560px) {
-  .selection-compare-wrap,
-  .picker-wrap {
-    grid-template-columns: 1fr 1fr !important;
-    gap: 8px !important;
-    align-items: start !important;
-  }
-  .selection-compare-col,
-  .picker-col {
-    min-width: 0 !important;
-    padding: 10px !important;
-  }
-  .selection-chip-grid,
-  .picker-grid {
-    grid-template-columns: 1fr !important;
-    gap: 8px !important;
-    width: 100% !important;
-    max-width: 100% !important;
-  }
-  .selection-chip,
-  .picker-chip {
-    min-height: 44px !important;
-    padding: 8px 10px !important;
-  }
-  .selection-chip,
-  .picker-chip-text {
-    font-size: 18px !important;
-    white-space: nowrap !important;
-    word-break: keep-all !important;
-    overflow-wrap: normal !important;
-  }
-  .picker-chip {
-    justify-content: flex-start !important;
-  }
-}
+@media (max-width: 820px) {{
+  .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}}
+  .row{{grid-template-columns:96px 1fr;}}
+  .time{{font-size:30px;}}
+  .card-top{{flex-direction:column; align-items:flex-start;}}
+  .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}
+  .filter-grid{{grid-template-columns:1fr;}}
+  .topbar{{flex-direction:column; align-items:flex-start;}}
+  .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}}
+  .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr;}}
+}}
 
+@media (max-width: 560px) {{
+  .container{{padding:12px 12px 92px;}}
+  .title{{font-size:24px;}}
+  .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}}
+  .row{{grid-template-columns:1fr; gap:4px;}}
+  .race-venue{{font-size:20px;}}
+  .selection-chip{{font-size:18px; min-height:36px;}}
+  .class-history-row{{grid-template-columns:1fr; gap:4px;}}
+  .bulk-toolbar{{flex-direction:column; align-items:stretch;}}
+  .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}}
+  .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr 1fr; gap:8px;}}
+  .selection-compare-col,.picker-col{{min-width:0; padding:10px;}}
+  .picker-grid{{grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px;}}
+  .picker-chip{{min-height:36px; padding:6px 8px;}}
+  .picker-chip-text{{font-size:16px;}}
+  .selection-chip{{font-size:16px; min-height:34px;}}
+  .selection-col-title,.picker-title{{font-size:12px;}}
+}}
 </style></head><body><div class="container">{body_html}</div>{bottom_nav_html}<script>
 function uniqueValues(arr) {{
   const seen = new Set();
@@ -1367,17 +1373,23 @@ function uniqueValues(arr) {{
   }});
   return result;
 }}
+
 function getSelectedValuesForRace(raceId) {{
   const values = [];
-  document.querySelectorAll(`[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_official"]:checked, [data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_ai"]:checked`).forEach(function(el) {{
+  document.querySelectorAll(
+    `[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_official"]:checked, ` +
+    `[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_ai"]:checked`
+  ).forEach(function(el) {{
     values.push(el.value);
   }});
   return uniqueValues(values);
 }}
+
 function renderPickedSummary(values) {{
   if (!values.length) return '<div class="selection-chip-empty">未選択</div>';
   return '<div class="picked-chip-wrap">' + values.map(v => `<div class="picked-chip">${{v}}</div>`).join('') + '</div>';
 }}
+
 function updateSelectionSummary(raceId) {{
   const form = document.querySelector(`[data-race-id="${{raceId}}"]`);
   if (!form) return;
@@ -1392,41 +1404,47 @@ function updateSelectionSummary(raceId) {{
   if (summaryEl) summaryEl.innerHTML = renderPickedSummary(values);
   toggleFormState(raceId);
 }}
+
 function toggleFormState(raceId) {{
-  const hit=document.getElementById(`hit-${{raceId}}`);
-  const detail=document.getElementById(`detail-${{raceId}}`);
-  const payout=document.getElementById(`payout-${{raceId}}`);
-  if(!detail) return;
+  const hit = document.getElementById(`hit-${{raceId}}`);
+  const detail = document.getElementById(`detail-${{raceId}}`);
+  const payout = document.getElementById(`payout-${{raceId}}`);
+  if (!detail) return;
   const selectedValues = getSelectedValuesForRace(raceId);
-  if(selectedValues.length > 0) {{
-    detail.style.display='block';
+  if (selectedValues.length > 0) {{
+    detail.style.display = 'block';
   }} else {{
-    detail.style.display='none';
-    if(hit) hit.checked=false;
-    if(payout) payout.value='';
+    detail.style.display = 'none';
+    if (hit) hit.checked = false;
+    if (payout) payout.value = '';
   }}
 }}
+
 function updateBulkDeleteCount() {{
-  const checked=document.querySelectorAll('.bulk-checkbox:checked').length;
-  const target=document.getElementById('bulk-delete-count');
-  if(target) target.textContent=`${{checked}}件選択中`;
+  const checked = document.querySelectorAll('.bulk-checkbox:checked').length;
+  const target = document.getElementById('bulk-delete-count');
+  if (target) target.textContent = `${{checked}}件選択中`;
 }}
+
 function toggleAllBulk(checked) {{
-  document.querySelectorAll('.bulk-checkbox').forEach(function(el){{ el.checked=checked; }});
+  document.querySelectorAll('.bulk-checkbox').forEach(function(el) {{
+    el.checked = checked;
+  }});
   updateBulkDeleteCount();
 }}
+
 function confirmBulkDelete() {{
-  const checked=document.querySelectorAll('.bulk-checkbox:checked').length;
-  if(checked<=0){{ alert('削除するデータを選んでください'); return false; }}
+  const checked = document.querySelectorAll('.bulk-checkbox:checked').length;
+  if (checked <= 0) {{
+    alert('削除するデータを選んでください');
+    return false;
+  }}
   return confirm(`${{checked}}件を削除しますか？`);
 }}
+
 document.addEventListener('DOMContentLoaded', function() {{
   document.querySelectorAll('[data-race-id]').forEach(function(form) {{
     const raceId = form.getAttribute('data-race-id');
-    const prechecked = form.querySelector('input[type="checkbox"][name="selected_official"]:checked, input[type="checkbox"][name="selected_ai"]:checked');
-    if (prechecked) {{
-      syncSelectionValue(prechecked, raceId);
-    }}
     updateSelectionSummary(raceId);
   }});
   updateBulkDeleteCount();
@@ -1458,7 +1476,14 @@ def index():
         ai_rating_filter = ""
     races = get_filtered_today_races(show_closed=show_closed, ai_rating_filter=ai_rating_filter)
     summary = get_summary_by_date(today_text())
-    return render_home(races, summary, request.args.get("type", "").strip(), request.args.get("msg", "").strip(), show_closed=show_closed, ai_rating_filter=ai_rating_filter)
+    return render_home(
+        races,
+        summary,
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
+    )
 
 
 def parse_selected_from_request():
@@ -1530,7 +1555,14 @@ def delete_records_bulk():
 @app.route("/stats")
 def stats():
     race_date = today_text()
-    return render_stats_page(race_date, get_summary_by_date(race_date), get_group_summary(race_date, "rating"), get_group_summary(race_date, "venue"), get_group_summary(race_date, "ai_rating"), get_group_summary(race_date, "final_rank"))
+    return render_stats_page(
+        race_date,
+        get_summary_by_date(race_date),
+        get_group_summary(race_date, "rating"),
+        get_group_summary(race_date, "venue"),
+        get_group_summary(race_date, "ai_rating"),
+        get_group_summary(race_date, "final_rank"),
+    )
 
 
 @app.route("/history")
@@ -1540,25 +1572,35 @@ def history():
 
 @app.route("/history/<race_date>")
 def history_detail(race_date):
-    return render_history_detail_page(race_date, get_races_by_date(race_date), get_summary_by_date(race_date), request.args.get("type", "").strip(), request.args.get("msg", "").strip())
+    return render_history_detail_page(
+        race_date,
+        get_races_by_date(race_date),
+        get_summary_by_date(race_date),
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+    )
 
 
 @app.route("/api/import_candidates", methods=["POST"])
 def import_candidates():
     if not is_valid_import_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
+
     data = request.get_json(silent=True) or {}
     races = data.get("races", [])
     if not isinstance(races, list):
         return jsonify({"ok": False, "error": "races must be a list"}), 400
+
     required_keys = {"race_date", "time", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
     cleaned = []
+
     for i, r in enumerate(races):
         if not isinstance(r, dict):
             return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
         missing = required_keys - set(r.keys())
         if missing:
             return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+
         cleaned.append({
             "race_date": str(r["race_date"]).strip(),
             "time": str(r["time"]).strip(),
@@ -1583,14 +1625,24 @@ def import_candidates():
             "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
             "class_history_text": str(r.get("class_history_text", "")).strip(),
         })
+
     if not cleaned:
         return jsonify({"ok": False, "error": "races is empty"}), 400
+
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+
     result = replace_today_candidates(cleaned)
     log(f"import api success count={len(cleaned)}")
-    return jsonify({"ok": True, "received": len(cleaned), "inserted": result["inserted"], "updated": result["updated"], "deleted": result["deleted"], "imported_at": jst_now_str()})
+    return jsonify({
+        "ok": True,
+        "received": len(cleaned),
+        "inserted": result["inserted"],
+        "updated": result["updated"],
+        "deleted": result["deleted"],
+        "imported_at": jst_now_str()
+    })
 
 
 init_db()
