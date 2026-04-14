@@ -1359,7 +1359,22 @@ def render_layout(title, body_html):
         box-shadow:0 0 0 2px rgba(166,75,0,.08) inset;
       }
 
-      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      
+      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border-radius:4px;font-weight:800;font-size:15px;line-height:1;border:1px solid rgba(0,0,0,.06)}
+      .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
+      .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
+      .lane-color-3{background:#ef4444;color:#ffffff;border-color:#ef4444}
+      .lane-color-4{background:#3b82f6;color:#ffffff;border-color:#3b82f6}
+      .lane-color-5{background:#fde047;color:#111827;border-color:#eab308}
+      .lane-color-6{background:#22c55e;color:#ffffff;border-color:#22c55e}
+      .pick-inline{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
+      .pick-sep{font-weight:900;color:#667085;font-size:14px;line-height:1}
+      .pick-plain{font-weight:800;color:#344054}
+      .player-chip-wrap{display:flex;flex-direction:column;gap:8px}
+      .player-chip{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+      .player-chip-lane{flex:0 0 auto}
+      .player-chip-name{font-weight:700;color:#172033}
+.picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty{color:#667085}
@@ -1460,6 +1475,11 @@ def render_layout(title, body_html):
         .jump-chip{min-width:48px;padding:8px 11px}
         .bulk-toolbar{flex-direction:column;align-items:stretch}
         .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
+        .player-chip{align-items:flex-start}
+        .player-chip-name{font-size:14px;line-height:1.45}
+        .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
+        .pick-inline{gap:5px}
+        .pick-sep{font-size:13px}
         .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
         .bottom-nav-item{border-radius:12px}
         .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
