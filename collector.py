@@ -44,6 +44,10 @@ BEFOREINFO_MAX_WORKERS = 12
 RACELIST_MAX_WORKERS = 6
 USE_RACELIST = True
 
+COURSE_STATS_CACHE = {}
+BACK3_STATS_CACHE = {}
+
+
 JCD_NAME_MAP = {
     "02": "戸田",
     "03": "江戸川",
@@ -576,6 +580,174 @@ def make_player_names_text(player_names_map):
     return " / ".join([f"{lane}:{player_names_map.get(lane, '')}" for lane in range(1, 7) if player_names_map.get(lane)])
 
 
+def extract_player_tobans_from_soup(soup):
+    result = {}
+    found = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = a.get("href") or ""
+        m = re.search(r"racersearch/profile\?toban=(\d{4})", href)
+        if not m:
+            continue
+        toban = m.group(1)
+        if toban in seen:
+            continue
+        seen.add(toban)
+        found.append(toban)
+        if len(found) >= 6:
+            break
+    if len(found) == 6:
+        for lane, toban in enumerate(found, start=1):
+            result[lane] = toban
+    return result
+
+
+def extract_player_tobans_from_lines(lines):
+    result = {}
+    lane_positions = []
+    for idx, line in enumerate(lines):
+        if re.fullmatch(r"[1-6]", line):
+            lane_positions.append((idx, int(line)))
+
+    for pos_idx, lane in lane_positions:
+        segment = lines[pos_idx:pos_idx + 12]
+        tobans = []
+        for line in segment:
+            for m in re.findall(r"\b(\d{4})\b", line):
+                tobans.append(m)
+        if tobans:
+            result[lane] = tobans[0]
+    return result
+
+
+def parse_first_six_percentages_after_marker(lines, marker):
+    for idx, line in enumerate(lines):
+        if marker in line:
+            block = " ".join(lines[idx:idx + 120])
+            vals = []
+            for m in re.findall(r"(\d+(?:\.\d+)?)%", block):
+                try:
+                    vals.append(float(m))
+                except Exception:
+                    pass
+            if len(vals) >= 6:
+                return vals[:6]
+    return []
+
+
+def parse_first_six_floats_after_marker(lines, marker):
+    for idx, line in enumerate(lines):
+        if marker in line:
+            block = " ".join(lines[idx:idx + 120])
+            vals = []
+            for m in re.findall(r"\b(0\.\d{2}|1\.00)\b", block):
+                try:
+                    vals.append(float(m))
+                except Exception:
+                    pass
+            if len(vals) >= 6:
+                return vals[:6]
+    return []
+
+
+def fetch_course_stats_for_toban(toban):
+    if not toban:
+        return {}
+    if toban in COURSE_STATS_CACHE:
+        return COURSE_STATS_CACHE[toban]
+
+    url = f"https://www.boatrace.jp/owpc/pc/data/racersearch/course?toban={toban}"
+    html = try_fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=2)
+    if not html:
+        COURSE_STATS_CACHE[toban] = {}
+        return {}
+
+    lines = normalize_lines(html)
+    course_rates = parse_first_six_percentages_after_marker(lines, "コース別3連対率")
+    course_sts = parse_first_six_floats_after_marker(lines, "コース別平均スタートタイミング")
+
+    result = {}
+    for lane in range(1, 7):
+        result[lane] = {
+            "course_3rentai_rate": course_rates[lane - 1] if len(course_rates) >= lane else None,
+            "course_avg_st": course_sts[lane - 1] if len(course_sts) >= lane else None,
+        }
+
+    COURSE_STATS_CACHE[toban] = result
+    return result
+
+
+def parse_recent_results_from_back3_html(html):
+    lines = normalize_lines(html)
+    start_idx = -1
+    for idx, line in enumerate(lines):
+        if "節間成績" in line:
+            start_idx = idx
+            break
+    if start_idx < 0:
+        return {}
+
+    perf_lines = []
+    for line in lines[start_idx:start_idx + 220]:
+        s = line.strip()
+        if not s:
+            continue
+        if re.fullmatch(r"[\d転FLS欠沈妨失エ\s\[\]]{3,30}", s):
+            perf_lines.append(s)
+        if len(perf_lines) >= 3:
+            break
+
+    digits = []
+    for s in perf_lines:
+        digits.extend([int(x) for x in re.findall(r"[1-6]", s)])
+
+    if not digits:
+        return {}
+
+    recent_avg_finish = round(sum(digits) / len(digits), 2)
+    recent_top3_rate = round(sum(1 for x in digits if x <= 3) / len(digits) * 100, 1)
+    return {
+        "recent_avg_finish": recent_avg_finish,
+        "recent_top3_rate": recent_top3_rate,
+        "recent_count": len(digits),
+    }
+
+
+def fetch_back3_stats_for_toban(toban):
+    if not toban:
+        return {}
+    if toban in BACK3_STATS_CACHE:
+        return BACK3_STATS_CACHE[toban]
+
+    url = f"https://www.boatrace.jp/owpc/pc/data/racersearch/back3?toban={toban}"
+    html = try_fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=2)
+    if not html:
+        BACK3_STATS_CACHE[toban] = {}
+        return {}
+
+    result = parse_recent_results_from_back3_html(html)
+    BACK3_STATS_CACHE[toban] = result
+    return result
+
+
+def build_racer_extra_stats(player_tobans):
+    result = {}
+    for lane in range(1, 7):
+        toban = player_tobans.get(lane, "")
+        course_map = fetch_course_stats_for_toban(toban) if toban else {}
+        recent_map = fetch_back3_stats_for_toban(toban) if toban else {}
+        lane_course = course_map.get(lane, {}) if course_map else {}
+        result[lane] = {
+            "toban": toban,
+            "course_3rentai_rate": lane_course.get("course_3rentai_rate"),
+            "course_avg_st": lane_course.get("course_avg_st"),
+            "recent_avg_finish": recent_map.get("recent_avg_finish"),
+            "recent_top3_rate": recent_map.get("recent_top3_rate"),
+            "recent_count": recent_map.get("recent_count"),
+        }
+    return result
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
 
@@ -587,6 +759,8 @@ def parse_beforeinfo_for_key(jcd, race_no):
             "exhibition": {"times": [], "ranks": {}},
             "boat_stats": {},
             "player_names": {},
+            "player_tobans": {},
+            "racer_extra_stats": {},
             "environment": {
                 "weather": "",
                 "wind_speed": None,
@@ -603,6 +777,10 @@ def parse_beforeinfo_for_key(jcd, race_no):
     lines = normalize_lines(html)
     environment = parse_environment_info(html, soup, lines)
     player_names = extract_player_names_from_lines(lines)
+    player_tobans = extract_player_tobans_from_soup(soup)
+    if len(player_tobans) != 6:
+        player_tobans = extract_player_tobans_from_lines(lines)
+    racer_extra_stats = build_racer_extra_stats(player_tobans) if player_tobans else {}
 
     time_candidates = []
     for line in lines:
@@ -695,9 +873,10 @@ def parse_beforeinfo_for_key(jcd, race_no):
         if s["boat2"] is not None and s["boat2"] > 100:
             s["boat2"] = None
 
+    extra_count = sum(1 for lane in racer_extra_stats.values() if lane.get("course_3rentai_rate") is not None or lane.get("recent_avg_finish") is not None)
     log(
         f"[beforeinfo_env] jcd={jcd} race_no={race_no} "
-        f"times={len(times)} ranks={len(ranks)} names={len(player_names)} "
+        f"times={len(times)} ranks={len(ranks)} names={len(player_names)} tobans={len(player_tobans)} extras={extra_count} "
         f"{summarize_environment_for_log(environment)}"
     )
 
@@ -705,6 +884,8 @@ def parse_beforeinfo_for_key(jcd, race_no):
         "exhibition": {"times": times, "ranks": ranks},
         "boat_stats": stats,
         "player_names": player_names,
+        "player_tobans": player_tobans,
+        "racer_extra_stats": racer_extra_stats,
         "environment": environment,
     }
 
@@ -882,7 +1063,7 @@ def make_class_history_text(class_history):
     return " / ".join(parts)
 
 
-def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_history_map):
+def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_history_map, racer_extra_stats=None):
     scores = {lane: 0.0 for lane in range(1, 7)}
     exhibition_times = exhibition_info.get("times", [])
     exhibition_ranks = exhibition_info.get("ranks", {})
@@ -894,9 +1075,12 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
         except Exception:
             pass
 
+    racer_extra_stats = racer_extra_stats or {}
+
     for lane in range(1, 7):
         s = boat_stats.get(lane, {})
         ch = class_history_map.get(lane, {})
+        extra = racer_extra_stats.get(lane, {})
 
         national = s.get("national_win")
         local = s.get("local_win")
@@ -929,6 +1113,45 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
             scores[lane] += 0.08
         elif cls == "B2":
             scores[lane] -= 0.18
+
+        course_rate = extra.get("course_3rentai_rate")
+        course_st = extra.get("course_avg_st")
+        recent_avg = extra.get("recent_avg_finish")
+        recent_top3 = extra.get("recent_top3_rate")
+
+        if course_rate is not None:
+            if course_rate >= 65:
+                scores[lane] += 0.55
+            elif course_rate >= 55:
+                scores[lane] += 0.32
+            elif course_rate >= 45:
+                scores[lane] += 0.12
+            elif course_rate < 28:
+                scores[lane] -= 0.32
+            elif course_rate < 35:
+                scores[lane] -= 0.16
+
+        if course_st is not None:
+            if course_st <= 0.15:
+                scores[lane] += 0.10
+            elif course_st >= 0.19:
+                scores[lane] -= 0.06
+
+        if recent_avg is not None:
+            if recent_avg <= 2.4:
+                scores[lane] += 0.48
+            elif recent_avg <= 3.0:
+                scores[lane] += 0.22
+            elif recent_avg >= 4.6:
+                scores[lane] -= 0.42
+            elif recent_avg >= 4.0:
+                scores[lane] -= 0.20
+
+        if recent_top3 is not None:
+            if recent_top3 >= 70:
+                scores[lane] += 0.16
+            elif recent_top3 < 35:
+                scores[lane] -= 0.14
 
         if lane in exhibition_ranks:
             r = exhibition_ranks[lane]
@@ -1007,7 +1230,7 @@ def generate_lane_ai_scores(exhibition_info, boat_stats, environment, class_hist
     return scores
 
 
-def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map):
+def generate_ai_selection(exhibition_info, boat_stats, environment, class_history_map, racer_extra_stats=None):
     exhibition_info = exhibition_info or {}
     boat_stats = boat_stats or {}
     environment = environment or {}
@@ -1043,6 +1266,7 @@ def generate_ai_selection(exhibition_info, boat_stats, environment, class_histor
         boat_stats,
         environment,
         class_history_map,
+        racer_extra_stats,
     )
 
     sorted_lanes = sorted(lane_scores.items(), key=lambda x: (-x[1], x[0]))
@@ -1330,10 +1554,12 @@ def analyze_candidate(
     boat_stats=None,
     environment=None,
     class_history_map=None,
+    racer_extra_stats=None,
 ):
     score = 0.0
     reasons = []
     details = []
+    racer_extra_stats = racer_extra_stats or {}
 
     triplets = selection_triplets(selection)
     heads = []
@@ -1671,6 +1897,53 @@ def analyze_candidate(
             score -= 0.18
             reasons.append("1着候補の級別優位が薄い")
 
+    head_extra = [racer_extra_stats[h] for h in unique_heads if h in racer_extra_stats]
+    second_extra = [racer_extra_stats[s] for s in unique_seconds if s in racer_extra_stats]
+
+    head_course_rates = [x.get("course_3rentai_rate") for x in head_extra if x.get("course_3rentai_rate") is not None]
+    if head_course_rates:
+        avg_head_course = sum(head_course_rates) / len(head_course_rates)
+        details.append(f"1着枠別3連対率平均{round(avg_head_course, 1)}%")
+        if avg_head_course >= 58:
+            score += 0.45
+            reasons.append("1着候補の枠別相性が良い")
+        elif avg_head_course >= 48:
+            score += 0.18
+        elif avg_head_course < 32:
+            score -= 0.28
+            reasons.append("1着候補の枠別相性が弱い")
+
+    head_recent_avg_list = [x.get("recent_avg_finish") for x in head_extra if x.get("recent_avg_finish") is not None]
+    if head_recent_avg_list:
+        avg_head_recent = sum(head_recent_avg_list) / len(head_recent_avg_list)
+        details.append(f"1着直近平均着順{round(avg_head_recent, 2)}")
+        if avg_head_recent <= 2.6:
+            score += 0.55
+            reasons.append("1着候補の直近成績が良い")
+        elif avg_head_recent <= 3.2:
+            score += 0.22
+        elif avg_head_recent >= 4.4:
+            score -= 0.45
+            reasons.append("1着候補の直近成績が弱い")
+
+    head_recent_top3 = [x.get("recent_top3_rate") for x in head_extra if x.get("recent_top3_rate") is not None]
+    if head_recent_top3:
+        avg_head_top3 = sum(head_recent_top3) / len(head_recent_top3)
+        details.append(f"1着直近3着内率平均{round(avg_head_top3, 1)}%")
+        if avg_head_top3 >= 70:
+            score += 0.18
+        elif avg_head_top3 < 40:
+            score -= 0.12
+
+    second_course_rates = [x.get("course_3rentai_rate") for x in second_extra if x.get("course_3rentai_rate") is not None]
+    if second_course_rates:
+        avg_second_course = sum(second_course_rates) / len(second_course_rates)
+        details.append(f"2着枠別3連対率平均{round(avg_second_course, 1)}%")
+        if avg_second_course >= 45:
+            score += 0.10
+        elif avg_second_course < 28:
+            score -= 0.08
+
     env = environment or {}
     wind_speed = env.get("wind_speed")
     wave_height = env.get("wave_height")
@@ -1916,6 +2189,7 @@ def log_beforeinfo_summary(beforeinfo_cache, future_keys):
 
 
 def build_candidates():
+    log("[collector_version] ai_recent_course_v1")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
@@ -2016,6 +2290,8 @@ def build_candidates():
     stabilizer_used_count = 0
     class3_rows = 0
     ai_selection_rows = 0
+    course_rows = 0
+    recent_rows = 0
 
     for row in rows:
         venue = row["venue"]
@@ -2061,6 +2337,10 @@ def build_candidates():
             env_detail_count += 1
         if ai_generated["ai_selection"]:
             ai_selection_rows += 1
+        if "枠別3連対率" in ai_detail_text:
+            course_rows += 1
+        if "直近平均着順" in ai_detail_text:
+            recent_rows += 1
 
         class_history_text = ""
         if class_history_map:
