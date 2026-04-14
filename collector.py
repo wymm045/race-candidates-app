@@ -2113,6 +2113,7 @@ def send_to_render(races):
 
 
 def main():
+    log("[collector_version] player_names_v3_force_beforeinfo")
     races = build_candidates()
     if not races:
         print("候補が0件でした")
