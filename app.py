@@ -140,6 +140,35 @@ def yen(n):
     except Exception:
         return "0円"
 
+def lane_color_class(lane):
+    try:
+        lane_num = int(lane)
+    except Exception:
+        lane_num = 0
+    return f"lane-color lane-color-{lane_num}"
+
+
+def render_lane_badge(lane, suffix=""):
+    label = f"{lane}{suffix}" if suffix else str(lane)
+    return f'<span class="{lane_color_class(lane)}">{label}</span>'
+
+
+def render_colored_pick_html(pick_text):
+    s = normalize_pick_text(pick_text)
+    if not s:
+        return ""
+    parts = s.split("-")
+    html_parts = []
+    for idx, part in enumerate(parts):
+        if idx > 0:
+            html_parts.append('<span class="pick-sep">-</span>')
+        lane_text = str(part).strip()
+        if lane_text.isdigit():
+            html_parts.append(render_lane_badge(int(lane_text)))
+        else:
+            html_parts.append(f'<span class="pick-plain">{lane_text}</span>')
+    return f'<span class="pick-inline">{"".join(html_parts)}</span>'
+
 
 def percent(n):
     try:
@@ -330,7 +359,7 @@ def render_player_names_html(player_names_text):
         name = player_map.get(lane, "未取得")
         items += f'''
         <div class="player-chip player-chip-{lane}">
-          <span class="player-chip-lane">{lane}号艇</span>
+          <span class="player-chip-lane">{render_lane_badge(lane, '号艇')}</span>
           <span class="player-chip-name">{name}</span>
         </div>
         '''
@@ -380,7 +409,7 @@ def render_class_history_blocks(class_history_text):
             chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
         html += f'''
         <div class="class-history-row">
-          <div class="class-history-lane">{lane}号艇</div>
+          <div class="class-history-lane">{render_lane_badge(lane, '号艇')}</div>
           <div class="class-history-chips">{chips}</div>
         </div>
         '''
@@ -526,7 +555,7 @@ def render_selection_column(
             {checked}
             onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
           >
-          <span class="selection-choice-body selection-choice-body-{chip_kind}">{item_clean}</span>
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{render_colored_pick_html(item_clean)}</span>
         </label>
         '''
 
@@ -579,7 +608,7 @@ def render_selected_summary_html(selected_text):
     items = selection_items(selected_text)
     if not items:
         return '<div class="selection-chip-empty">未選択</div>'
-    chips = "".join([f'<div class="picked-chip">{item}</div>' for item in items])
+    chips = "".join([f'<div class="picked-chip">{render_colored_pick_html(item)}</div>' for item in items])
     return f'<div class="picked-chip-wrap">{chips}</div>'
 
 
