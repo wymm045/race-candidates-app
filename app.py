@@ -536,6 +536,7 @@ def render_selection_compare_html(r, race_id_key):
     '''
 
 
+
 def render_selected_summary_html(selected_text):
     items = selection_items(selected_text)
     if not items:
@@ -750,22 +751,18 @@ def get_history_dates():
 
 def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
-    
+
+
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
     filtered = list(rows)
-
     if venue_filter:
         filtered = [r for r in filtered if str(r.get("venue", "")).strip() == venue_filter]
-
     if race_no_filter:
         filtered = [r for r in filtered if str(r.get("race_no", "")).strip() == race_no_filter]
-
     if purchased_only:
         filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
-
     if hit_only:
         filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
-
     return filtered
 
 
@@ -775,18 +772,16 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
         set(str(r.get("race_no", "")).strip() for r in rows if str(r.get("race_no", "")).strip()),
         key=lambda x: int(str(x).replace("R", "")) if str(x).replace("R", "").isdigit() else 999
     )
-
     venue_options = '<option value="">すべて</option>'
     for venue in venues:
         selected = "selected" if venue == selected_venue else ""
         venue_options += f'<option value="{venue}" {selected}>{venue}</option>'
-
     race_no_options = '<option value="">すべて</option>'
     for race_no in race_nos:
         selected = "selected" if race_no == selected_race_no else ""
         race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
-
     return venue_options, race_no_options, venues, race_nos
+
 
 def build_card_html(r, is_history=False, race_date=""):
     checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
@@ -813,10 +808,9 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_reason_html = ""
     if ai_reasons and not is_history:
         items = "".join([f"<li>{x}</li>" for x in ai_reasons])
-        ai_reason_html = f'<div class="row"><span class="label">AI補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
+        ai_reason_html = f'<div class="row"><span class="label">補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
 
     race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
-    card_anchor_id = f"race-card-{r['id']}"
 
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
@@ -832,11 +826,6 @@ def build_card_html(r, is_history=False, race_date=""):
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
     form_id = f"race-form-{race_id_key}"
 
-    official_rating_text = display_text(r.get("rating"), "")
-    official_badge_html = ""
-    if official_rating_text:
-        official_badge_html = f'<span class="official-sub-badge">公式 {official_rating_text}</span>'
-
     top_checkbox = ""
     if is_history:
         top_checkbox = f'''
@@ -844,91 +833,6 @@ def build_card_html(r, is_history=False, race_date=""):
           <input type="checkbox" class="bulk-checkbox" name="race_ids" value="{r['id']}" form="bulk-delete-form" onchange="updateBulkDeleteCount()">
         </div>
         '''
-
-    history_hidden = f'<input type="hidden" name="redirect_to" value="/history/{race_date}">' if is_history else ''
-    action_url = "/update_record" if is_history else "/save"
-
-    delete_form = ""
-    if is_history:
-        delete_form = f'''
-        <form method="post" action="/delete_record" class="delete-form" onsubmit="return confirm('この過去データを削除しますか？');">
-          <input type="hidden" name="race_id" value="{r['id']}">
-          <input type="hidden" name="redirect_to" value="/history/{race_date}">
-          <button type="submit" class="delete-btn">この1件を削除</button>
-        </form>
-        '''
-
-    return f'''
-    <div id="{card_anchor_id}" class="{card_class}">
-      {top_checkbox}
-      <div class="card-top card-top-main">
-        <div class="card-top-left">
-          <div class="time-line">
-            <div class="time">{r['time']}</div>
-            {countdown_html}
-          </div>
-          <div class="race-mainline">
-            <span class="race-spot race-spot-main">
-              <span class="race-venue">{r['venue']}</span>
-              <span class="race-rno">{r['race_no']}</span>
-            </span>
-          </div>
-        </div>
-        {status_html}
-      </div>
-
-      <div class="badge-row badge-row-ai-main">
-        <span class="ai-rating ai-rating-main">{display_text(r.get('ai_rating'), 'AI評価なし')}</span>
-        {final_rank_html}
-        <span class="confidence-badge">AI信頼度 {ai_confidence_value}</span>
-        {official_badge_html}
-      </div>
-
-      <div class="metric-badge-row">
-        <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
-        <span class="metric-badge"><span class="metric-badge-label">券種</span><span class="metric-badge-value">{r['bet_type']}</span></span>
-        <span class="metric-badge"><span class="metric-badge-label">選択点数</span><span class="metric-badge-value" id="selected-count-badge-{race_id_key}">{selected_count}点</span></span>
-        <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
-      </div>
-
-      <div class="info-box">
-        <div class="row row-selection-highlight"><span class="label">AI買い目</span><span class="value">{selection_compare_html}</span></div>
-        <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
-        <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
-        <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
-        <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
-        <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
-        <div class="row"><span class="label">AI艇評価</span><span class="value">{lane_score_html}</span></div>
-        <div class="row"><span class="label">詳細材料</span><span class="value">{detail_material_html}</span></div>
-        {ai_reason_html}
-      </div>
-
-      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
-        <input type="hidden" name="race_id" value="{r['id']}">
-        {history_hidden}
-
-        <div id="detail-{race_id_key}" class="detail-box">
-          <label class="checkline">
-            <input type="checkbox" id="hit-{race_id_key}" name="hit" value="1" {checked_hit} onchange="toggleFormState('{race_id_key}')">
-            的中した
-          </label>
-
-          <div class="input-row">
-            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
-            <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
-          </div>
-
-          <div class="input-row">
-            <label>メモ</label>
-            <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
-          </div>
-        </div>
-
-        <button type="submit" class="save-btn {'half-btn' if is_history else ''}">保存</button>
-      </form>
-      {delete_form}
-    </div>
-    '''
 
     history_hidden = f'<input type="hidden" name="redirect_to" value="/history/{race_date}">' if is_history else ''
     action_url = "/update_record" if is_history else "/save"
@@ -1025,7 +929,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
-    cards_html = ''.join([build_card_html(r) for r in races]) if races else '<div class="empty">条件に合う候補はありません</div>'
+    cards_html = ''.join([build_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
@@ -1036,7 +940,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
           <div class="brand-logo">🏁</div>
           <div>
             <div class="brand-title">Race Candidates</div>
-            <div class="brand-sub">AI買い目中心版</div>
+            <div class="brand-sub">ボートレース買い候補</div>
           </div>
         </div>
         <div class="topbar-status">
@@ -1044,8 +948,8 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         </div>
       </div>
       <div class="header hero hero-strong">
-        <div class="title">今日のAI買い候補</div>
-        <div class="sub">AI買い目を主役にした表示です。公式買い目は参考用として下段に残しています。</div>
+        <div class="title">今日の買い候補</div>
+        <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
         <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
@@ -1146,18 +1050,68 @@ def render_history_page(date_summaries):
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
 
 
-def render_history_detail_page(race_date, races, summary, message_type="", message_text=""):
+def render_history_detail_page(
+    race_date,
+    races,
+    summary,
+    message_type="",
+    message_text="",
+    venue_filter="",
+    race_no_filter="",
+    purchased_only=False,
+    hit_only=False,
+):
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
         message_html = f'<div class="message {message_class}">{message_text}</div>'
     else:
         message_html = ""
-    if not races:
-        body = '<div class="empty">データがありません</div>'
+
+    venue_options_html, race_no_options_html, _all_venues, _all_race_nos = make_history_filter_options(
+        races,
+        selected_venue=venue_filter,
+        selected_race_no=race_no_filter,
+    )
+
+    filtered_races = filter_history_races(
+        races,
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
+
+    checked_purchased = "checked" if purchased_only else ""
+    checked_hit = "checked" if hit_only else ""
+
+    jump_items = []
+    seen_race_nos = set()
+    for r in filtered_races:
+        race_no = str(r.get("race_no", "")).strip()
+        if race_no and race_no not in seen_race_nos:
+            seen_race_nos.add(race_no)
+            jump_items.append(f'<a class="jump-chip" href="#race-card-{r["id"]}">{race_no}</a>')
+    jump_html = "".join(jump_items) if jump_items else '<span class="jump-empty">ジャンプ候補なし</span>'
+
+    if not filtered_races:
+        body = '<div class="empty">条件に合うデータがありません</div>'
     else:
-        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in races])
+        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
         body = f'''
         <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();"><input type="hidden" name="redirect_to" value="/history/{race_date}"></form>
+        <div class="header history-filter-box">
+          <div class="section-title">絞り込み</div>
+          <form method="get" action="/history/{race_date}" class="filter-box">
+            <div class="history-filter-grid">
+              <div class="filter-item"><label for="venue">会場</label><select name="venue" id="venue">{venue_options_html}</select></div>
+              <div class="filter-item"><label for="race_no">R</label><select name="race_no" id="race_no">{race_no_options_html}</select></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="purchased_only" value="1" {checked_purchased}>購入済みのみ</label></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="hit_only" value="1" {checked_hit}>的中のみ</label></div>
+              <div class="filter-actions"><button type="submit" class="filter-btn">絞り込む</button><a href="/history/{race_date}" class="filter-reset">解除</a></div>
+            </div>
+          </form>
+          <div class="history-filter-meta"><div class="history-filter-count">表示中 {len(filtered_races)} / 全{len(races)}件</div><div class="jump-wrap">{jump_html}</div></div>
+        </div>
         <div class="bulk-toolbar"><div class="bulk-toolbar-left"><button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button><button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button></div><div class="bulk-toolbar-right"><span class="bulk-count" id="bulk-delete-count">0件選択中</span><button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button></div></div>
         {cards_html}
         '''
@@ -1171,6 +1125,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
     return render_layout("過去データ詳細", content)
 
 
+
 def render_layout(title, body_html):
     home_active = "active" if title == "今日の買い候補" else ""
     stats_active = "active" if title == "今日の集計" else ""
@@ -1179,394 +1134,113 @@ def render_layout(title, body_html):
     css = """
     <style>
       *{box-sizing:border-box}
-      html{
-        padding-top:env(safe-area-inset-top,0px);
-        background:
-          radial-gradient(circle at top, #dbeafe 0%, #eaf2ff 28%, #f5f7fb 62%, #f5f7fb 100%);
-      }
+      html{padding-top:env(safe-area-inset-top,0px);background:#f5f7fb}
       body{
         margin:0;
-        background:transparent;
+        background:#f5f7fb;
         font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;
-        color:#172033;
+        color:#222;
         -webkit-text-size-adjust:100%;
       }
-
       .container{
-        max-width:1180px;
+        max-width:980px;
         margin:0 auto;
-        padding:calc(18px + env(safe-area-inset-top,0px)) 18px calc(108px + env(safe-area-inset-bottom,0px));
+        padding:calc(16px + env(safe-area-inset-top,0px)) 12px calc(92px + env(safe-area-inset-bottom,0px));
       }
-
-      .app-shell{display:flex;flex-direction:column;gap:18px}
-
-      .topbar,
-      .header,
-      .card,
-      .history-item,
-      .bulk-toolbar,
-      .empty,
-      .table-wrap{
-        background:rgba(255,255,255,.94);
-        border:1px solid rgba(140,170,220,.22);
-        border-radius:22px;
-        box-shadow:0 14px 38px rgba(41,72,152,.10);
-        backdrop-filter:blur(6px);
-      }
-
+      .app-shell{display:flex;flex-direction:column;gap:14px}
+      .topbar,.header,.card,.history-item{background:#fff;border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .hero-strong{background:linear-gradient(180deg,#fff,#f8fbff)}
+      .brand{display:flex;align-items:center;gap:10px;min-width:0}
+      .brand-logo{font-size:28px;flex:0 0 auto}
+      .brand-title{font-weight:700}
+      .brand-sub,.sub{font-size:13px;color:#667085}
       .topbar{
         display:flex;
         justify-content:space-between;
         align-items:center;
-        gap:14px;
-        padding:16px 18px;
-        background:linear-gradient(135deg,#12214d 0%, #244ab6 68%, #39b7ff 100%);
-        color:#fff;
+        gap:10px;
       }
-
-      .header{padding:20px 20px 18px}
-      .card{padding:18px 18px 16px}
-      .history-item{padding:16px}
-
-      .hero-strong{
-        background:linear-gradient(180deg, rgba(255,255,255,.97), rgba(246,250,255,.96));
-        border-top:4px solid rgba(58,104,246,.75);
-      }
-
-      .brand{display:flex;align-items:center;gap:12px;min-width:0}
-      .brand-logo{
-        font-size:28px;
-        flex:0 0 auto;
-        width:50px;
-        height:50px;
-        border-radius:16px;
+      .topbar-status{
+        min-width:0;
         display:flex;
-        align-items:center;
-        justify-content:center;
-        background:rgba(255,255,255,.12);
-        box-shadow:inset 0 0 0 1px rgba(255,255,255,.10);
+        justify-content:flex-end;
       }
-      .brand-title{font-weight:800;font-size:16px;letter-spacing:.02em}
-      .brand-sub{font-size:12px;color:rgba(255,255,255,.82)}
-      .sub{font-size:13px;color:#667085;line-height:1.5}
-
-      .topbar-status{min-width:0;display:flex;justify-content:flex-end}
       .top-pill{
-        background:rgba(255,255,255,.16);
-        color:#fff;
-        padding:8px 12px;
+        background:#eef4ff;
+        color:#2f5bd2;
+        padding:6px 10px;
         border-radius:999px;
         font-size:12px;
-        font-weight:700;
         display:inline-block;
         max-width:100%;
         white-space:normal;
         word-break:break-word;
         line-height:1.4;
-        border:1px solid rgba(255,255,255,.18);
       }
-
-      .title{
-        font-size:22px;
-        font-weight:900;
-        margin-bottom:6px;
-        color:#111827;
-        letter-spacing:.01em;
-      }
-
-      .nav{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
-      .nav-card{
-        background:#eef2ff;
-        color:#334155;
-        padding:10px 14px;
-        border-radius:14px;
-        text-decoration:none;
-        font-weight:700;
-        border:1px solid #d8e0fb;
-        box-shadow:0 2px 8px rgba(31,41,55,.04);
-      }
-      .nav-card.active{
-        background:linear-gradient(135deg,#3463eb 0%, #2553df 100%);
-        color:#fff;
-        border-color:transparent;
-        box-shadow:0 10px 24px rgba(37,83,223,.22);
-      }
-
-      .summary,.summary.six{
-        display:grid;
-        grid-template-columns:repeat(4,minmax(0,1fr));
-        gap:12px;
-        margin-top:14px;
-      }
-      .summary.six{grid-template-columns:repeat(6,minmax(0,1fr))}
-      .summary-box,.history-mini-box{
-        background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
-        border:1px solid #dde6f5;
-        border-radius:16px;
-        padding:12px 13px;
-        min-height:82px;
-        display:flex;
-        flex-direction:column;
-        justify-content:center;
-      }
+      .title{font-size:24px;font-weight:800;margin-bottom:4px}
+      .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+      .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
+      .nav-card.active{background:#2f5bd2;color:#fff}
+      .summary,.summary.six{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+      .summary.six{grid-template-columns:repeat(6,1fr)}
+      .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
       .summary-label,.history-mini-label{font-size:12px;color:#667085}
-      .summary-value,.history-mini-value{
-        font-size:17px;
-        font-weight:900;
-        margin-top:6px;
-        color:#172033;
-      }
-
+      .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
       .profit-plus{color:#d92d20}
       .profit-minus{color:#175cd3}
       .profit-zero{color:#344054}
-
-      .filter-box,.info-box{margin-top:12px}
-      .filter-grid{
-        display:grid;
-        grid-template-columns:1.2fr 280px auto;
-        gap:12px;
-        align-items:end;
-      }
-      .filter-item label{
-        display:block;
-        font-size:12px;
-        color:#667085;
-        margin-bottom:5px;
-        font-weight:700;
-      }
+      .filter-box,.info-box{margin-top:10px}
+      .filter-grid{display:grid;grid-template-columns:1.5fr 1fr auto;gap:10px;align-items:end}
+      .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
       .filter-check{display:flex;align-items:center;gap:8px}
-
-      select,input[type=text],input[type=number]{
-        width:100%;
-        padding:11px 12px;
-        border:1px solid #cfd8ea;
-        border-radius:12px;
-        background:#fff;
-        font-size:14px;
-        color:#172033;
-      }
-
-      .filter-btn,.save-btn,.toolbar-delete-btn,.delete-btn,.toolbar-btn{
-        border:none;
-        border-radius:12px;
-        padding:11px 16px;
-        font-weight:800;
-        cursor:pointer;
-      }
-      .filter-btn,.save-btn,.toolbar-delete-btn{
-        background:linear-gradient(135deg,#3463eb 0%, #2553df 100%);
-        color:#fff;
-        box-shadow:0 8px 18px rgba(37,83,223,.18);
-      }
+      select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
+      .filter-btn,.save-btn,.toolbar-delete-btn,.delete-btn,.toolbar-btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+      .filter-btn,.save-btn,.toolbar-delete-btn{background:#2f5bd2;color:#fff}
       .delete-btn,.toolbar-btn-muted{background:#fee4e2;color:#b42318}
-      .toolbar-btn{
-        background:#eef2ff;
-        color:#344054;
-        border:1px solid #d8e0fb;
-      }
-      .filter-reset{
-        display:inline-flex;
-        align-items:center;
-        justify-content:center;
-        padding:11px 14px;
-        text-decoration:none;
-        background:#f2f4f7;
-        color:#344054;
-        border-radius:12px;
-        border:1px solid #e4e7ec;
-        font-weight:700;
-      }
-
-      .card-top-main{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
-      .time-line{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-      .time{
-        font-size:28px;
-        font-weight:900;
-        color:#102046;
-        letter-spacing:.02em;
-      }
-
-      .countdown-badge{
-        display:inline-flex;
-        padding:6px 10px;
-        border-radius:999px;
-        font-size:12px;
-        font-weight:800;
-      }
+      .toolbar-btn{background:#eef2ff;color:#344054}
+      .filter-reset{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;background:#f2f4f7;color:#344054;border-radius:10px}
+      .card-top-main{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .time{font-size:24px;font-weight:800}
+      .countdown-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}
       .countdown-normal{background:#eef2ff;color:#3538cd}
       .countdown-warning{background:#fff4e5;color:#b54708}
       .countdown-soon{background:#ffead5;color:#c4320a}
       .countdown-closed{background:#f2f4f7;color:#475467}
-
-      .race-spot-main{
-        display:inline-flex;
-        gap:8px;
-        align-items:center;
-        padding:10px 14px;
-        border-radius:14px;
-        background:linear-gradient(135deg,#0f172a 0%, #142b63 100%);
-        color:#fff;
-        font-weight:900;
-        box-shadow:0 8px 20px rgba(15,23,42,.14);
-      }
-      .race-venue{font-size:28px}
-      .race-rno{font-size:28px}
-
-      .status-wrap{
-        display:flex;
-        gap:8px;
-        flex-wrap:wrap;
-        align-items:center;
-      }
-      .status-badge{
-        padding:7px 11px;
-        border-radius:999px;
-        font-size:12px;
-        font-weight:800;
-        border:1px solid transparent;
-      }
-      .status-badge-saved{
-        background:#ecfdf3;
-        color:#067647;
-        border-color:#b7ebcd;
-      }
-      .status-badge-hit{
-        background:#fff1f3;
-        color:#c11574;
-        border-color:#fecdd6;
-      }
-
-      .badge-row,.metric-badge-row{
-        display:flex;
-        gap:8px;
-        flex-wrap:wrap;
-        margin-top:14px;
-      }
-
-      .rating,.ai-rating,.final-rank,.metric-badge,.confidence-badge,.official-sub-badge{
-        display:inline-flex;
-        align-items:center;
-        gap:6px;
-        padding:8px 12px;
-        border-radius:999px;
-        font-size:13px;
-        font-weight:800;
-      }
-
-      .ai-rating{
-        background:#eef4ff;
-        color:#175cd3;
-        border:1px solid #cdddff;
-      }
-
-      .ai-rating-main{
-        background:linear-gradient(135deg,#e8f0ff 0%, #eef4ff 100%);
-        color:#124fc2;
-        border:1px solid #b8ceff;
-      }
-
-      .confidence-badge{
-        background:#f5f7fb;
-        color:#344054;
-        border:1px solid #e4e7ec;
-      }
-
-      .official-sub-badge{
-        background:#fafafa;
-        color:#667085;
-        border:1px solid #e5e7eb;
-        font-size:12px;
-      }
-
-      .final-rank-strong{background:#ecfdf3;color:#027a48;border:1px solid #b7ebcd}
-      .final-rank-buy{background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd}
-      .final-rank-watch{background:#f2f4f7;color:#475467;border:1px solid #e4e7ec}
-      .final-rank-skip{background:#fef3f2;color:#b42318;border:1px solid #fecaca}
-
-      .metric-badge{
-        background:#f8fbff;
-        border:1px solid #dde6f5;
-      }
-      .metric-badge-strong{
-        background:#eef4ff;
-        border-color:#cdddff;
-      }
-      .metric-badge-score{
-        background:#fff6e5;
-        border-color:#ffe1b3;
-      }
+      .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
+      .race-venue{font-size:22px}
+      .race-rno{font-size:22px}
+      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .status-badge-saved{background:#ecfdf3;color:#067647}
+      .status-badge-hit{background:#fff1f3;color:#c11574}
+      .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+      .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating{background:#fff6e5;color:#b54708}
+      .ai-rating{background:#eef4ff;color:#175cd3}
+      .final-rank-strong{background:#ecfdf3;color:#027a48}
+      .final-rank-buy{background:#e0f2fe;color:#0369a1}
+      .final-rank-watch{background:#f2f4f7;color:#475467}
+      .final-rank-skip{background:#fef3f2;color:#b42318}
+      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}
+      .metric-badge-strong{background:#eef4ff}
+      .metric-badge-score{background:#fff6e5}
       .metric-badge-label{color:#667085}
-      .metric-badge-value{font-weight:900}
-
-      .info-box{
-        background:linear-gradient(180deg,#ffffff 0%, #fbfdff 100%);
-        border:1px solid #e6ebf5;
-        border-radius:18px;
-        padding:2px 14px;
-      }
-
-      .row{
-        display:grid;
-        grid-template-columns:120px 1fr;
-        gap:14px;
-        align-items:start;
-        padding:12px 0;
-        border-top:1px solid #eaecf0;
-      }
+      .metric-badge-value{font-weight:800}
+      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
       .row:first-child{border-top:none}
-      .label{
-        font-weight:800;
-        color:#1f2a44;
-        font-size:15px;
-      }
+      .label{font-weight:700;color:#344054}
       .value{min-width:0}
-
-      .selection-compare-wrap{
-        display:grid;
-        grid-template-columns:1.15fr .85fr;
-        gap:12px;
-      }
-
-      .selection-compare-col{
-        background:linear-gradient(180deg,#f7faff 0%, #f2f6fd 100%);
-        border:1px solid #dbe5f5;
-        border-radius:16px;
-        padding:12px;
-      }
-
-      .selection-compare-col-ai{
-        background:linear-gradient(180deg,#f4f8ff 0%, #eef4ff 100%);
-        border:1px solid #cdddff;
-      }
-
-      .selection-compare-col-official{
-        background:linear-gradient(180deg,#fbfcfd 0%, #f7f8fa 100%);
-        border:1px solid #e5e7eb;
-      }
-
-      .selection-col-title{
-        font-size:13px;
-        margin-bottom:10px;
-        font-weight:800;
-      }
-
-      .selection-col-title-ai{color:#124fc2}
-      .selection-col-title-official{color:#6b7280}
-
-      .selection-chip-grid{
-        display:flex;
-        gap:10px;
-        flex-wrap:wrap;
-      }
-
+      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}
       .selection-choice-chip{
         display:inline-block;
         cursor:pointer;
         user-select:none;
         -webkit-tap-highlight-color:transparent;
       }
-
       .selection-choice-input{
         position:absolute;
         opacity:0;
@@ -1574,375 +1248,154 @@ def render_layout(title, body_html):
         width:1px;
         height:1px;
       }
-
       .selection-choice-body{
         display:inline-flex;
         align-items:center;
         justify-content:center;
-        min-height:36px;
-        padding:8px 13px;
+        padding:8px 10px;
         border-radius:999px;
-        font-weight:800;
-        border:2px solid #cfd8ea;
+        font-weight:700;
+        border:2px solid #d0d5dd;
         background:#fff;
         color:#344054;
         white-space:nowrap;
         line-height:1.2;
         transition:all .15s ease;
-        box-shadow:0 1px 4px rgba(15,23,42,.04);
       }
-
       .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
-      .selection-choice-input:focus + .selection-choice-body{
-        outline:2px solid rgba(47,91,210,.18);
-        outline-offset:2px;
-      }
+      .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
 
       .selection-choice-body-overlap{
-        background:#f5fbf7;
-        border-color:#cfe7d8;
-        color:#6d8474;
+        background:#f3fbf6;
+        border-color:#bfe7cc;
+        color:#5f7a68;
       }
       .selection-choice-input:checked + .selection-choice-body-overlap{
         background:#dcfae6;
         border-color:#6fd69a;
         color:#05603a;
-        box-shadow:0 0 0 2px rgba(5,96,58,.08) inset, 0 6px 12px rgba(5,96,58,.08);
+        box-shadow:0 0 0 2px rgba(5,96,58,.08) inset;
       }
       .selection-choice-input:checked + .selection-choice-body-official{
         background:#e7f0ff;
         border-color:#8fb4ff;
         color:#124fc2;
-        box-shadow:0 0 0 2px rgba(18,79,194,.08) inset, 0 6px 12px rgba(18,79,194,.08);
+        box-shadow:0 0 0 2px rgba(18,79,194,.08) inset;
       }
       .selection-choice-input:checked + .selection-choice-body-ai{
         background:#fff1db;
         border-color:#f2b96b;
         color:#a64b00;
-        box-shadow:0 0 0 2px rgba(166,75,0,.08) inset, 0 6px 12px rgba(166,75,0,.08);
+        box-shadow:0 0 0 2px rgba(166,75,0,.08) inset;
       }
 
-      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{
-        display:flex;
-        gap:8px;
-        flex-wrap:wrap;
-      }
-
-      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{
-        padding:8px 11px;
-        border-radius:11px;
-        background:#f8fafc;
-        border:1px solid #dde6f5;
-      }
-
-      .picked-chip{
-        white-space:nowrap;
-        background:#eef4ff;
-        border-color:#cdddff;
-        color:#124fc2;
-        font-weight:800;
-      }
-
+      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip{white-space:nowrap}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty{color:#667085}
-      .ex-chip-lane,.lane-score-lane{font-weight:900;margin-right:6px}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
       .lane-score-bad{background:#fef3f2}
-
-      .ex-rank-grid{
-        display:grid;
-        grid-template-columns:repeat(3,1fr);
-        gap:8px;
-      }
-      .ex-rank-box{
-        border:1px solid #e1e8f4;
-        background:#f8fafc;
-        border-radius:14px;
-        padding:9px;
-        text-align:center;
-      }
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}
       .ex-rank-1{background:#ecfdf3}
       .ex-rank-2{background:#eef4ff}
       .ex-rank-3{background:#fff6e5}
       .ex-rank-low{background:#fef3f2}
-
       .class-history-wrap{display:flex;flex-direction:column;gap:8px}
-      .class-history-row{
-        display:grid;
-        grid-template-columns:62px 1fr;
-        gap:8px;
-        align-items:center;
-      }
-      .class-history-lane{font-weight:900;color:#1f2a44}
+      .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
+      .class-history-lane{font-weight:800}
       .class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
-      .class-chip{
-        display:inline-flex;
-        gap:6px;
-        align-items:center;
-        border-radius:999px;
-        padding:7px 10px;
-        border:1px solid #d0d5dd;
-        background:#fff;
-      }
+      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}
       .class-chip-a1{background:#ecfdf3}
       .class-chip-a2{background:#eef4ff}
       .class-chip-b1{background:#fff6e5}
       .class-chip-b2{background:#fef3f2}
       .class-chip-sub{font-size:11px;color:#667085}
-      .class-chip-main{font-weight:900}
-
-      .form{margin-top:14px}
+      .class-chip-main{font-weight:800}
+      .form{margin-top:12px}
       .detail-box{display:flex;flex-direction:column;gap:10px}
-      .checkline{
-        display:flex;
-        align-items:center;
-        gap:8px;
-        font-weight:800;
-        color:#1f2a44;
-      }
-      .input-row label{
-        display:block;
-        font-size:12px;
-        color:#667085;
-        margin-bottom:5px;
-        font-weight:700;
-      }
-      .save-btn{width:100%;margin-top:12px}
+      .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
+      .input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .save-btn{width:100%;margin-top:10px}
       .half-btn{width:100%}
       .delete-form{margin-top:8px}
-
-      .message{
-        margin-top:10px;
-        padding:11px 13px;
-        border-radius:12px;
-        font-weight:800;
-      }
+      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}
       .message-success{background:#ecfdf3;color:#027a48}
       .message-error{background:#fef3f2;color:#b42318}
-
-      .empty{
-        padding:28px;
-        text-align:center;
-        color:#667085;
-      }
-
-      .history-list{display:flex;flex-direction:column;gap:12px}
-      .history-top{
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:8px;
-      }
-      .history-date{
-        font-size:22px;
-        font-weight:900;
-        color:#102046;
-      }
-      .history-link{
-        text-decoration:none;
-        background:#eef4ff;
-        color:#175cd3;
-        padding:9px 12px;
-        border-radius:12px;
-        border:1px solid #cdddff;
-        font-weight:800;
-      }
-
-      .history-mini{
-        display:grid;
-        grid-template-columns:repeat(4,minmax(0,1fr));
-        gap:10px;
-        margin-top:12px;
-      }
-
-      .table-wrap{overflow:auto}
-      table{
-        width:100%;
-        border-collapse:collapse;
-        background:#fff;
-      }
-      th,td{
-        padding:11px 12px;
-        border-bottom:1px solid #eaecf0;
-        text-align:left;
-        white-space:nowrap;
-      }
-      th{background:#f8fafc;color:#344054}
-
-      .stats-grid{
-        display:grid;
-        grid-template-columns:1fr 1fr;
-        gap:16px;
-      }
-      .section-title{
-        font-size:18px;
-        font-weight:900;
-        color:#102046;
-      }
-
-      .bulk-toolbar{
-        display:flex;
-        justify-content:space-between;
-        gap:10px;
-        align-items:center;
-        padding:14px;
-      }
-      .bulk-toolbar-left,.bulk-toolbar-right{
-        display:flex;
-        gap:8px;
-        align-items:center;
-      }
-
+      .empty{background:#fff;border-radius:16px;padding:24px;text-align:center;color:#667085;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .history-list{display:flex;flex-direction:column;gap:10px}
+      .history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .history-date{font-size:20px;font-weight:800}
+      .history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
+      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+      .table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      table{width:100%;border-collapse:collapse;background:#fff}
+      th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap}
+      th{background:#f8fafc}
+      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+      .section-title{font-size:18px;font-weight:800}
+      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .history-filter-box{padding:16px}
+      .history-filter-grid{display:grid;grid-template-columns:1.2fr 180px auto auto auto;gap:12px;align-items:end;margin-top:10px}
+      .filter-item-check{display:flex;align-items:end}
+      .history-filter-meta{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:14px;flex-wrap:wrap}
+      .history-filter-count{font-size:13px;font-weight:800;color:#475467}
+      .jump-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .jump-chip{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:8px 12px;border-radius:999px;text-decoration:none;background:#eef4ff;color:#175cd3;border:1px solid #cdddff;font-weight:800}
+      .jump-empty{color:#98a2b3;font-size:13px}
+      .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
+      .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
       .bottom-nav{
         position:fixed;
-        left:50%;
-        transform:translateX(-50%);
-        bottom:12px;
-        width:min(460px, calc(100% - 20px));
+        left:0;
+        right:0;
+        bottom:0;
         display:grid;
         grid-template-columns:repeat(3,1fr);
-        background:rgba(255,255,255,.95);
-        border:1px solid rgba(140,170,220,.28);
-        border-radius:22px;
-        box-shadow:0 16px 34px rgba(33,56,120,.18);
+        background:#fff;
+        border-top:1px solid #eaecf0;
         padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
         z-index:50;
-        backdrop-filter:blur(10px);
       }
-
-      .bottom-nav-item{
-        text-decoration:none;
-        color:#667085;
-        display:flex;
-        flex-direction:column;
-        align-items:center;
-        gap:4px;
-        padding:8px 0;
-        border-radius:16px;
-        font-weight:700;
-      }
-
-      .bottom-nav-item.active{
-        color:#fff;
-        font-weight:900;
-        background:linear-gradient(135deg,#3463eb 0%, #2553df 100%);
-        box-shadow:0 8px 18px rgba(37,83,223,.18);
-      }
+      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
+      .bottom-nav-item.active{color:#175cd3;font-weight:800}
 
       @media (max-width: 760px){
-  html{background:#f5f7fb}
+        html{background:#f5f7fb}
+        .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
+        .topbar{flex-direction:column;align-items:flex-start;padding:14px;border-radius:18px;}
+        .topbar-status{width:100%;justify-content:flex-start;}
+        .top-pill{width:100%;border-radius:12px;}
+        .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid{grid-template-columns:1fr;}
+        .row{grid-template-columns:1fr;gap:8px;}
+        .race-venue,.race-rno{font-size:20px}
+        .time{font-size:22px}
+        .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
+        .card-top-main{flex-direction:column;align-items:flex-start}
+        .status-wrap{margin-top:2px}
+        .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
+        .class-history-lane{font-size:15px;line-height:1.2;margin-bottom:2px;}
+        .class-history-chips{gap:8px}
+        .class-chip{padding:8px 12px;min-height:44px;border-radius:999px}
+        .class-chip-sub{font-size:12px;font-weight:700;color:#667085;min-width:auto;text-align:center;background:none;padding:0}
+        .class-chip-main{font-size:15px;font-weight:900}
+        .class-history-row .class-history-chips .class-chip:first-child{padding-left:14px;padding-right:14px;border-width:2px}
+        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:20px;font-weight:900;letter-spacing:.01em}
+        .history-filter-meta{flex-direction:column;align-items:flex-start}
+        .jump-wrap{width:100%}
+        .jump-chip{min-width:48px;padding:8px 11px}
+        .bulk-toolbar{flex-direction:column;align-items:stretch}
+        .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
+        .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
+        .bottom-nav-item{border-radius:12px}
+        .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
 
-  .container{
-    max-width:none;
-    padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));
-  }
-
-  .topbar{
-    flex-direction:column;
-    align-items:flex-start;
-    padding:14px;
-    border-radius:18px;
-  }
-
-  .topbar-status{
-    width:100%;
-    justify-content:flex-start;
-  }
-
-  .top-pill{
-    width:100%;
-    border-radius:12px;
-  }
-
-  .header,.card,.history-item,.bulk-toolbar{
-    padding:14px;
-    border-radius:18px;
-  }
-
-  .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{
-    grid-template-columns:1fr;
-  }
-
-  .row{
-    grid-template-columns:1fr;
-    gap:8px;
-  }
-
-  .race-venue,.race-rno{font-size:20px}
-  .time{font-size:22px}
-  .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
-  .card-top-main{flex-direction:column;align-items:flex-start}
-  .status-wrap{margin-top:2px}
-
-  .class-history-row{
-    grid-template-columns:1fr;
-    gap:10px;
-    align-items:start;
-  }
-
-  .class-history-lane{
-    font-size:15px;
-    line-height:1.2;
-    margin-bottom:2px;
-  }
-
-  .class-history-chips{
-    gap:8px;
-  }
-
-  .class-chip{
-    padding:8px 12px;
-    min-height:44px;
-    border-radius:999px;
-  }
-
-  .class-chip-sub{
-    font-size:12px;
-    font-weight:700;
-    color:#667085;
-    min-width:auto;
-    text-align:center;
-    background:none;
-    padding:0;
-  }
-
-  .class-chip-main{
-    font-size:15px;
-    font-weight:900;
-  }
-
-  .class-history-row .class-history-chips .class-chip:first-child{
-    padding-left:14px;
-    padding-right:14px;
-    border-width:2px;
-  }
-
-  .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{
-    font-size:20px;
-    font-weight:900;
-    letter-spacing:.01em;
-  }
-
-  .bottom-nav{
-    left:0;
-    right:0;
-    transform:none;
-    bottom:0;
-    width:auto;
-    border-radius:0;
-    border-left:none;
-    border-right:none;
-    box-shadow:none;
-    padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
-  }
-
-  .bottom-nav-item{border-radius:12px}
-  .bottom-nav-item.active{
-    background:none;
-    box-shadow:none;
-    color:#175cd3;
-  }
-}    </style>
+      }
+    </style>
     """
 
     js = """
@@ -2342,12 +1795,21 @@ def history():
 
 @app.route("/history/<race_date>")
 def history_detail(race_date):
+    venue_filter = request.args.get("venue", "").strip()
+    race_no_filter = request.args.get("race_no", "").strip()
+    purchased_only = request.args.get("purchased_only", "").strip() == "1"
+    hit_only = request.args.get("hit_only", "").strip() == "1"
+    races = get_races_by_date(race_date)
     return render_history_detail_page(
         race_date,
-        get_races_by_date(race_date),
+        races,
         get_summary_by_date(race_date),
         request.args.get("type", "").strip(),
         request.args.get("msg", "").strip(),
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
     )
 
 
