@@ -1942,6 +1942,7 @@ def build_candidates():
 
     filtered_rows = []
     future_keys = set()
+    beforeinfo_keys = set()
     missing_deadline_rows = []
 
     for row in rows:
@@ -1959,19 +1960,23 @@ def build_candidates():
 
         row["time"] = deadline
         filtered_rows.append(row)
+        beforeinfo_keys.add((jcd, race_no))
 
         if is_future_or_now(deadline):
             future_keys.add((jcd, race_no))
 
     rows = filtered_rows
-    log(f"[deadline_filtered_summary] count={len(rows)} future_beforeinfo_count={len(future_keys)}")
+    log(
+        f"[deadline_filtered_summary] count={len(rows)} "
+        f"future_beforeinfo_count={len(future_keys)} all_beforeinfo_count={len(beforeinfo_keys)}"
+    )
 
     if missing_deadline_rows:
         log(f"[missing_deadline_rows] count={len(missing_deadline_rows)} rows={missing_deadline_rows}")
 
-    beforeinfo_cache = fetch_beforeinfo_parallel(future_keys) if future_keys else {}
-    if future_keys:
-        log_beforeinfo_summary(beforeinfo_cache, future_keys)
+    beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
+    if beforeinfo_keys:
+        log_beforeinfo_summary(beforeinfo_cache, beforeinfo_keys)
 
     results = []
     env_detail_count = 0
