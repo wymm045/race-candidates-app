@@ -1318,6 +1318,43 @@ table {{ width:100%; border-collapse:collapse; min-width:820px; }} th, td {{ pad
 .bottom-nav-item.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }} .bottom-nav-icon {{ font-size:18px; }}
 @media (max-width: 820px) {{ .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}} .row{{grid-template-columns:96px 1fr;}} .time{{font-size:30px;}} .card-top{{flex-direction:column; align-items:flex-start;}} .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}} .filter-grid{{grid-template-columns:1fr;}} .topbar{{flex-direction:column; align-items:flex-start;}} .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}} .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr;}} }}
 @media (max-width: 560px) {{ .container{{padding:12px 12px 92px;}} .title{{font-size:24px;}} .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}} .row{{grid-template-columns:1fr; gap:4px;}} .race-venue{{font-size:20px;}} .selection-chip{{font-size:18px; min-height:36px;}} .class-history-row{{grid-template-columns:1fr; gap:4px;}} .bulk-toolbar{{flex-direction:column; align-items:stretch;}} .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}} .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr 1fr; gap:8px;}} .selection-compare-col,.picker-col{{min-width:0; padding:10px;}} .picker-grid{{grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px;}} .picker-chip{{min-height:36px; padding:6px 8px;}} .picker-chip-text{{font-size:16px;}} .selection-chip{{font-size:16px; min-height:34px;}} .selection-col-title,.picker-title{{font-size:12px;}} }}
+
+@media (max-width: 560px) {
+  .selection-compare-wrap,
+  .picker-wrap {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+    align-items: start !important;
+  }
+  .selection-compare-col,
+  .picker-col {
+    min-width: 0 !important;
+    padding: 10px !important;
+  }
+  .selection-chip-grid,
+  .picker-grid {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  .selection-chip,
+  .picker-chip {
+    min-height: 44px !important;
+    padding: 8px 10px !important;
+  }
+  .selection-chip,
+  .picker-chip-text {
+    font-size: 18px !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    overflow-wrap: normal !important;
+  }
+  .picker-chip {
+    justify-content: flex-start !important;
+  }
+}
+
 </style></head><body><div class="container">{body_html}</div>{bottom_nav_html}<script>
 function uniqueValues(arr) {{
   const seen = new Set();
