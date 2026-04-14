@@ -1586,11 +1586,34 @@ def render_layout(title, body_html):
         return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
       }
 
+      function parseSelectionText(text){
+        return String(text || '')
+          .split(' / ')
+          .map(x => String(x || '').replace(/\s+/g, '').trim())
+          .filter(Boolean);
+      }
+
+      function getRaceCheckboxes(raceId){
+        return Array.from(document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]'));
+      }
+
       function getCheckedValues(raceId){
-        const checked = document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]:checked');
-        return Array.from(checked)
+        return getRaceCheckboxes(raceId)
+          .filter(x => x.checked)
           .map(x => (x.getAttribute('data-pick-value') || '').trim())
           .filter(Boolean);
+      }
+
+      function setCheckedValuesFromHidden(raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return []; }
+        const values = parseSelectionText(hidden.value);
+        const valueSet = new Set(values);
+        getRaceCheckboxes(raceId).forEach(el => {
+          const pick = (el.getAttribute('data-pick-value') || '').trim();
+          el.checked = valueSet.has(pick);
+        });
+        return values;
       }
 
       function syncSelectionValue(el, raceId){
@@ -1601,17 +1624,21 @@ def render_layout(title, body_html):
         return true;
       }
 
-      function updateSelectionSummary(raceId){
+      function updateSelectionSummary(raceId, preserveHiddenWhenEmpty=true){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return; }
 
-        const values = getCheckedValues(raceId);
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
         const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
         const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
         const hidden = document.getElementById('selected-hidden-' + raceId);
+
+        let values = getCheckedValues(raceId);
+        if(values.length === 0 && hidden && preserveHiddenWhenEmpty){
+          values = setCheckedValuesFromHidden(raceId);
+        }
 
         if(summaryEl){
           if(values.length === 0){
@@ -1629,7 +1656,7 @@ def render_layout(title, body_html):
           totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
         }
 
-        if(hidden){
+        if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){
           hidden.value = values.join(' / ');
         }
       }
@@ -1664,7 +1691,12 @@ def render_layout(title, body_html):
 
       document.addEventListener('DOMContentLoaded', function(){
         document.querySelectorAll('form[data-race-id]').forEach(form => {
-          updateSelectionSummary(form.getAttribute('data-race-id'));
+          const raceId = form.getAttribute('data-race-id');
+          setCheckedValuesFromHidden(raceId);
+          updateSelectionSummary(raceId, true);
+          form.addEventListener('submit', function(){
+            syncSelectionValue(null, raceId);
+          });
         });
         updateBulkDeleteCount();
       });
