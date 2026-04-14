@@ -160,8 +160,12 @@ def profit_class(value):
     return "profit-zero"
 
 
+def normalize_pick_text(value):
+    return str(value or "").replace(" ", "").replace("\n", "").replace("\r", "").strip()
+
+
 def selection_items(selection_text):
-    return [x.strip() for x in str(selection_text or "").split(" / ") if x.strip()]
+    return [normalize_pick_text(x) for x in str(selection_text or "").split(" / ") if normalize_pick_text(x)]
 
 
 def unique_preserve(seq):
@@ -334,8 +338,9 @@ def render_class_history_blocks(class_history_text):
         classes = row.get("classes", [])
         chips = ""
         for idx, cls in enumerate(classes):
+            cls_safe = (cls or "").lower()
             sub = "現" if idx == 0 else f"-{idx}"
-            chips += f'<div class="class-chip class-chip-{cls.lower()}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
+            chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
         html += f'''
         <div class="class-history-row">
           <div class="class-history-lane">{lane}号艇</div>
@@ -460,7 +465,7 @@ def render_selection_column(
     if not own_items:
         return f'<div class="selection-chip-empty">{empty_text}</div>'
 
-    selected_items = selected_items or set()
+    selected_items = {normalize_pick_text(x) for x in (selected_items or set())}
     overlap_set = set(overlap_items)
 
     input_name = "selected_official" if source == "official" else "selected_ai"
@@ -468,8 +473,9 @@ def render_selection_column(
 
     chips = ""
     for idx, item in enumerate(own_items):
-        source_name = "overlap" if item in overlap_set else source
-        checked = "checked" if item in selected_items else ""
+        item_clean = normalize_pick_text(item)
+        source_name = "overlap" if item_clean in overlap_set else source
+        checked = "checked" if item_clean in selected_items else ""
         item_id = f"{prefix}-{race_id_key}-{idx}"
 
         chips += f'''
@@ -478,12 +484,12 @@ def render_selection_column(
             type="checkbox"
             id="{item_id}"
             name="{input_name}"
-            value="{item}"
-            data-pick-value="{item}"
+            value="{item_clean}"
+            data-pick-value="{item_clean}"
             {checked}
             onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
           >
-          <span class="selection-choice-text">{item}</span>
+          <span class="selection-choice-text">{item_clean}</span>
         </label>
         '''
 
@@ -587,7 +593,9 @@ def delete_today_races():
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
-    selected_text = " / ".join(unique_preserve(selection_items(selected_text)))
+    selected_text = " / ".join(
+        unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
+    )
     purchased = 1 if selected_text else 0
     if purchased == 0:
         hit = 0
@@ -1003,6 +1011,7 @@ def render_layout(title, body_html):
     home_active = "active" if title == "今日の買い候補" else ""
     stats_active = "active" if title == "今日の集計" else ""
     history_active = "active" if title in ["過去データ", "過去データ詳細"] else ""
+
     bottom_nav_html = f'''
     <nav class="bottom-nav">
       <a href="/" class="bottom-nav-item {home_active}"><span class="bottom-nav-icon">🏁</span><span class="bottom-nav-label">候補</span></a>
@@ -1016,6 +1025,178 @@ def render_layout(title, body_html):
 def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
+
+
+def init_db():
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS races (
+            id SERIAL PRIMARY KEY,
+            race_date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            venue TEXT NOT NULL,
+            race_no TEXT NOT NULL,
+            race_no_num INTEGER NOT NULL DEFAULT 0,
+            rating TEXT NOT NULL DEFAULT '',
+            bet_type TEXT NOT NULL DEFAULT '',
+            selection TEXT NOT NULL DEFAULT '',
+            amount INTEGER NOT NULL DEFAULT 100,
+
+            ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            ai_rating TEXT NOT NULL DEFAULT '',
+            ai_label TEXT NOT NULL DEFAULT '',
+            final_rank TEXT NOT NULL DEFAULT '',
+            ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition_rank TEXT NOT NULL DEFAULT '',
+            motor_rank TEXT NOT NULL DEFAULT '',
+            ai_detail TEXT NOT NULL DEFAULT '',
+            ai_selection TEXT NOT NULL DEFAULT '',
+            ai_confidence TEXT NOT NULL DEFAULT '',
+            ai_lane_score_text TEXT NOT NULL DEFAULT '',
+            class_history_text TEXT NOT NULL DEFAULT '',
+
+            purchased INTEGER NOT NULL DEFAULT 0,
+            purchased_selection_text TEXT NOT NULL DEFAULT '',
+            hit INTEGER NOT NULL DEFAULT 0,
+            payout INTEGER NOT NULL DEFAULT 0,
+            memo TEXT NOT NULL DEFAULT '',
+            imported_at TEXT NOT NULL DEFAULT ''
+        )
+        '''
+    )
+
+    alter_sqls = [
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_no_num INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS memo TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT NOT NULL DEFAULT ''",
+    ]
+    for sql in alter_sqls:
+        cur.execute(sql)
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def replace_today_candidates(cleaned):
+    if not cleaned:
+        return {"inserted": 0, "updated": 0, "deleted": 0}
+
+    race_date = str(cleaned[0]["race_date"]).strip()
+    saved_map = get_saved_state_map_by_race(race_date)
+
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM races WHERE race_date = %s", (race_date,))
+    deleted = cur.rowcount
+
+    inserted = 0
+    updated = 0
+    imported_at = jst_now_str()
+
+    for r in cleaned:
+        key = (
+            str(r["race_date"]).strip(),
+            str(r["venue"]).strip(),
+            str(r["race_no"]).strip(),
+        )
+        saved = saved_map.get(key, {})
+
+        purchased = int(saved.get("purchased") or 0)
+        purchased_selection_text = str(saved.get("purchased_selection_text") or "").strip()
+        hit = int(saved.get("hit") or 0)
+        payout = int(saved.get("payout") or 0)
+        memo = str(saved.get("memo") or "").strip()
+
+        cur.execute(
+            '''
+            INSERT INTO races (
+                race_date, time, venue, race_no, race_no_num,
+                rating, bet_type, selection, amount,
+                ai_score, ai_rating, ai_label, final_rank,
+                ai_reasons, exhibition, exhibition_rank, motor_rank,
+                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text,
+                purchased, purchased_selection_text, hit, payout, memo, imported_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
+            ''',
+            (
+                str(r["race_date"]).strip(),
+                str(r["time"]).strip(),
+                str(r["venue"]).strip(),
+                str(r["race_no"]).strip(),
+                int(r["race_no_num"]),
+                str(r["rating"]).strip(),
+                str(r["bet_type"]).strip(),
+                str(r["selection"]).strip(),
+                int(r["amount"]),
+                safe_float(r.get("ai_score", 0), 0),
+                str(r.get("ai_rating", "")).strip(),
+                str(r.get("ai_label", "")).strip(),
+                str(r.get("final_rank", "")).strip(),
+                json.dumps(r.get("ai_reasons", []), ensure_ascii=False),
+                json.dumps(r.get("exhibition", []), ensure_ascii=False),
+                str(r.get("exhibition_rank", "")).strip(),
+                str(r.get("motor_rank", "")).strip(),
+                str(r.get("ai_detail", "")).strip(),
+                str(r.get("ai_selection", "")).strip(),
+                str(r.get("ai_confidence", "")).strip(),
+                str(r.get("ai_lane_score_text", "")).strip(),
+                str(r.get("class_history_text", "")).strip(),
+                purchased,
+                purchased_selection_text,
+                hit,
+                payout,
+                memo,
+                imported_at,
+            )
+        )
+
+        inserted += 1
+        if key in saved_map:
+            updated += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "deleted": deleted,
+    }
 
 
 @app.route("/healthz")
@@ -1048,8 +1229,8 @@ def index():
 
 
 def parse_selected_from_request():
-    official = request.form.getlist("selected_official")
-    ai = request.form.getlist("selected_ai")
+    official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
+    ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
     return " / ".join(merge_selected_items(official, ai))
 
 
