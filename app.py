@@ -1501,6 +1501,34 @@ def render_layout(title, body_html):
       .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
       .bottom-nav-item.active{color:#175cd3;font-weight:800}
 
+      .player-rank-row{
+        display:grid;
+        grid-template-columns:56px minmax(140px, 220px) minmax(360px, 1fr);
+        gap:12px;
+        align-items:center;
+      }
+      .player-rank-main{
+        min-width:0;
+        flex:1;
+      }
+      .player-rank-name{
+        min-width:0;
+        font-weight:800;
+      }
+      .player-rank-chips{
+        display:flex;
+        flex-wrap:nowrap;
+        gap:8px;
+        min-width:0;
+      }
+      .player-rank-chips .class-chip{
+        min-width:84px;
+        padding:8px 12px;
+        white-space:nowrap;
+        justify-content:center;
+        flex:0 0 auto;
+      }
+
       @media (max-width: 760px){
         html{background:#f5f7fb}
         .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
@@ -1533,7 +1561,8 @@ def render_layout(title, body_html):
         .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:4px 0}
         .player-rank-main{gap:8px}
         .player-rank-name{font-size:14px;line-height:1.4}
-        .player-rank-chips{gap:6px}
+        .player-rank-chips{gap:6px;flex-wrap:wrap}
+        .player-rank-chips .class-chip{min-width:0}
         .current-class-chip .class-chip-main{font-size:18px}
         .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
         .pick-inline{gap:5px}
