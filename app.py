@@ -1503,30 +1503,35 @@ def render_layout(title, body_html):
 
       .player-rank-row{
         display:grid;
-        grid-template-columns:56px minmax(140px, 220px) minmax(360px, 1fr);
+        grid-template-columns:minmax(180px, 260px) minmax(360px, 1fr);
         gap:12px;
         align-items:center;
       }
       .player-rank-main{
         min-width:0;
-        flex:1;
+        display:flex;
+        align-items:center;
+        gap:10px;
       }
       .player-rank-name{
         min-width:0;
         font-weight:800;
+        line-height:1.35;
+        word-break:keep-all;
+        overflow-wrap:anywhere;
       }
       .player-rank-chips{
-        display:flex;
-        flex-wrap:nowrap;
+        display:grid;
+        grid-template-columns:repeat(4, minmax(72px, max-content));
         gap:8px;
         min-width:0;
+        justify-content:start;
       }
       .player-rank-chips .class-chip{
-        min-width:84px;
+        min-width:72px;
         padding:8px 12px;
         white-space:nowrap;
         justify-content:center;
-        flex:0 0 auto;
       }
 
       @media (max-width: 760px){
