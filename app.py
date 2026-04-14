@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import os
+import re
 import json
 from urllib.parse import quote
 
@@ -194,7 +195,11 @@ def normalize_pick_text(value):
 
 
 def selection_items(selection_text):
-    return [normalize_pick_text(x) for x in str(selection_text or "").split(" / ") if normalize_pick_text(x)]
+    text = str(selection_text or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"\s*/\s*", text)
+    return [normalize_pick_text(x) for x in parts if normalize_pick_text(x)]
 
 
 def unique_preserve(seq):
@@ -761,8 +766,8 @@ def get_summary_by_date(race_date):
         SELECT
             COUNT(*) AS total_rows,
             COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 ELSE 0 END), 0) AS total_bets,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(regexp_split_to_array(TRIM(purchased_selection_text), E'\\s*/\\s*'), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(regexp_split_to_array(TRIM(purchased_selection_text), E'\\s*/\\s*'), 1), 0) ELSE 0 END), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout,
             COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
@@ -808,8 +813,8 @@ def get_group_summary(race_date, group_key):
             {group_key} AS group_name,
             COUNT(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 END) AS total_bets,
             COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(regexp_split_to_array(TRIM(purchased_selection_text), E'\\s*/\\s*'), 1), 0) ELSE 0 END), 0) AS total_points,
+            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(regexp_split_to_array(TRIM(purchased_selection_text), E'\\s*/\\s*'), 1), 0) ELSE 0 END), 0) AS total_investment,
             COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
@@ -1588,7 +1593,7 @@ def render_layout(title, body_html):
 
       function parseSelectionText(text){
         return String(text || '')
-          .split(' / ')
+          .split(/\s*\/\s*/)
           .map(x => String(x || '').replace(/\s+/g, '').trim())
           .filter(Boolean);
       }
