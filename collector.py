@@ -395,42 +395,103 @@ def summarize_environment_for_log(env):
     return " ".join(parts)
 
 
-_BAD_NAME_WORDS = {"水面気象情報", "展示", "天候", "風速", "波高", "安定板", "曇", "曇り", "雲り", "晴", "雨", "雪"}
+def is_probable_player_name(text):
+    s = str(text or "").strip()
+    if not s:
+        return False
+
+    compact = re.sub(r"\s+", "", s)
+    if not compact:
+        return False
+
+    ng_words = [
+        "天候", "風速", "波高", "気温", "水温", "安定板", "水面", "気象", "情報", "時点",
+        "展示", "進入", "体重", "調整", "部品", "全国", "当地", "モーター", "ボート", "勝率",
+        "連率", "ST", "級別", "能力", "今節", "成績", "平均", "欠場", "事故", "レース", "気配",
+        "晴", "雨", "曇", "曇り", "雲り", "くもり", "クモリ", "風", "波", "追い風", "向かい風", "横風",
+        "満潮", "干潮", "右横風", "左横風", "小潮", "中潮", "大潮", "若潮", "長潮", "小雨",
+    ]
+    if any(word in compact for word in ng_words):
+        return False
+
+    if re.search(r"[0-9０-９]", compact):
+        return False
+    if re.search(r"[A-Za-zＡ-Ｚａ-ｚ]", compact):
+        return False
+    if re.search(r"[\./:％%㎡㎝m-]", compact):
+        return False
+    if len(compact) < 2 or len(compact) > 8:
+        return False
+    if not re.fullmatch(r"[一-龯ぁ-んァ-ヶー\s]+", s):
+        return False
+
+    kanji_count = len(re.findall(r"[一-龯]", compact))
+    hira_count = len(re.findall(r"[ぁ-ん]", compact))
+    kata_count = len(re.findall(r"[ァ-ヶー]", compact))
+    if kanji_count == 0 and kata_count == 0:
+        return False
+    if hira_count >= 2 and kanji_count <= 1 and kata_count == 0:
+        return False
+    return True
 
 
-def extract_player_names(soup, lines):
-    names = []
-    # DOM-first
-    for el in soup.select(".is-fs18, .is-fs16, .is-fs15, .table1 td, .table1 th, .tableFixed__td, .tableFixed__th"):
-        txt = re.sub(r"\s+", " ", el.get_text(" ", strip=True))
-        if not txt or len(txt) < 2 or len(txt) > 12:
+def normalize_player_name(text):
+    s = str(text or "").strip()
+    s = s.replace("　", " ")
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\([A-Z0-9]+\)$", "", s).strip()
+    s = re.sub(r"^(?:登録番号|支部|年齢|体重)\s*", "", s).strip()
+    return s
+
+
+def extract_player_names_from_lines(lines):
+    result = {}
+    lane_positions = []
+    for idx, line in enumerate(lines):
+        if re.fullmatch(r"[1-6]", line):
+            lane_positions.append((idx, int(line)))
+
+    for pos_idx, lane in lane_positions:
+        segment = lines[pos_idx + 1:pos_idx + 6]
+        candidates = []
+        for i, line in enumerate(segment):
+            name = normalize_player_name(line)
+            if not is_probable_player_name(name):
+                continue
+            if len(name.replace(" ", "")) <= 1:
+                continue
+            candidates.append((i, name))
+
+        if not candidates:
             continue
-        if any(word in txt for word in _BAD_NAME_WORDS):
+
+        name = candidates[0][1]
+
+        if len(candidates) >= 2:
+            first_idx, first_name = candidates[0]
+            second_idx, second_name = candidates[1]
+            first_compact = first_name.replace(" ", "")
+            second_compact = second_name.replace(" ", "")
+            if (
+                second_idx == first_idx + 1
+                and " " not in first_name
+                and " " not in second_name
+                and 1 <= len(first_compact) <= 4
+                and 1 <= len(second_compact) <= 4
+            ):
+                joined = normalize_player_name(first_compact + " " + second_compact)
+                if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}\s+[一-龯ぁ-んァ-ヶー]{1,6}", joined):
+                    name = joined
+
+        if not is_probable_player_name(name):
             continue
-        if re.search(r"[0-9０-９FLS\.:%時点]", txt):
-            continue
-        if re.fullmatch(r"[一-龥ぁ-んァ-ヶー ]{2,12}", txt):
-            if txt not in names:
-                names.append(txt)
-        if len(names) >= 6:
-            break
-    if len(names) >= 6:
-        return names[:6]
-    # text fallback
-    for line in lines:
-        txt = re.sub(r"\s+", " ", line).strip()
-        if not txt or len(txt) < 2 or len(txt) > 12:
-            continue
-        if any(word in txt for word in _BAD_NAME_WORDS):
-            continue
-        if re.search(r"[0-9０-９FLS\.:%時点]", txt):
-            continue
-        if re.fullmatch(r"[一-龥ぁ-んァ-ヶー ]{2,12}", txt):
-            if txt not in names:
-                names.append(txt)
-        if len(names) >= 6:
-            break
-    return names[:6]
+        result[lane] = name
+
+    return result
+
+
+def make_player_names_text(player_names_map):
+    return " / ".join([f"{lane}:{player_names_map.get(lane, '')}" for lane in range(1, 7) if player_names_map.get(lane)])
 
 
 def extract_course_recent_stats(lines):
@@ -484,7 +545,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
         "exhibition": {"times": [], "ranks": {}},
         "boat_stats": {},
         "environment": {"weather": "", "wind_speed": None, "wave_height": None, "water_temp": None, "air_temp": None, "wind_direction": "", "wind_type": "", "stabilizer": False},
-        "player_names": [],
+        "player_names": {},
         "extra_stats": {lane: {"course_rate": None, "avg_st": None, "recent_avg": None, "recent_top3": None} for lane in range(1,7)},
     }
     try:
@@ -561,7 +622,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
             s["motor2"] = None
         if s["boat2"] is not None and s["boat2"] <= 0:
             s["boat2"] = None
-    player_names = extract_player_names(soup, lines)
+    player_names = extract_player_names_from_lines(lines)
     extra_stats = extract_course_recent_stats(lines)
     for lane in range(1, 7):
         ex = extra_stats.get(lane, {})
@@ -1460,7 +1521,7 @@ def log_beforeinfo_summary(beforeinfo_cache, keys):
 
 
 def build_candidates():
-    log("[collector_version] ai_recent_course_v5_missing_zero_fix")
+    log("[collector_version] ai_recent_course_v6_names_merge")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
     raw_rows = parse_rating_page("★★★★★")
@@ -1571,7 +1632,7 @@ def build_candidates():
         if ai_generated["ai_selection"]:
             ai_selection_rows += 1
         class_history_text = " / ".join([f"{lane}:{make_class_history_text(class_history_map.get(lane, {}))}" for lane in range(1, 7) if class_history_map.get(lane)]) if class_history_map else ""
-        player_names_text = " / ".join([f"{idx}号艇 {name}" for idx, name in enumerate(player_names, start=1)]) if player_names else ""
+        player_names_text = make_player_names_text(player_names)
         candidate = {
             "race_date": today_text(),
             "time": deadline,
