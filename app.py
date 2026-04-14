@@ -300,6 +300,43 @@ def render_exhibition_time_chips(exhibition_list):
     return f'<div class="ex-chip-wrap">{chips}</div>'
 
 
+def parse_player_names_map(player_names_text):
+    result = {}
+    s = str(player_names_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        lane_part, name = part.split(":", 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        player_name = str(name).strip()
+        if player_name:
+            result[lane] = player_name
+    return result
+
+
+def render_player_names_html(player_names_text):
+    player_map = parse_player_names_map(player_names_text)
+    if not player_map:
+        return '<div class="player-empty">未取得</div>'
+
+    items = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        items += f'''
+        <div class="player-chip player-chip-{lane}">
+          <span class="player-chip-lane">{lane}号艇</span>
+          <span class="player-chip-name">{name}</span>
+        </div>
+        '''
+    return f'<div class="player-chip-wrap">{items}</div>'
+
+
 def parse_class_history_rows(class_history_text):
     rows = []
     s = str(class_history_text or "").strip()
@@ -820,6 +857,7 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_score_value = safe_float(r.get("ai_score"), 0)
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
     class_history_html = render_class_history_blocks(r.get("class_history_text", ""))
+    player_names_html = render_player_names_html(r.get("player_names_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
     final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -885,6 +923,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
+        <div class="row"><span class="label">選手名</span><span class="value">{player_names_html}</span></div>
         <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
@@ -1294,7 +1333,7 @@ def render_layout(title, body_html):
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
-      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty{color:#667085}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty{color:#667085}
       .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
@@ -1537,6 +1576,7 @@ def init_db():
             ai_confidence TEXT NOT NULL DEFAULT '',
             ai_lane_score_text TEXT NOT NULL DEFAULT '',
             class_history_text TEXT NOT NULL DEFAULT '',
+            player_names_text TEXT NOT NULL DEFAULT '',
 
             purchased INTEGER NOT NULL DEFAULT 0,
             purchased_selection_text TEXT NOT NULL DEFAULT '',
@@ -1563,6 +1603,7 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
@@ -1619,7 +1660,7 @@ def replace_today_candidates(cleaned):
                 rating, bet_type, selection, amount,
                 ai_score, ai_rating, ai_label, final_rank,
                 ai_reasons, exhibition, exhibition_rank, motor_rank,
-                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text,
+                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
                 purchased, purchased_selection_text, hit, payout, memo, imported_at
             )
             VALUES (
@@ -1627,7 +1668,7 @@ def replace_today_candidates(cleaned):
                 %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s
             )
             ''',
@@ -1654,6 +1695,7 @@ def replace_today_candidates(cleaned):
                 str(r.get("ai_confidence", "")).strip(),
                 str(r.get("ai_lane_score_text", "")).strip(),
                 str(r.get("class_history_text", "")).strip(),
+                str(r.get("player_names_text", "")).strip(),
                 purchased,
                 purchased_selection_text,
                 hit,
@@ -1868,6 +1910,7 @@ def import_candidates():
                 "ai_confidence": str(r.get("ai_confidence", "")).strip(),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
                 "class_history_text": str(r.get("class_history_text", "")).strip(),
+                "player_names_text": str(r.get("player_names_text", "")).strip(),
             }
         )
     if not cleaned:
