@@ -479,26 +479,29 @@ def summarize_environment_for_log(env):
 
 def is_probable_player_name(text):
     s = str(text or "").strip()
-    s = re.sub(r"\s+", " ", s)
     if not s:
         return False
-    if re.fullmatch(r"[1-6]", s):
-        return False
-    if re.fullmatch(r"(A1|A2|B1|B2|-)", s):
-        return False
-    if re.search(r"(全国|当地|モーター|ボート|展示|締切|天候|風速|波高|気温|水温|進入|ST|能力|級|水面気象|情報|時点|欠場|フライング|返還)", s):
-        return False
-    if re.search(r"[0-9％%℃/:-]", s):
-        return False
-    if re.search(r"[FLK]\d", s):
-        return False
-    if len(s) > 12:
-        return False
-    # Japanese name only: family/given or one-part token to be joined with next line
-    if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}(?:\s+[一-龯ぁ-んァ-ヶー]{1,6})?", s):
-        return True
-    return False
 
+    ng_words = [
+        "天候", "風速", "波高", "気温", "水温", "安定板", "水面", "気象", "情報", "時点",
+        "展示", "進入", "体重", "調整", "部品", "全国", "当地", "モーター", "ボート", "勝率",
+        "連率", "ST", "級別", "能力", "今節", "成績", "F", "L", "平均", "欠場", "事故",
+        "晴", "雨", "曇", "くもり", "雲り", "くも", "風", "波", "cm", "m",
+    ]
+    if any(word in s for word in ng_words):
+        return False
+
+    if re.search(r"[0-9０-９]", s):
+        return False
+    if re.search(r"[A-Za-zＡ-Ｚａ-ｚ]", s):
+        return False
+    if re.search(r"[\./:％%㎡㎝m-]", s):
+        return False
+    if len(s.replace(" ", "")) < 2 or len(s.replace(" ", "")) > 8:
+        return False
+    if not re.fullmatch(r"[一-龯ぁ-んァ-ヶー\s]+", s):
+        return False
+    return True
 
 def normalize_player_name(text):
     s = str(text or "").strip()
@@ -546,6 +549,8 @@ def extract_player_names_from_lines(lines):
                 if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}\s+[一-龯ぁ-んァ-ヶー]{1,6}", joined):
                     name = joined
 
+        if not is_probable_player_name(name):
+            continue
         result[lane] = name
 
     return result
