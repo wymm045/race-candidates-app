@@ -479,23 +479,25 @@ def summarize_environment_for_log(env):
 
 def is_probable_player_name(text):
     s = str(text or "").strip()
+    s = re.sub(r"\s+", " ", s)
     if not s:
         return False
     if re.fullmatch(r"[1-6]", s):
         return False
     if re.fullmatch(r"(A1|A2|B1|B2|-)", s):
         return False
-    if re.search(r"(全国|当地|モーター|ボート|展示|締切|天候|風速|波高|気温|水温|進入|ST|能力|級)", s):
+    if re.search(r"(全国|当地|モーター|ボート|展示|締切|天候|風速|波高|気温|水温|進入|ST|能力|級|水面気象|情報|時点|欠場|フライング|返還)", s):
         return False
-    if re.search(r"[%℃cmm/]", s):
+    if re.search(r"[0-9％%℃/:-]", s):
         return False
-    if re.search(r"\d\.\d{2}", s):
-        return False
-    if re.fullmatch(r"[0-9.]+", s):
+    if re.search(r"[FLK]\d", s):
         return False
     if len(s) > 12:
         return False
-    return bool(re.search(r"[一-龯ぁ-んァ-ヶA-Za-z]", s))
+    # Japanese name only: family/given or one-part token to be joined with next line
+    if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}(?:\s+[一-龯ぁ-んァ-ヶー]{1,6})?", s):
+        return True
+    return False
 
 
 def normalize_player_name(text):
@@ -513,13 +515,13 @@ def extract_player_names_from_lines(lines):
             lane_positions.append((idx, int(line)))
 
     for pos_idx, lane in lane_positions:
-        segment = lines[pos_idx + 1:pos_idx + 10]
+        segment = lines[pos_idx + 1:pos_idx + 8]
         candidates = []
         for i, line in enumerate(segment):
-            if not is_probable_player_name(line):
-                continue
             name = normalize_player_name(line)
-            if len(name) <= 1:
+            if not is_probable_player_name(name):
+                continue
+            if len(name.replace(" ", "")) <= 1:
                 continue
             candidates.append((i, name))
 
@@ -527,13 +529,21 @@ def extract_player_names_from_lines(lines):
             continue
 
         name = candidates[0][1]
-        # family/given split across two lines
+
         if len(candidates) >= 2:
             first_idx, first_name = candidates[0]
             second_idx, second_name = candidates[1]
-            if second_idx == first_idx + 1 and len(first_name) <= 5 and len(second_name) <= 5:
-                joined = normalize_player_name(first_name + " " + second_name)
-                if is_probable_player_name(joined):
+            first_compact = first_name.replace(" ", "")
+            second_compact = second_name.replace(" ", "")
+            if (
+                second_idx == first_idx + 1
+                and " " not in first_name
+                and " " not in second_name
+                and 1 <= len(first_compact) <= 4
+                and 1 <= len(second_compact) <= 4
+            ):
+                joined = normalize_player_name(first_compact + " " + second_compact)
+                if re.fullmatch(r"[一-龯ぁ-んァ-ヶー]{1,6}\s+[一-龯ぁ-んァ-ヶー]{1,6}", joined):
                     name = joined
 
         result[lane] = name
@@ -2113,7 +2123,7 @@ def send_to_render(races):
 
 
 def main():
-    log("[collector_version] player_names_v3_force_beforeinfo")
+    log("[collector_version] player_names_v4_namefix")
     races = build_candidates()
     if not races:
         print("候補が0件でした")
