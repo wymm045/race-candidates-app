@@ -183,7 +183,9 @@ def get_selected_count_from_text(selection_text):
 
 
 def get_selected_total_amount(race):
-    return int(race.get("amount") or 0) * get_selected_count_from_text(race.get("purchased_selection_text", ""))
+    return int(race.get("amount") or 0) * get_selected_count_from_text(
+        race.get("purchased_selection_text", "")
+    )
 
 
 def get_saved_state_map_by_race(race_date):
@@ -429,21 +431,10 @@ def safe_redirect_path(path, default="/"):
 
 def chip_class_for_compare(source):
     if source == "overlap":
-        return "selection-chip selection-chip-overlap"
+        return "selection-choice-chip selection-chip-overlap"
     if source == "official":
-        return "selection-chip selection-chip-official"
-    return "selection-chip selection-chip-ai"
-
-
-def render_selection_column(own_items, overlap_items, source, empty_text):
-    if not own_items:
-        return f'<div class="selection-chip-empty">{empty_text}</div>'
-    overlap_set = set(overlap_items)
-    chips = ""
-    for item in own_items:
-        source_name = "overlap" if item in overlap_set else source
-        chips += f'<div class="{chip_class_for_compare(source_name)}">{item}</div>'
-    return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
+        return "selection-choice-chip selection-chip-official"
+    return "selection-choice-chip selection-chip-ai"
 
 
 def build_selection_compare_data(official_text, ai_text):
@@ -458,10 +449,71 @@ def build_selection_compare_data(official_text, ai_text):
     }
 
 
-def render_selection_compare_html(official_text, ai_text):
+def render_selection_column(
+    own_items,
+    overlap_items,
+    source,
+    empty_text,
+    race_id_key="",
+    selected_items=None,
+):
+    if not own_items:
+        return f'<div class="selection-chip-empty">{empty_text}</div>'
+
+    selected_items = selected_items or set()
+    overlap_set = set(overlap_items)
+
+    input_name = "selected_official" if source == "official" else "selected_ai"
+    prefix = "cmp-off" if source == "official" else "cmp-ai"
+
+    chips = ""
+    for idx, item in enumerate(own_items):
+        source_name = "overlap" if item in overlap_set else source
+        checked = "checked" if item in selected_items else ""
+        item_id = f"{prefix}-{race_id_key}-{idx}"
+
+        chips += f'''
+        <label class="{chip_class_for_compare(source_name)}">
+          <input
+            type="checkbox"
+            id="{item_id}"
+            name="{input_name}"
+            value="{item}"
+            data-pick-value="{item}"
+            {checked}
+            onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
+          >
+          <span class="selection-choice-text">{item}</span>
+        </label>
+        '''
+
+    return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
+
+
+def render_selection_compare_html(r, race_id_key):
+    official_text = r.get("selection", "")
+    ai_text = r.get("ai_selection", "")
+    selected_items = set(selection_items(r.get("purchased_selection_text", "")))
+
     data = build_selection_compare_data(official_text, ai_text)
-    official_html = render_selection_column(data["official_items"], data["overlap"], "official", "未取得")
-    ai_html = render_selection_column(data["ai_items"], data["overlap"], "ai", "未取得")
+
+    official_html = render_selection_column(
+        data["official_items"],
+        data["overlap"],
+        "official",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+    )
+    ai_html = render_selection_column(
+        data["ai_items"],
+        data["overlap"],
+        "ai",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+    )
+
     return f'''
     <div class="selection-compare-wrap">
       <div class="selection-compare-col">
@@ -482,42 +534,6 @@ def render_selected_summary_html(selected_text):
         return '<div class="selection-chip-empty">未選択</div>'
     chips = "".join([f'<div class="picked-chip">{item}</div>' for item in items])
     return f'<div class="picked-chip-wrap">{chips}</div>'
-
-
-def render_selection_picker_html(r, race_id_key):
-    official_items = selection_items(r.get("selection", ""))
-    ai_items = selection_items(r.get("ai_selection", ""))
-    selected_items = set(selection_items(r.get("purchased_selection_text", "")))
-    overlap = set(official_items) & set(ai_items)
-
-    def make_checkboxes(items, input_name, input_prefix, source_class):
-        if not items:
-            return '<div class="selection-picker-empty">未取得</div>'
-        html = ""
-        for idx, item in enumerate(items):
-            checked = "checked" if item in selected_items else ""
-            overlap_class = " is-overlap" if item in overlap else ""
-            item_id = f"{input_prefix}-{race_id_key}-{idx}"
-            html += f'''
-            <label class="picker-chip {source_class}{overlap_class}">
-              <input type="checkbox" id="{item_id}" name="{input_name}" value="{item}" data-pick-value="{item}" {checked} onchange="updateSelectionSummary('{race_id_key}')">
-              <span class="picker-chip-text">{item}</span>
-            </label>
-            '''
-        return f'<div class="picker-grid">{html}</div>'
-
-    return f'''
-    <div class="picker-wrap">
-      <div class="picker-col">
-        <div class="picker-title">公式から選ぶ</div>
-        {make_checkboxes(official_items, "selected_official", "off", "picker-official")}
-      </div>
-      <div class="picker-col">
-        <div class="picker-title">AIから選ぶ</div>
-        {make_checkboxes(ai_items, "selected_ai", "ai", "picker-ai")}
-      </div>
-    </div>
-    '''
 
 
 def init_db():
@@ -608,11 +624,31 @@ def replace_today_candidates(races):
 
     current_keys = set()
     for r in races:
-        current_keys.add((str(r["race_date"]).strip(), str(r["venue"]).strip(), str(r["race_no"]).strip(), str(r["selection"]).strip()))
+        current_keys.add(
+            (
+                str(r["race_date"]).strip(),
+                str(r["venue"]).strip(),
+                str(r["race_no"]).strip(),
+                str(r["selection"]).strip(),
+            )
+        )
 
     for r in races:
-        race_key = (str(r["race_date"]).strip(), str(r["venue"]).strip(), str(r["race_no"]).strip())
-        saved_state = saved_state_map.get(race_key, {"purchased": 0, "hit": 0, "payout": 0, "memo": "", "purchased_selection_text": ""})
+        race_key = (
+            str(r["race_date"]).strip(),
+            str(r["venue"]).strip(),
+            str(r["race_no"]).strip(),
+        )
+        saved_state = saved_state_map.get(
+            race_key,
+            {
+                "purchased": 0,
+                "hit": 0,
+                "payout": 0,
+                "memo": "",
+                "purchased_selection_text": "",
+            },
+        )
 
         ai_reasons_json = json.dumps(r.get("ai_reasons", []), ensure_ascii=False)
         exhibition_json = json.dumps(r.get("exhibition", []), ensure_ascii=False)
@@ -663,11 +699,33 @@ def replace_today_candidates(races):
             RETURNING xmax = 0 AS inserted_flag
             ''',
             (
-                r["race_date"], r["time"], r["venue"], r["race_no"], r["race_no_num"], r["rating"], r["bet_type"], r["selection"], r["amount"],
-                int(saved_state.get("purchased", 0) or 0), int(saved_state.get("hit", 0) or 0), int(saved_state.get("payout", 0) or 0), str(saved_state.get("memo", "") or ""),
-                imported_at, safe_float(r.get("ai_score", 0), 0), str(r.get("ai_rating", "")).strip(), str(r.get("ai_label", "")).strip(), str(r.get("final_rank", "")).strip(), ai_reasons_json,
-                exhibition_json, str(r.get("exhibition_rank", "")).strip(), str(r.get("motor_rank", "")).strip(), str(r.get("ai_detail", "")).strip(),
-                str(r.get("ai_selection", "")).strip(), str(r.get("ai_confidence", "")).strip(), str(r.get("ai_lane_score_text", "")).strip(), str(r.get("class_history_text", "")).strip(),
+                r["race_date"],
+                r["time"],
+                r["venue"],
+                r["race_no"],
+                r["race_no_num"],
+                r["rating"],
+                r["bet_type"],
+                r["selection"],
+                r["amount"],
+                int(saved_state.get("purchased", 0) or 0),
+                int(saved_state.get("hit", 0) or 0),
+                int(saved_state.get("payout", 0) or 0),
+                str(saved_state.get("memo", "") or ""),
+                imported_at,
+                safe_float(r.get("ai_score", 0), 0),
+                str(r.get("ai_rating", "")).strip(),
+                str(r.get("ai_label", "")).strip(),
+                str(r.get("final_rank", "")).strip(),
+                ai_reasons_json,
+                exhibition_json,
+                str(r.get("exhibition_rank", "")).strip(),
+                str(r.get("motor_rank", "")).strip(),
+                str(r.get("ai_detail", "")).strip(),
+                str(r.get("ai_selection", "")).strip(),
+                str(r.get("ai_confidence", "")).strip(),
+                str(r.get("ai_lane_score_text", "")).strip(),
+                str(r.get("class_history_text", "")).strip(),
                 str(saved_state.get("purchased_selection_text", "") or ""),
             ),
         )
@@ -677,13 +735,19 @@ def replace_today_candidates(races):
         else:
             updated += 1
 
-    cur.execute("SELECT race_date, venue, race_no, selection FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
+    cur.execute(
+        "SELECT race_date, venue, race_no, selection FROM races WHERE race_date = %s AND venue <> 'テスト会場'",
+        (race_date,),
+    )
     existing_rows = cur.fetchall()
     deleted = 0
     for row in existing_rows:
         key = (row[0], row[1], row[2], row[3])
         if key not in current_keys:
-            cur.execute("DELETE FROM races WHERE race_date = %s AND venue = %s AND race_no = %s AND selection = %s", key)
+            cur.execute(
+                "DELETE FROM races WHERE race_date = %s AND venue = %s AND race_no = %s AND selection = %s",
+                key,
+            )
             deleted += cur.rowcount
 
     conn.commit()
@@ -867,17 +931,19 @@ def get_group_summary(race_date, group_key):
         total_profit = total_payout - total_investment
         hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
         roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
-        results.append({
-            "group_name": row["group_name"] or "(空白)",
-            "total_bets": total_bets,
-            "total_hits": total_hits,
-            "total_points": total_points,
-            "total_investment": total_investment,
-            "total_payout": total_payout,
-            "total_profit": total_profit,
-            "hit_rate": hit_rate,
-            "roi": roi,
-        })
+        results.append(
+            {
+                "group_name": row["group_name"] or "(空白)",
+                "total_bets": total_bets,
+                "total_hits": total_hits,
+                "total_points": total_points,
+                "total_investment": total_investment,
+                "total_payout": total_payout,
+                "total_profit": total_profit,
+                "hit_rate": hit_rate,
+                "roi": roi,
+            }
+        )
     return results
 
 
@@ -922,9 +988,11 @@ def build_card_html(r, is_history=False, race_date=""):
         items = "".join([f"<li>{x}</li>" for x in ai_reasons])
         ai_reason_html = f'<div class="row"><span class="label">補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
 
+    race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
+
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
-    selection_compare_html = render_selection_compare_html(r.get("selection", ""), r.get("ai_selection", ""))
+    selection_compare_html = render_selection_compare_html(r, race_id_key)
     ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("ai_score"), 0)
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
@@ -934,7 +1002,6 @@ def build_card_html(r, is_history=False, race_date=""):
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
-    picker_html = render_selection_picker_html(r, f"history-{r['id']}" if is_history else str(r["id"]))
 
     top_checkbox = ""
     if is_history:
@@ -946,7 +1013,6 @@ def build_card_html(r, is_history=False, race_date=""):
 
     history_hidden = f'<input type="hidden" name="redirect_to" value="/history/{race_date}">' if is_history else ''
     action_url = "/update_record" if is_history else "/save"
-    race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
 
     delete_form = ""
     if is_history:
@@ -1006,12 +1072,6 @@ def build_card_html(r, is_history=False, race_date=""):
       <form method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
         <input type="hidden" name="race_id" value="{r['id']}">
         {history_hidden}
-
-        <div class="purchase-box">
-          <div class="purchase-box-title">買う買い目を選ぶ</div>
-          {picker_html}
-          <div class="purchase-help">重複している買い目はオレンジ表示。公式側とAI側の両方で選んでも1点として計算します。</div>
-        </div>
 
         <div id="detail-{race_id_key}" class="detail-box">
           <label class="checkline">
@@ -1208,9 +1268,12 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .summary-box, .history-mini-box {{ background:linear-gradient(180deg,#fff 0%,#f9fbff 100%); border:1px solid #dce7f7; border-radius:18px; padding:14px; box-shadow:0 8px 18px rgba(15,23,42,.04); }}
 .summary-label, .history-mini-label {{ font-size:12px; color:#64748b; margin-bottom:6px; }}
 .summary-value {{ font-size:21px; font-weight:900; }}
-.profit-plus {{ color:#16a34a; }} .profit-minus {{ color:#dc2626; }} .profit-zero {{ color:#334155; }}
+.profit-plus {{ color:#16a34a; }}
+.profit-minus {{ color:#dc2626; }}
+.profit-zero {{ color:#334155; }}
 .message {{ margin-top:12px; padding:12px 14px; border-radius:14px; font-size:14px; font-weight:800; }}
-.message-success {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }} .message-error {{ background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }}
+.message-success {{ background:#ecfdf5; color:#166534; border:1px solid #bbf7d0; }}
+.message-error {{ background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }}
 .empty {{ background:rgba(255,255,255,.92); border-radius:20px; padding:18px; color:#6b7280; box-shadow:0 10px 28px rgba(15,23,42,.05); border:1px solid #e5e7eb; }}
 .card {{ background:linear-gradient(180deg,rgba(255,255,255,.99) 0%,rgba(248,251,255,.97) 100%); border-radius:24px; padding:18px; margin-bottom:18px; box-shadow:0 18px 42px rgba(15,23,42,.08), 0 4px 14px rgba(37,99,235,.06); border:1px solid #e4ebf5; position:relative; overflow:hidden; }}
 .card::before {{ content:""; position:absolute; left:0; top:0; width:100%; height:5px; background:linear-gradient(90deg,#60a5fa,#818cf8); opacity:.35; }}
@@ -1250,30 +1313,78 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .label {{ font-size:13px; color:#64748b; font-weight:800; }}
 .value {{ font-size:14px; font-weight:800; white-space:pre-wrap; word-break:break-word; }}
 .text-left {{ text-align:left; }}
+
 .selection-compare-wrap {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; width:100%; }}
+.selection-compare-col {{ min-width:0; }}
 .selection-col-title {{ font-size:12px; font-weight:900; color:#475569; margin-bottom:6px; }}
+
 .selection-chip-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; width:100%; }}
-.compact-grid .selection-chip {{ min-height:34px; font-size:17px; padding:6px 8px; }}
-.selection-chip {{ display:flex; align-items:center; justify-content:center; min-height:42px; padding:8px 10px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); border:1px solid #bfdbfe; color:#153eaf; font-size:22px; font-weight:900; }}
-.selection-chip-official {{ background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); border-color:#bfdbfe; color:#153eaf; }}
-.selection-chip-ai {{ background:linear-gradient(180deg,#eefcf7 0%,#dcfce7 100%); border-color:#bbf7d0; color:#166534; }}
-.selection-chip-overlap {{ background:linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%); border-color:#fdba74; color:#c2410c; }}
-.selection-chip-empty, .ex-rank-empty, .ex-chip-empty, .lane-score-empty, .detail-chip-empty, .class-history-empty, .selection-picker-empty {{ font-size:13px; color:#6b7280; }}
+.compact-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+
+.selection-choice-chip {{
+  position:relative;
+  cursor:pointer;
+  user-select:none;
+  display:block;
+  min-width:0;
+  border-radius:12px;
+  overflow:hidden;
+}}
+
+.selection-choice-chip input[type="checkbox"] {{
+  position:absolute;
+  opacity:0;
+  pointer-events:none;
+}}
+
+.selection-choice-text {{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:100%;
+  min-height:48px;
+  padding:8px 10px;
+  border-radius:12px;
+  font-size:18px;
+  font-weight:900;
+  line-height:1.1;
+  white-space:nowrap;
+  word-break:keep-all;
+  overflow-wrap:normal;
+}}
+
+.selection-chip-official .selection-choice-text {{
+  background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%);
+  border:1px solid #bfdbfe;
+  color:#153eaf;
+}}
+
+.selection-chip-ai .selection-choice-text {{
+  background:linear-gradient(180deg,#eefcf7 0%,#dcfce7 100%);
+  border:1px solid #bbf7d0;
+  color:#166534;
+}}
+
+.selection-chip-overlap .selection-choice-text {{
+  background:linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%);
+  border:1px solid #fdba74;
+  color:#c2410c;
+}}
+
+.selection-choice-chip input[type="checkbox"]:checked + .selection-choice-text {{
+  box-shadow: inset 0 0 0 3px rgba(37,99,235,.24);
+  transform: translateY(-1px);
+}}
+
+.selection-chip-overlap input[type="checkbox"]:checked + .selection-choice-text {{
+  box-shadow: inset 0 0 0 3px rgba(249,115,22,.24);
+}}
+
+.selection-chip-empty, .ex-rank-empty, .ex-chip-empty, .lane-score-empty, .detail-chip-empty, .class-history-empty {{ font-size:13px; color:#6b7280; }}
+
 .picked-chip-wrap {{ display:flex; flex-wrap:wrap; gap:8px; }}
 .picked-chip {{ display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:6px 10px; border-radius:999px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border:1px solid #93c5fd; color:#1d4ed8; font-size:13px; font-weight:900; }}
-.purchase-box {{ margin-top:14px; background:linear-gradient(180deg,#fff 0%,#f8fbff 100%); border:1px solid #dbe7f6; border-radius:18px; padding:14px; }}
-.purchase-box-title {{ font-size:15px; font-weight:900; color:#0f172a; margin-bottom:10px; }}
-.picker-wrap {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
-.picker-col {{ background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:10px; }}
-.picker-title {{ font-size:13px; font-weight:900; color:#475569; margin-bottom:8px; }}
-.picker-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
-.picker-chip {{ display:flex; align-items:center; gap:8px; min-height:40px; padding:8px 10px; border-radius:12px; border:1px solid #dbe3ee; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); cursor:pointer; }}
-.picker-chip input {{ margin:0; }}
-.picker-chip-text {{ font-size:15px; font-weight:900; color:#0f172a; }}
-.picker-official {{ background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); border-color:#bfdbfe; }}
-.picker-ai {{ background:linear-gradient(180deg,#f5fff9 0%,#ecfdf5 100%); border-color:#bbf7d0; }}
-.picker-chip.is-overlap {{ background:linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%); border-color:#fdba74; }}
-.purchase-help {{ margin-top:10px; font-size:12px; color:#64748b; }}
+
 .ex-rank-grid {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; width:100%; }}
 .ex-rank-box {{ border:1px solid #d7dee8; border-radius:12px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); padding:7px 4px; text-align:center; }}
 .ex-rank-1 {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); border-color:#86efac; }}
@@ -1282,8 +1393,10 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .ex-rank-low {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#6b7280; }}
 .ex-lane {{ font-size:10px; color:#64748b; font-weight:800; }}
 .ex-rank {{ font-size:18px; font-weight:900; margin-top:3px; color:#0f172a; }}
+
 .ex-chip {{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; }}
 .ex-chip-lane {{ display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:999px; background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); color:#1d4ed8; font-size:11px; font-weight:900; border:1px solid #bfdbfe; }}
+
 .class-history-wrap {{ display:flex; flex-direction:column; gap:8px; width:100%; }}
 .class-history-row {{ display:grid; grid-template-columns:58px 1fr; gap:8px; align-items:start; }}
 .class-history-lane {{ font-size:12px; font-weight:900; color:#475569; padding-top:5px; }}
@@ -1295,71 +1408,72 @@ select:focus, input[type="number"]:focus, input[type="text"]:focus {{ outline:no
 .class-chip-b2 {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
 .class-chip-sub {{ font-size:10px; font-weight:900; color:#64748b; }}
 .class-chip-main {{ font-size:13px; font-weight:900; color:#0f172a; }}
+
 .lane-score-chip {{ display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border-radius:999px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; }}
 .lane-score-good {{ background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%); border-color:#93c5fd; }}
 .lane-score-verygood {{ background:linear-gradient(180deg,#ecfdf5 0%,#dcfce7 100%); border-color:#86efac; }}
 .lane-score-bad {{ background:linear-gradient(180deg,#fff1f2 0%,#ffe4e6 100%); border-color:#fecdd3; }}
 .lane-score-lane {{ font-size:12px; font-weight:900; color:#475569; }}
 .lane-score-value {{ font-size:13px; font-weight:900; color:#0f172a; }}
+
 .detail-chip {{ display:inline-flex; align-items:center; padding:7px 10px; border-radius:12px; background:linear-gradient(180deg,#fff 0%,#f8fafc 100%); border:1px solid #d7dee8; font-size:12px; font-weight:800; color:#334155; }}
 .reason-list {{ margin:0; padding-left:18px; }}
+
 .form {{ margin-top:14px; background:linear-gradient(180deg,#fff 0%,#fbfcff 100%); border:1px solid #e2e8f0; border-radius:16px; padding:14px; }}
 .checkline {{ display:flex; align-items:center; gap:8px; font-size:14px; margin-bottom:10px; }}
-.detail-box {{ margin-top:10px; }}
 .input-row {{ margin-top:10px; }}
 .input-row label {{ display:block; font-size:13px; color:#64748b; margin-bottom:6px; font-weight:800; }}
+
 .delete-btn, .toolbar-delete-btn {{ border:none; background:linear-gradient(180deg,#ef4444 0%,#dc2626 100%); color:#fff; border-radius:14px; padding:13px 14px; font-size:15px; font-weight:900; cursor:pointer; box-shadow:0 10px 20px rgba(220,38,38,.14); width:100%; }}
+
 .bulk-toolbar {{ position:sticky; top:10px; z-index:20; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; padding:14px 16px; border-radius:18px; background:rgba(255,255,255,.92); backdrop-filter:blur(10px); border:1px solid rgba(226,232,240,.95); box-shadow:0 14px 30px rgba(15,23,42,.08); }}
 .bulk-toolbar-left,.bulk-toolbar-right {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
 .toolbar-btn {{ border:none; background:linear-gradient(180deg,#eef4ff 0%,#dbeafe 100%); color:#1d4ed8; border-radius:12px; padding:10px 13px; font-size:13px; font-weight:900; cursor:pointer; border:1px solid #bfdbfe; }}
 .toolbar-btn-muted {{ background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%); color:#475569; border-color:#e2e8f0; }}
 .bulk-count {{ font-size:13px; font-weight:900; color:#334155; }}
+
 .table-wrap {{ overflow-x:auto; background:rgba(255,255,255,.94); border-radius:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); border:1px solid #e5e7eb; }}
 table {{ width:100%; border-collapse:collapse; min-width:820px; }}
 th, td {{ padding:12px 10px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; vertical-align:top; }}
 th {{ background:#f8fafc; color:#475569; font-weight:900; }}
+
 .stats-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }}
 .section-title {{ font-size:18px; font-weight:900; }}
+
 .history-list {{ display:flex; flex-direction:column; gap:12px; }}
 .history-item {{ background:rgba(255,255,255,.94); border:1px solid #e5e7eb; border-radius:20px; padding:14px; box-shadow:0 10px 24px rgba(15,23,42,.05); }}
 .history-top {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }}
 .history-date {{ font-size:18px; font-weight:900; }}
 .history-link {{ display:inline-block; padding:9px 12px; border-radius:12px; background:linear-gradient(180deg,#eef4ff 0%,#e5edff 100%); color:#3730a3; font-size:13px; font-weight:900; border:1px solid #d7e2ff; }}
 .history-mini {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }}
+
 .bottom-nav {{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); width:calc(100% - 24px); max-width:560px; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:10px; border-radius:22px; background:rgba(255,255,255,.92); backdrop-filter:blur(12px); border:1px solid rgba(226,232,240,.95); box-shadow:0 18px 40px rgba(15,23,42,.16); z-index:999; }}
 .bottom-nav-item {{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:58px; border-radius:16px; background:linear-gradient(180deg,#f8fbff 0%,#eef4ff 100%); color:#334155; font-size:12px; font-weight:900; border:1px solid #dbe7fb; }}
 .bottom-nav-item.active {{ background:linear-gradient(180deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:#2563eb; }}
 .bottom-nav-icon {{ font-size:18px; }}
 
 @media (max-width: 820px) {{
-  .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr 1fr;}}
-  .row{{grid-template-columns:96px 1fr;}}
-  .time{{font-size:30px;}}
-  .card-top{{flex-direction:column; align-items:flex-start;}}
-  .selection-chip-grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}
-  .filter-grid{{grid-template-columns:1fr;}}
-  .topbar{{flex-direction:column; align-items:flex-start;}}
-  .ex-rank-grid{{grid-template-columns:repeat(3,minmax(0,1fr));}}
-  .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr;}}
+  .summary,.summary.six,.history-mini,.stats-grid {{ grid-template-columns:1fr 1fr; }}
+  .row {{ grid-template-columns:96px 1fr; }}
+  .time {{ font-size:30px; }}
+  .card-top {{ flex-direction:column; align-items:flex-start; }}
+  .filter-grid {{ grid-template-columns:1fr; }}
+  .topbar {{ flex-direction:column; align-items:flex-start; }}
+  .ex-rank-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); }}
 }}
 
 @media (max-width: 560px) {{
-  .container{{padding:12px 12px 92px;}}
-  .title{{font-size:24px;}}
-  .summary,.summary.six,.history-mini,.stats-grid{{grid-template-columns:1fr;}}
-  .row{{grid-template-columns:1fr; gap:4px;}}
-  .race-venue{{font-size:20px;}}
-  .selection-chip{{font-size:18px; min-height:36px;}}
-  .class-history-row{{grid-template-columns:1fr; gap:4px;}}
-  .bulk-toolbar{{flex-direction:column; align-items:stretch;}}
-  .bulk-toolbar-left,.bulk-toolbar-right{{width:100%; justify-content:space-between;}}
-  .selection-compare-wrap,.picker-wrap{{grid-template-columns:1fr 1fr; gap:8px;}}
-  .selection-compare-col,.picker-col{{min-width:0; padding:10px;}}
-  .picker-grid{{grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px;}}
-  .picker-chip{{min-height:36px; padding:6px 8px;}}
-  .picker-chip-text{{font-size:16px;}}
-  .selection-chip{{font-size:16px; min-height:34px;}}
-  .selection-col-title,.picker-title{{font-size:12px;}}
+  .container {{ padding:12px 12px 92px; }}
+  .title {{ font-size:24px; }}
+  .summary,.summary.six,.history-mini,.stats-grid {{ grid-template-columns:1fr; }}
+  .row {{ grid-template-columns:1fr; gap:4px; }}
+  .race-venue {{ font-size:20px; }}
+  .class-history-row {{ grid-template-columns:1fr; gap:4px; }}
+  .bulk-toolbar {{ flex-direction:column; align-items:stretch; }}
+  .bulk-toolbar-left,.bulk-toolbar-right {{ width:100%; justify-content:space-between; }}
+  .selection-compare-wrap {{ grid-template-columns:1fr 1fr; gap:8px; }}
+  .selection-chip-grid.compact-grid {{ grid-template-columns:1fr; gap:8px; }}
+  .selection-choice-text {{ font-size:16px; min-height:44px; padding:8px 8px; white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }}
 }}
 </style></head><body><div class="container">{body_html}</div>{bottom_nav_html}<script>
 function uniqueValues(arr) {{
@@ -1374,12 +1488,19 @@ function uniqueValues(arr) {{
   return result;
 }}
 
+function syncSelectionValue(changedEl, raceId) {{
+  const value = changedEl.getAttribute('data-pick-value') || changedEl.value;
+  const checked = changedEl.checked;
+  document.querySelectorAll(`[data-race-id="${{raceId}}"] input[type="checkbox"][data-pick-value="${{value}}"]`).forEach(function(el) {{
+    if (el !== changedEl) {{
+      el.checked = checked;
+    }}
+  }});
+}}
+
 function getSelectedValuesForRace(raceId) {{
   const values = [];
-  document.querySelectorAll(
-    `[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_official"]:checked, ` +
-    `[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_ai"]:checked`
-  ).forEach(function(el) {{
+  document.querySelectorAll(`[data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_official"]:checked, [data-race-id="${{raceId}}"] input[type="checkbox"][name="selected_ai"]:checked`).forEach(function(el) {{
     values.push(el.value);
   }});
   return uniqueValues(values);
@@ -1445,6 +1566,10 @@ function confirmBulkDelete() {{
 document.addEventListener('DOMContentLoaded', function() {{
   document.querySelectorAll('[data-race-id]').forEach(function(form) {{
     const raceId = form.getAttribute('data-race-id');
+    const prechecked = form.querySelector('input[type="checkbox"][name="selected_official"]:checked, input[type="checkbox"][name="selected_ai"]:checked');
+    if (prechecked) {{
+      syncSelectionValue(prechecked, raceId);
+    }}
     updateSelectionSummary(raceId);
   }});
   updateBulkDeleteCount();
@@ -1585,7 +1710,6 @@ def history_detail(race_date):
 def import_candidates():
     if not is_valid_import_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     data = request.get_json(silent=True) or {}
     races = data.get("races", [])
     if not isinstance(races, list):
@@ -1593,39 +1717,38 @@ def import_candidates():
 
     required_keys = {"race_date", "time", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
     cleaned = []
-
     for i, r in enumerate(races):
         if not isinstance(r, dict):
             return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
         missing = required_keys - set(r.keys())
         if missing:
             return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
-
-        cleaned.append({
-            "race_date": str(r["race_date"]).strip(),
-            "time": str(r["time"]).strip(),
-            "venue": str(r["venue"]).strip(),
-            "race_no": str(r["race_no"]).strip(),
-            "race_no_num": int(r["race_no_num"]),
-            "rating": str(r["rating"]).strip(),
-            "bet_type": str(r["bet_type"]).strip(),
-            "selection": str(r["selection"]).strip(),
-            "amount": int(r["amount"]),
-            "ai_score": safe_float(r.get("ai_score", 0), 0),
-            "ai_rating": str(r.get("ai_rating", "")).strip(),
-            "ai_label": str(r.get("ai_label", "")).strip(),
-            "final_rank": str(r.get("final_rank", "")).strip(),
-            "ai_reasons": r.get("ai_reasons", []),
-            "exhibition": r.get("exhibition", []),
-            "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
-            "motor_rank": str(r.get("motor_rank", "")).strip(),
-            "ai_detail": str(r.get("ai_detail", "")).strip(),
-            "ai_selection": str(r.get("ai_selection", "")).strip(),
-            "ai_confidence": str(r.get("ai_confidence", "")).strip(),
-            "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
-            "class_history_text": str(r.get("class_history_text", "")).strip(),
-        })
-
+        cleaned.append(
+            {
+                "race_date": str(r["race_date"]).strip(),
+                "time": str(r["time"]).strip(),
+                "venue": str(r["venue"]).strip(),
+                "race_no": str(r["race_no"]).strip(),
+                "race_no_num": int(r["race_no_num"]),
+                "rating": str(r["rating"]).strip(),
+                "bet_type": str(r["bet_type"]).strip(),
+                "selection": str(r["selection"]).strip(),
+                "amount": int(r["amount"]),
+                "ai_score": safe_float(r.get("ai_score", 0), 0),
+                "ai_rating": str(r.get("ai_rating", "")).strip(),
+                "ai_label": str(r.get("ai_label", "")).strip(),
+                "final_rank": str(r.get("final_rank", "")).strip(),
+                "ai_reasons": r.get("ai_reasons", []),
+                "exhibition": r.get("exhibition", []),
+                "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
+                "motor_rank": str(r.get("motor_rank", "")).strip(),
+                "ai_detail": str(r.get("ai_detail", "")).strip(),
+                "ai_selection": str(r.get("ai_selection", "")).strip(),
+                "ai_confidence": str(r.get("ai_confidence", "")).strip(),
+                "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
+                "class_history_text": str(r.get("class_history_text", "")).strip(),
+            }
+        )
     if not cleaned:
         return jsonify({"ok": False, "error": "races is empty"}), 400
 
@@ -1635,14 +1758,16 @@ def import_candidates():
 
     result = replace_today_candidates(cleaned)
     log(f"import api success count={len(cleaned)}")
-    return jsonify({
-        "ok": True,
-        "received": len(cleaned),
-        "inserted": result["inserted"],
-        "updated": result["updated"],
-        "deleted": result["deleted"],
-        "imported_at": jst_now_str()
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "received": len(cleaned),
+            "inserted": result["inserted"],
+            "updated": result["updated"],
+            "deleted": result["deleted"],
+            "imported_at": jst_now_str(),
+        }
+    )
 
 
 init_db()
