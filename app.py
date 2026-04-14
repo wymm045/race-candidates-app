@@ -1792,84 +1792,120 @@ def render_layout(title, body_html):
         box-shadow:0 8px 18px rgba(37,83,223,.18);
       }
 
-      @media (min-width: 761px){
-        .card:hover{
-          transform:translateY(-1px);
-          transition:transform .14s ease;
-        }
-        .selection-compare-col{min-height:116px}
-      }
-
-      @media (max-width: 980px){
-        .summary.six{grid-template-columns:repeat(3,minmax(0,1fr))}
-      }
-
       @media (max-width: 760px){
-        html{background:#f5f7fb}
+  html{background:#f5f7fb}
 
-        .container{
-          max-width:none;
-          padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));
-        }
+  .container{
+    max-width:none;
+    padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));
+  }
 
-        .topbar{
-          flex-direction:column;
-          align-items:flex-start;
-          padding:14px;
-          border-radius:18px;
-        }
+  .topbar{
+    flex-direction:column;
+    align-items:flex-start;
+    padding:14px;
+    border-radius:18px;
+  }
 
-        .topbar-status{
-          width:100%;
-          justify-content:flex-start;
-        }
+  .topbar-status{
+    width:100%;
+    justify-content:flex-start;
+  }
 
-        .top-pill{
-          width:100%;
-          border-radius:12px;
-        }
+  .top-pill{
+    width:100%;
+    border-radius:12px;
+  }
 
-        .header,.card,.history-item,.bulk-toolbar{
-          padding:14px;
-          border-radius:18px;
-        }
+  .header,.card,.history-item,.bulk-toolbar{
+    padding:14px;
+    border-radius:18px;
+  }
 
-        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{
-          grid-template-columns:1fr;
-        }
+  .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{
+    grid-template-columns:1fr;
+  }
 
-        .row{
-          grid-template-columns:1fr;
-          gap:8px;
-        }
+  .row{
+    grid-template-columns:1fr;
+    gap:8px;
+  }
 
-        .race-venue,.race-rno{font-size:20px}
-        .time{font-size:22px}
-        .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
-        .card-top-main{flex-direction:column;align-items:flex-start}
-        .status-wrap{margin-top:2px}
+  .race-venue,.race-rno{font-size:20px}
+  .time{font-size:22px}
+  .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
+  .card-top-main{flex-direction:column;align-items:flex-start}
+  .status-wrap{margin-top:2px}
 
-        .bottom-nav{
-          left:0;
-          right:0;
-          transform:none;
-          bottom:0;
-          width:auto;
-          border-radius:0;
-          border-left:none;
-          border-right:none;
-          box-shadow:none;
-          padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
-        }
+  .class-history-row{
+    grid-template-columns:1fr;
+    gap:10px;
+    align-items:start;
+  }
 
-        .bottom-nav-item{border-radius:12px}
-        .bottom-nav-item.active{
-          background:none;
-          box-shadow:none;
-          color:#175cd3;
-        }
-      }
-    </style>
+  .class-history-lane{
+    font-size:15px;
+    line-height:1.2;
+    margin-bottom:2px;
+  }
+
+  .class-history-chips{
+    gap:8px;
+  }
+
+  .class-chip{
+    padding:8px 12px;
+    min-height:44px;
+    border-radius:999px;
+  }
+
+  .class-chip-sub{
+    font-size:12px;
+    font-weight:700;
+    color:#667085;
+    min-width:auto;
+    text-align:center;
+    background:none;
+    padding:0;
+  }
+
+  .class-chip-main{
+    font-size:15px;
+    font-weight:900;
+  }
+
+  .class-history-row .class-history-chips .class-chip:first-child{
+    padding-left:14px;
+    padding-right:14px;
+    border-width:2px;
+  }
+
+  .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{
+    font-size:20px;
+    font-weight:900;
+    letter-spacing:.01em;
+  }
+
+  .bottom-nav{
+    left:0;
+    right:0;
+    transform:none;
+    bottom:0;
+    width:auto;
+    border-radius:0;
+    border-left:none;
+    border-right:none;
+    box-shadow:none;
+    padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
+  }
+
+  .bottom-nav-item{border-radius:12px}
+  .bottom-nav-item.active{
+    background:none;
+    box-shadow:none;
+    color:#175cd3;
+  }
+}    </style>
     """
 
     js = """
