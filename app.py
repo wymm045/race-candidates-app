@@ -958,7 +958,7 @@ def build_card_html(r, is_history=False, race_date=""):
         '''
 
     return f'''
-    <div class="{card_class}">
+    <div class="{card_class}" data-race-card-id="{race_id_key}">
       {top_checkbox}
       <div class="card-top card-top-main">
         <div class="card-top-left">
