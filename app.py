@@ -484,6 +484,7 @@ def render_selection_column(
             name="{input_name}"
             value="{item_clean}"
             data-pick-value="{item_clean}"
+            data-race-group="{race_id_key}"
             form="{form_id}"
             {checked}
             onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
@@ -894,6 +895,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
         <input type="hidden" name="race_id" value="{r['id']}">
+        <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
         <div id="detail-{race_id_key}" class="detail-box">
@@ -1401,19 +1403,21 @@ def render_layout(title, body_html):
     js = """
     <script>
       function getCardRootByRaceId(raceId){
-        return document.querySelector('[data-race-id="' + raceId + '"]');
+        return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
       }
 
       function getCheckedValues(raceId){
-        const root = getCardRootByRaceId(raceId);
-        if(!root){ return []; }
-        const checked = root.querySelectorAll('input[type="checkbox"][data-pick-value]:checked');
+        const checked = document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]:checked');
         return Array.from(checked)
           .map(x => (x.getAttribute('data-pick-value') || '').trim())
           .filter(Boolean);
       }
 
       function syncSelectionValue(el, raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return true; }
+        const values = getCheckedValues(raceId);
+        hidden.value = values.join(' / ');
         return true;
       }
 
@@ -1425,7 +1429,9 @@ def render_layout(title, body_html):
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
-        const amount = parseInt(root.getAttribute('data-amount') || '0', 10);
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
+        const hidden = document.getElementById('selected-hidden-' + raceId);
 
         if(summaryEl){
           if(values.length === 0){
@@ -1441,6 +1447,10 @@ def render_layout(title, body_html):
 
         if(totalEl){
           totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
+        }
+
+        if(hidden){
+          hidden.value = values.join(' / ');
         }
       }
 
@@ -1698,6 +1708,10 @@ def index():
 
 
 def parse_selected_from_request():
+    selected_text = normalize_pick_text(request.form.get("selected_text", ""))
+    if selected_text:
+        return " / ".join(unique_preserve(selection_items(selected_text)))
+
     official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
     ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
     return " / ".join(merge_selected_items(official, ai))
