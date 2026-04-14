@@ -552,8 +552,27 @@ def parse_beforeinfo_for_key(jcd, race_no):
             s["motor2"] = None
         if s["boat2"] is not None and s["boat2"] > 100:
             s["boat2"] = None
+        # 0.0 は実値より未取得の混入であることが多いので、ここでは欠損扱いにする
+        if s["national_win"] is not None and s["national_win"] <= 0:
+            s["national_win"] = None
+        if s["local_win"] is not None and s["local_win"] <= 0:
+            s["local_win"] = None
+        if s["motor2"] is not None and s["motor2"] <= 0:
+            s["motor2"] = None
+        if s["boat2"] is not None and s["boat2"] <= 0:
+            s["boat2"] = None
     player_names = extract_player_names(soup, lines)
     extra_stats = extract_course_recent_stats(lines)
+    for lane in range(1, 7):
+        ex = extra_stats.get(lane, {})
+        if ex.get("course_rate") is not None and ex.get("course_rate") <= 0:
+            ex["course_rate"] = None
+        if ex.get("avg_st") is not None and ex.get("avg_st") <= 0:
+            ex["avg_st"] = None
+        if ex.get("recent_avg") is not None and ex.get("recent_avg") <= 0:
+            ex["recent_avg"] = None
+        if ex.get("recent_top3") is not None and ex.get("recent_top3") <= 0:
+            ex["recent_top3"] = None
     extras_count = sum(1 for lane in range(1,7) if extra_stats.get(lane, {}).get("course_rate") is not None or extra_stats.get(lane, {}).get("avg_st") is not None)
     log(f"[beforeinfo_env] jcd={jcd} race_no={race_no} times={len(times)} ranks={len(ranks)} names={len(player_names)} extras={extras_count} {summarize_environment_for_log(environment)}")
     return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}, "boat_stats": stats, "environment": environment, "player_names": player_names, "extra_stats": extra_stats}
@@ -1441,7 +1460,7 @@ def log_beforeinfo_summary(beforeinfo_cache, keys):
 
 
 def build_candidates():
-    log("[collector_version] ai_recent_course_v4_recent_restore_full")
+    log("[collector_version] ai_recent_course_v5_missing_zero_fix")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
     raw_rows = parse_rating_page("★★★★★")
