@@ -366,6 +366,47 @@ def render_player_names_html(player_names_text):
     return f'<div class="player-chip-wrap">{items}</div>'
 
 
+def render_player_rank_summary_html(player_names_text, class_history_text):
+    player_map = parse_player_names_map(player_names_text)
+    class_rows = parse_class_history_rows(class_history_text)
+    class_map = {}
+    for row in class_rows:
+        lane = row.get("lane")
+        if lane is None:
+            continue
+        class_map[lane] = row.get("classes", [])
+
+    has_any = bool(player_map) or bool(class_map)
+    if not has_any:
+        return '<div class="player-rank-empty">未取得</div>'
+
+    rows_html = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        classes = class_map.get(lane, [])
+        chips = ""
+        if classes:
+            for idx, cls in enumerate(classes):
+                cls_safe = (cls or "").lower()
+                sub = "現" if idx == 0 else f"-{idx}"
+                current_cls = " current-class-chip" if idx == 0 else ""
+                chips += f'<div class="class-chip class-chip-{cls_safe}{current_cls}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
+        else:
+            chips = '<div class="class-history-empty">未取得</div>'
+
+        rows_html += f'''
+        <div class="player-rank-row">
+          <div class="player-rank-main">
+            <span class="player-rank-lane">{render_lane_badge(lane)}</span>
+            <span class="player-rank-name">{name}</span>
+          </div>
+          <div class="player-rank-chips">{chips}</div>
+        </div>
+        '''
+
+    return f'<div class="player-rank-wrap">{rows_html}</div>'
+
+
 def parse_class_history_rows(class_history_text):
     rows = []
     s = str(class_history_text or "").strip()
@@ -887,6 +928,7 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
     class_history_html = render_class_history_blocks(r.get("class_history_text", ""))
     player_names_html = render_player_names_html(r.get("player_names_text", ""))
+    player_rank_summary_html = render_player_rank_summary_html(r.get("player_names_text", ""), r.get("class_history_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
     final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -952,8 +994,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
-        <div class="row"><span class="label">選手名</span><span class="value">{player_names_html}</span></div>
-        <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
+        <div class="row"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
@@ -1380,10 +1421,16 @@ def render_layout(title, body_html):
       .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       .player-chip-lane{flex:0 0 auto}
       .player-chip-name{font-weight:700;color:#172033}
+      .player-rank-wrap{display:flex;flex-direction:column;gap:8px}
+      .player-rank-row{display:grid;grid-template-columns:minmax(180px,240px) 1fr;gap:10px;align-items:center;padding:6px 0}
+      .player-rank-main{display:flex;align-items:center;gap:8px;min-width:0}
+      .player-rank-lane{flex:0 0 auto}
+      .player-rank-name{font-weight:800;color:#172033;line-height:1.35;word-break:break-word}
+      .player-rank-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
-      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty{color:#667085}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
       .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
@@ -1483,6 +1530,11 @@ def render_layout(title, body_html):
         .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
         .player-chip{align-items:flex-start}
         .player-chip-name{font-size:14px;line-height:1.45}
+        .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:4px 0}
+        .player-rank-main{gap:8px}
+        .player-rank-name{font-size:14px;line-height:1.4}
+        .player-rank-chips{gap:6px}
+        .current-class-chip .class-chip-main{font-size:18px}
         .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
         .pick-inline{gap:5px}
         .pick-sep{font-size:13px}
