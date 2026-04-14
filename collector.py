@@ -477,6 +477,74 @@ def summarize_environment_for_log(env):
     return " ".join(parts)
 
 
+def is_probable_player_name(text):
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if re.fullmatch(r"[1-6]", s):
+        return False
+    if re.fullmatch(r"(A1|A2|B1|B2|-)", s):
+        return False
+    if re.search(r"(全国|当地|モーター|ボート|展示|締切|天候|風速|波高|気温|水温|進入|ST|能力|級)", s):
+        return False
+    if re.search(r"[%℃cmm/]", s):
+        return False
+    if re.search(r"\d\.\d{2}", s):
+        return False
+    if re.fullmatch(r"[0-9.]+", s):
+        return False
+    if len(s) > 12:
+        return False
+    return bool(re.search(r"[一-龯ぁ-んァ-ヶA-Za-z]", s))
+
+
+def normalize_player_name(text):
+    s = str(text or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\([A-Z0-9]+\)$", "", s).strip()
+    return s
+
+
+def extract_player_names_from_lines(lines):
+    result = {}
+    lane_positions = []
+    for idx, line in enumerate(lines):
+        if re.fullmatch(r"[1-6]", line):
+            lane_positions.append((idx, int(line)))
+
+    for pos_idx, lane in lane_positions:
+        segment = lines[pos_idx + 1:pos_idx + 10]
+        candidates = []
+        for i, line in enumerate(segment):
+            if not is_probable_player_name(line):
+                continue
+            name = normalize_player_name(line)
+            if len(name) <= 1:
+                continue
+            candidates.append((i, name))
+
+        if not candidates:
+            continue
+
+        name = candidates[0][1]
+        # family/given split across two lines
+        if len(candidates) >= 2:
+            first_idx, first_name = candidates[0]
+            second_idx, second_name = candidates[1]
+            if second_idx == first_idx + 1 and len(first_name) <= 5 and len(second_name) <= 5:
+                joined = normalize_player_name(first_name + " " + second_name)
+                if is_probable_player_name(joined):
+                    name = joined
+
+        result[lane] = name
+
+    return result
+
+
+def make_player_names_text(player_names_map):
+    return " / ".join([f"{lane}:{player_names_map.get(lane, '')}" for lane in range(1, 7) if player_names_map.get(lane)])
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
 
@@ -487,6 +555,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
         return (jcd, race_no), {
             "exhibition": {"times": [], "ranks": {}},
             "boat_stats": {},
+            "player_names": {},
             "environment": {
                 "weather": "",
                 "wind_speed": None,
@@ -502,6 +571,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines(html)
     environment = parse_environment_info(html, soup, lines)
+    player_names = extract_player_names_from_lines(lines)
 
     time_candidates = []
     for line in lines:
@@ -596,12 +666,14 @@ def parse_beforeinfo_for_key(jcd, race_no):
 
     log(
         f"[beforeinfo_env] jcd={jcd} race_no={race_no} "
-        f"times={len(times)} ranks={len(ranks)} {summarize_environment_for_log(environment)}"
+        f"times={len(times)} ranks={len(ranks)} names={len(player_names)} "
+        f"{summarize_environment_for_log(environment)}"
     )
 
     return (jcd, race_no), {
         "exhibition": {"times": times, "ranks": ranks},
         "boat_stats": stats,
+        "player_names": player_names,
         "environment": environment,
     }
 
@@ -1921,6 +1993,7 @@ def build_candidates():
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         boat_stats = beforeinfo.get("boat_stats", {})
         environment = beforeinfo.get("environment", {})
+        player_names = beforeinfo.get("player_names", {})
         class_history_map = racelist_cache.get(jcd, {}).get(race_no, {})
 
         analyzed = analyze_candidate(
@@ -1963,6 +2036,8 @@ def build_candidates():
                 ]
             )
 
+        player_names_text = make_player_names_text(player_names)
+
         candidate = {
             "race_date": today_text(),
             "time": deadline,
@@ -1986,6 +2061,7 @@ def build_candidates():
             "ai_confidence": ai_generated["ai_confidence"],
             "ai_lane_score_text": ai_generated["ai_lane_score_text"],
             "class_history_text": class_history_text,
+            "player_names_text": player_names_text,
         }
         results.append(candidate)
 
