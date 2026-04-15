@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers 1 --threads 1 --timeout 120
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -29,7 +29,7 @@ services:
       - key: IMPORT_TOKEN
         sync: false
       - key: RENDER_IMPORT_URL
-        value: https://race-candidates-app.onrender.com/api/import_candidates
+        value: https://race-candidates-app.onrender.com/api/import_latest_candidates
 
 databases:
   - name: race-candidates-db
