@@ -60,8 +60,19 @@ TILT_ALERT_ENABLED = os.environ.get("TILT_ALERT_ENABLED", "1").strip() == "1"
 TILT_ALERT_OUTER_LANES = set(int(x) for x in os.environ.get("TILT_ALERT_OUTER_LANES", "3,4,5,6").split(",") if x.strip().isdigit())
 TILT_ALERT_RANK_BORDER = int(os.environ.get("TILT_ALERT_RANK_BORDER", "2"))
 TILT_ALERT_INNER_DIFF = float(os.environ.get("TILT_ALERT_INNER_DIFF", "0.06"))
-TILT_ALERT_STRONG_BONUS = float(os.environ.get("TILT_ALERT_STRONG_BONUS", "0.34"))
-TILT_ALERT_MID_BONUS = float(os.environ.get("TILT_ALERT_MID_BONUS", "0.18"))
+TILT_ALERT_STRONG_BONUS = float(os.environ.get("TILT_ALERT_STRONG_BONUS", "0.28"))
+TILT_ALERT_MID_BONUS = float(os.environ.get("TILT_ALERT_MID_BONUS", "0.14"))
+
+MAKURI_ALERT_ENABLED = os.environ.get("MAKURI_ALERT_ENABLED", "1").strip() == "1"
+MAKURI_ALERT_INNER_DIFF = float(os.environ.get("MAKURI_ALERT_INNER_DIFF", "0.07"))
+MAKURI_ALERT_ALL_DIFF = float(os.environ.get("MAKURI_ALERT_ALL_DIFF", "0.10"))
+MAKURI_ALERT_STRONG_BONUS = float(os.environ.get("MAKURI_ALERT_STRONG_BONUS", "0.26"))
+MAKURI_ALERT_MID_BONUS = float(os.environ.get("MAKURI_ALERT_MID_BONUS", "0.14"))
+MAKURI_ALERT_TARGET_LANES = set(int(x) for x in os.environ.get("MAKURI_ALERT_TARGET_LANES", "2,3,4,5,6").split(",") if x.strip().isdigit())
+
+LATEST_EXTRA_POSITIVE_CAP = float(os.environ.get("LATEST_EXTRA_POSITIVE_CAP", "0.45"))
+LATEST_TOTAL_POSITIVE_CAP = float(os.environ.get("LATEST_TOTAL_POSITIVE_CAP", "1.10"))
+
 
 
 
@@ -596,6 +607,146 @@ def rebuild_final_selection_with_tilt(base_selection, exhibition_info, tilt_resu
             break
     return " / ".join(dedup)
 
+
+def detect_makuri_alert(exhibition_info):
+    result = {
+        "level": "none",
+        "target_lane": None,
+        "bonus": 0.0,
+        "reasons": [],
+    }
+    if not MAKURI_ALERT_ENABLED:
+        return result
+
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    if len(times) != 6:
+        return result
+
+    float_times = {}
+    for lane, t in enumerate(times, start=1):
+        try:
+            float_times[lane] = float(t)
+        except Exception:
+            return result
+
+    candidates = []
+    all_best = min(float_times.values())
+    for lane in sorted(MAKURI_ALERT_TARGET_LANES):
+        if lane not in float_times or lane <= 1:
+            continue
+        inner_lanes = [x for x in range(1, lane) if x in float_times]
+        if not inner_lanes:
+            continue
+        inner_best = min(float_times[x] for x in inner_lanes)
+        diff_inner = round(inner_best - float_times[lane], 3)
+        diff_all = round((all_best - float_times[lane]) * -1, 3)
+        # lane faster than others => negative if using all_best - lane_time, so compute separately
+        diff_vs_all = round(min(float_times[x] - float_times[lane] for x in float_times if x != lane), 3)
+        score = 0.0
+        reasons = []
+        if diff_inner >= MAKURI_ALERT_INNER_DIFF:
+            score += 1.2
+            reasons.append(f"{lane}号艇が内側より展示速い")
+        elif diff_inner >= max(MAKURI_ALERT_INNER_DIFF - 0.02, 0.04):
+            score += 0.6
+            reasons.append(f"{lane}号艇が内側よりやや展示速い")
+        if diff_vs_all >= MAKURI_ALERT_ALL_DIFF:
+            score += 1.0
+            reasons.append(f"{lane}号艇が全体でも展示優勢")
+        elif diff_vs_all >= max(MAKURI_ALERT_ALL_DIFF - 0.02, 0.08):
+            score += 0.5
+            reasons.append(f"{lane}号艇が全体でもやや展示優勢")
+        rank = ranks.get(lane, 9)
+        if rank <= 2:
+            score += 0.4
+            reasons.append(f"{lane}号艇の展示順位が上位")
+        if lane in {3, 4, 5}:
+            score += 0.15
+        if score > 0:
+            candidates.append((score, lane, diff_inner, diff_vs_all, reasons))
+
+    if not candidates:
+        return result
+
+    candidates.sort(key=lambda x: (-x[0], -x[2], -x[3], x[1]))
+    score, lane, diff_inner, diff_vs_all, reasons = candidates[0]
+    result["target_lane"] = lane
+    result["reasons"] = reasons[:3]
+    if score >= 2.0:
+        result["level"] = "strong"
+        result["bonus"] = MAKURI_ALERT_STRONG_BONUS
+    else:
+        result["level"] = "mid"
+        result["bonus"] = MAKURI_ALERT_MID_BONUS
+    return result
+
+
+def rebuild_final_selection_with_alerts(base_selection, exhibition_info, tilt_result, makuri_result):
+    triplets = selection_triplets(base_selection)
+    if not triplets:
+        return ""
+
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    tilt_lane = tilt_result.get("target_lane") if tilt_result else None
+    makuri_lane = makuri_result.get("target_lane") if makuri_result else None
+
+    if not tilt_lane and not makuri_lane:
+        return rebuild_final_selection(base_selection, exhibition_info)
+
+    def tri_score(tri):
+        parts = tri.split("-")
+        if len(parts) != 3:
+            return -999
+        try:
+            a, b, c = map(int, parts)
+        except Exception:
+            return -999
+        score = 0.0
+        if makuri_lane:
+            if a == makuri_lane:
+                score += 2.6
+            elif b == makuri_lane:
+                score += 1.1
+            elif c == makuri_lane:
+                score += 0.45
+        if tilt_lane and tilt_lane != makuri_lane:
+            if a == tilt_lane:
+                score += 1.6
+            elif b == tilt_lane:
+                score += 0.8
+            elif c == tilt_lane:
+                score += 0.3
+        score -= ranks.get(a, 9) * 1.25
+        score -= ranks.get(b, 9) * 0.85
+        score -= ranks.get(c, 9) * 0.55
+        return score
+
+    sorted_tris = sorted(triplets, key=lambda tri: (tri_score(tri), tri), reverse=True)
+    dedup = []
+    for tri in sorted_tris:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return " / ".join(dedup)
+
+
+def apply_latest_bonus_cap(base_ai_score, analyzed_score, extra_bonus):
+    base_ai_score = float(base_ai_score or 0)
+    analyzed_score = float(analyzed_score or 0)
+    extra_bonus = float(extra_bonus or 0)
+
+    if extra_bonus > LATEST_EXTRA_POSITIVE_CAP:
+        extra_bonus = LATEST_EXTRA_POSITIVE_CAP
+
+    final_score = analyzed_score + extra_bonus
+    max_score = base_ai_score + LATEST_TOTAL_POSITIVE_CAP
+    if final_score > max_score:
+        final_score = max_score
+    return round(final_score, 2)
+
+
 def analyze_latest(base_ai_score, exhibition_info):
     score = float(base_ai_score or 0)
     reasons = []
@@ -679,7 +830,7 @@ def rebuild_final_selection(base_selection, exhibition_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_tilt_v3")
+    log("[collector_version] collector_latest_tilt_makuri_v5")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -757,9 +908,14 @@ def build_candidates():
 
         analyzed = analyze_latest(base_ai_score, exhibition_info)
         tilt_result = detect_tilt_jump_alert(exhibition_info)
+        makuri_result = detect_makuri_alert(exhibition_info)
 
-        final_ai_score = analyzed["final_ai_score"] + float(tilt_result.get("bonus", 0) or 0)
-        final_ai_score = round(final_ai_score, 2)
+        extra_bonus = float(tilt_result.get("bonus", 0) or 0) + float(makuri_result.get("bonus", 0) or 0)
+        final_ai_score = apply_latest_bonus_cap(
+            base_ai_score,
+            analyzed["final_ai_score"],
+            extra_bonus,
+        )
 
         latest_reason_parts = []
         if base_reason_text:
@@ -770,8 +926,12 @@ def build_candidates():
             latest_reason_parts.append(f"チルト警戒:{tilt_result['target_lane']}号艇外攻め強め")
         elif tilt_result.get("level") == "mid":
             latest_reason_parts.append(f"チルト警戒:{tilt_result['target_lane']}号艇外攻め注意")
+        if makuri_result.get("level") == "strong":
+            latest_reason_parts.append(f"まくり警戒:{makuri_result['target_lane']}号艇頭警戒")
+        elif makuri_result.get("level") == "mid":
+            latest_reason_parts.append(f"まくり警戒:{makuri_result['target_lane']}号艇注意")
 
-        final_ai_selection = rebuild_final_selection_with_tilt(base_ai_selection, exhibition_info, tilt_result)
+        final_ai_selection = rebuild_final_selection_with_alerts(base_ai_selection, exhibition_info, tilt_result, makuri_result)
 
         candidate = {
             "race_date": today_text(),
