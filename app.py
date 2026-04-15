@@ -1,6 +1,8 @@
 from datetime import datetime, timezone, timedelta
 import os
 import json
+import time
+from threading import Lock
 from urllib.parse import quote
 
 import psycopg2
@@ -84,7 +86,36 @@ def render_countdown_badge(time_str):
 def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+
+
+_DB_INIT_LOCK = Lock()
+_DB_INITIALIZED = False
+
+
+def ensure_db_initialized(max_retries=3):
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+
+        last_err = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                init_db()
+                _DB_INITIALIZED = True
+                log(f"ensure_db_initialized ok attempt={attempt}")
+                return
+            except Exception as e:
+                last_err = e
+                log(f"ensure_db_initialized retry={attempt}/{max_retries} err={e}")
+                if attempt < max_retries:
+                    time.sleep(1.5 * attempt)
+
+        raise last_err
 
 
 def parse_json_array_text(value):
@@ -223,9 +254,7 @@ def get_selected_total_amount(race):
 
 
 
-def get_existing_row_map_by_race(race_date):
-    conn = db_connect()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+def fetch_existing_maps_by_race(cur, race_date):
     cur.execute(
         '''
         SELECT *
@@ -233,14 +262,13 @@ def get_existing_row_map_by_race(race_date):
         WHERE race_date = %s
           AND venue <> 'テスト会場'
         ORDER BY id DESC
-        ''',
+        ''' ,
         (race_date,),
     )
     rows = cur.fetchall()
-    cur.close()
-    conn.close()
 
     existing_map = {}
+    saved_map = {}
     for row in rows:
         key = (
             str(row['race_date']).strip(),
@@ -249,6 +277,24 @@ def get_existing_row_map_by_race(race_date):
         )
         if key not in existing_map:
             existing_map[key] = row
+        if key not in saved_map:
+            saved_map[key] = {
+                'purchased': int(row.get('purchased') or 0),
+                'hit': int(row.get('hit') or 0),
+                'payout': int(row.get('payout') or 0),
+                'memo': str(row.get('memo') or '').strip(),
+                'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
+            }
+    return existing_map, saved_map
+
+
+
+def get_existing_row_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    existing_map, _saved_map = fetch_existing_maps_by_race(cur, race_date)
+    cur.close()
+    conn.close()
     return existing_map
 
 
@@ -256,44 +302,9 @@ def get_existing_row_map_by_race(race_date):
 def get_saved_state_map_by_race(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        '''
-        SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
-        ORDER BY
-            CASE
-                WHEN hit = 1 THEN 4
-                WHEN purchased = 1 THEN 3
-                WHEN payout > 0 THEN 2
-                WHEN COALESCE(memo, '') <> '' THEN 1
-                ELSE 0
-            END DESC,
-            id DESC
-        ''',
-        (race_date,),
-    )
-    rows = cur.fetchall()
+    _existing_map, saved_map = fetch_existing_maps_by_race(cur, race_date)
     cur.close()
     conn.close()
-
-    saved_map = {}
-    for row in rows:
-        key = (
-            str(row['race_date']).strip(),
-            str(row['venue']).strip(),
-            str(row['race_no']).strip(),
-        )
-        if key in saved_map:
-            continue
-        saved_map[key] = {
-            'purchased': int(row.get('purchased') or 0),
-            'hit': int(row.get('hit') or 0),
-            'payout': int(row.get('payout') or 0),
-            'memo': str(row.get('memo') or '').strip(),
-            'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
-        }
     return saved_map
 
 
@@ -1841,14 +1852,6 @@ def replace_today_candidates(cleaned):
         return {'inserted': 0, 'updated': 0, 'deleted': 0, 'frozen_closed': 0}
 
     race_date = str(cleaned[0]['race_date']).strip()
-    saved_map = get_saved_state_map_by_race(race_date)
-    existing_map = get_existing_row_map_by_race(race_date)
-
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
-    deleted = cur.rowcount
-
     inserted = 0
     updated = 0
     frozen_closed = 0
@@ -1873,6 +1876,16 @@ def replace_today_candidates(cleaned):
         s = str(v).strip()
         return s == '' or s == '-' or s == '[]' or s == '{}'
 
+    conn = db_connect()
+    cur_read = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    existing_map, saved_map = fetch_existing_maps_by_race(cur_read, race_date)
+    cur_read.close()
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
+    deleted = cur.rowcount
+
+    insert_rows = []
     for r in cleaned:
         key = (
             str(r['race_date']).strip(),
@@ -1901,60 +1914,56 @@ def replace_today_candidates(cleaned):
         payout = int(saved.get('payout') or 0)
         memo = str(saved.get('memo') or '').strip()
 
-        cur.execute(
-            '''
-            INSERT INTO races (
-                race_date, time, venue, race_no, race_no_num,
-                rating, bet_type, selection, amount,
-                ai_score, ai_rating, ai_label, final_rank,
-                ai_reasons, exhibition, exhibition_rank, motor_rank,
-                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
-                purchased, purchased_selection_text, hit, payout, memo, imported_at
-            )
-            VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
-            )
-            ''',
-            (
-                str(r['race_date']).strip(),
-                str(r['time']).strip(),
-                str(r['venue']).strip(),
-                str(r['race_no']).strip(),
-                int(r['race_no_num']),
-                str(r['rating']).strip(),
-                str(r['bet_type']).strip(),
-                str(r['selection']).strip(),
-                int(r['amount']),
-                safe_float(r.get('ai_score', 0), 0),
-                str(r.get('ai_rating', '')).strip(),
-                str(r.get('ai_label', '')).strip(),
-                str(r.get('final_rank', '')).strip(),
-                json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
-                json.dumps(r.get('exhibition', []), ensure_ascii=False),
-                str(r.get('exhibition_rank', '')).strip(),
-                str(r.get('motor_rank', '')).strip(),
-                str(r.get('ai_detail', '')).strip(),
-                str(r.get('ai_selection', '')).strip(),
-                str(r.get('ai_confidence', '')).strip(),
-                str(r.get('ai_lane_score_text', '')).strip(),
-                str(r.get('class_history_text', '')).strip(),
-                str(r.get('player_names_text', '')).strip(),
-                purchased,
-                purchased_selection_text,
-                hit,
-                payout,
-                memo,
-                imported_at,
-            )
-        )
+        insert_rows.append((
+            str(r['race_date']).strip(),
+            str(r['time']).strip(),
+            str(r['venue']).strip(),
+            str(r['race_no']).strip(),
+            int(r['race_no_num']),
+            str(r['rating']).strip(),
+            str(r['bet_type']).strip(),
+            str(r['selection']).strip(),
+            int(r['amount']),
+            safe_float(r.get('ai_score', 0), 0),
+            str(r.get('ai_rating', '')).strip(),
+            str(r.get('ai_label', '')).strip(),
+            str(r.get('final_rank', '')).strip(),
+            json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
+            json.dumps(r.get('exhibition', []), ensure_ascii=False),
+            str(r.get('exhibition_rank', '')).strip(),
+            str(r.get('motor_rank', '')).strip(),
+            str(r.get('ai_detail', '')).strip(),
+            str(r.get('ai_selection', '')).strip(),
+            str(r.get('ai_confidence', '')).strip(),
+            str(r.get('ai_lane_score_text', '')).strip(),
+            str(r.get('class_history_text', '')).strip(),
+            str(r.get('player_names_text', '')).strip(),
+            purchased,
+            purchased_selection_text,
+            hit,
+            payout,
+            memo,
+            imported_at,
+        ))
         inserted += 1
         if key in saved_map:
             updated += 1
+
+    psycopg2.extras.execute_values(
+        cur,
+        '''
+        INSERT INTO races (
+            race_date, time, venue, race_no, race_no_num,
+            rating, bet_type, selection, amount,
+            ai_score, ai_rating, ai_label, final_rank,
+            ai_reasons, exhibition, exhibition_rank, motor_rank,
+            ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
+            purchased, purchased_selection_text, hit, payout, memo, imported_at
+        ) VALUES %s
+        ''',
+        insert_rows,
+        page_size=100,
+    )
 
     conn.commit()
     cur.close()
@@ -1962,6 +1971,14 @@ def replace_today_candidates(cleaned):
 
     log(f'replace_today_candidates inserted={inserted} updated={updated} deleted={deleted} frozen_closed={frozen_closed}')
     return {'inserted': inserted, 'updated': updated, 'deleted': deleted, 'frozen_closed': frozen_closed}
+
+
+@app.before_request
+def before_request_init_db():
+    if request.path == "/healthz":
+        return None
+    ensure_db_initialized()
+    return None
 
 
 @app.route("/healthz")
@@ -2116,58 +2133,61 @@ def history_detail(race_date):
 
 @app.route("/api/import_candidates", methods=["POST"])
 def import_candidates():
-    if not is_valid_import_token(request):
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    data = request.get_json(silent=True) or {}
-    races = data.get("races", [])
-    if not isinstance(races, list):
-        return jsonify({"ok": False, "error": "races must be a list"}), 400
+    try:
+        ensure_db_initialized()
 
-    required_keys = {"race_date", "time", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
-    cleaned = []
-    for i, r in enumerate(races):
-        if not isinstance(r, dict):
-            return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
-        missing = required_keys - set(r.keys())
-        if missing:
-            return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
-        cleaned.append(
-            {
-                "race_date": str(r["race_date"]).strip(),
-                "time": str(r["time"]).strip(),
-                "venue": str(r["venue"]).strip(),
-                "race_no": str(r["race_no"]).strip(),
-                "race_no_num": int(r["race_no_num"]),
-                "rating": str(r["rating"]).strip(),
-                "bet_type": str(r["bet_type"]).strip(),
-                "selection": str(r["selection"]).strip(),
-                "amount": int(r["amount"]),
-                "ai_score": safe_float(r.get("ai_score", 0), 0),
-                "ai_rating": str(r.get("ai_rating", "")).strip(),
-                "ai_label": str(r.get("ai_label", "")).strip(),
-                "final_rank": str(r.get("final_rank", "")).strip(),
-                "ai_reasons": r.get("ai_reasons", []),
-                "exhibition": r.get("exhibition", []),
-                "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
-                "motor_rank": str(r.get("motor_rank", "")).strip(),
-                "ai_detail": str(r.get("ai_detail", "")).strip(),
-                "ai_selection": str(r.get("ai_selection", "")).strip(),
-                "ai_confidence": str(r.get("ai_confidence", "")).strip(),
-                "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
-                "class_history_text": str(r.get("class_history_text", "")).strip(),
-                "player_names_text": str(r.get("player_names_text", "")).strip(),
-            }
-        )
-    if not cleaned:
-        return jsonify({"ok": False, "error": "races is empty"}), 400
+        if not is_valid_import_token(request):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        data = request.get_json(silent=True) or {}
+        races = data.get("races", [])
+        if not isinstance(races, list):
+            return jsonify({"ok": False, "error": "races must be a list"}), 400
 
-    race_dates = sorted(set(r["race_date"] for r in cleaned))
-    if len(race_dates) != 1:
-        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+        required_keys = {"race_date", "time", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
+        cleaned = []
+        for i, r in enumerate(races):
+            if not isinstance(r, dict):
+                return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
+            missing = required_keys - set(r.keys())
+            if missing:
+                return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+            cleaned.append(
+                {
+                    "race_date": str(r["race_date"]).strip(),
+                    "time": str(r["time"]).strip(),
+                    "venue": str(r["venue"]).strip(),
+                    "race_no": str(r["race_no"]).strip(),
+                    "race_no_num": int(r["race_no_num"]),
+                    "rating": str(r["rating"]).strip(),
+                    "bet_type": str(r["bet_type"]).strip(),
+                    "selection": str(r["selection"]).strip(),
+                    "amount": int(r["amount"]),
+                    "ai_score": safe_float(r.get("ai_score", 0), 0),
+                    "ai_rating": str(r.get("ai_rating", "")).strip(),
+                    "ai_label": str(r.get("ai_label", "")).strip(),
+                    "final_rank": str(r.get("final_rank", "")).strip(),
+                    "ai_reasons": r.get("ai_reasons", []),
+                    "exhibition": r.get("exhibition", []),
+                    "exhibition_rank": str(r.get("exhibition_rank", "")).strip(),
+                    "motor_rank": str(r.get("motor_rank", "")).strip(),
+                    "ai_detail": str(r.get("ai_detail", "")).strip(),
+                    "ai_selection": str(r.get("ai_selection", "")).strip(),
+                    "ai_confidence": str(r.get("ai_confidence", "")).strip(),
+                    "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
+                    "class_history_text": str(r.get("class_history_text", "")).strip(),
+                    "player_names_text": str(r.get("player_names_text", "")).strip(),
+                }
+            )
+        if not cleaned:
+            return jsonify({"ok": False, "error": "races is empty"}), 400
 
-    result = replace_today_candidates(cleaned)
-    log(f"import api success count={len(cleaned)}")
-    response = {
+        race_dates = sorted(set(r["race_date"] for r in cleaned))
+        if len(race_dates) != 1:
+            return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+
+        result = replace_today_candidates(cleaned)
+        log(f"import api success count={len(cleaned)}")
+        response = {
             "ok": True,
             "received": len(cleaned),
             "inserted": result["inserted"],
@@ -2176,9 +2196,12 @@ def import_candidates():
             "frozen_closed": result.get("frozen_closed", 0),
             "imported_at": jst_now_str(),
         }
-    if "frozen_closed" in result:
-        response["frozen_closed"] = result["frozen_closed"]
-    return jsonify(response)
+        if "frozen_closed" in result:
+            response["frozen_closed"] = result["frozen_closed"]
+        return jsonify(response)
+    except Exception as e:
+        log(f"import api error err={e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 init_db()
