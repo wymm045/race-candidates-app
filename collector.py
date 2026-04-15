@@ -47,6 +47,7 @@ RESULT_MAX_WORKERS = 12
 USE_RACELIST = True
 
 JCD_NAME_MAP = {
+    "01": "桐生",
     "02": "戸田",
     "03": "江戸川",
     "04": "平和島",
@@ -96,9 +97,6 @@ RACELIST_VENUE_SLUG_MAP = {
     "24": "omura",
 }
 
-SESSION = requests.Session()
-SESSION.headers.update(HEADERS)
-
 
 def log(msg):
     print(msg, flush=True)
@@ -140,7 +138,7 @@ def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
     last_err = None
     for attempt in range(1, max_retries + 1):
         try:
-            res = SESSION.get(url, timeout=timeout)
+            res = requests.get(url, headers=HEADERS, timeout=timeout)
             res.raise_for_status()
             res.encoding = res.apparent_encoding
             return res.text
@@ -193,7 +191,7 @@ def build_info_detail_url(jcd, race_no):
 def try_fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=2):
     for attempt in range(1, max_retries + 1):
         try:
-            res = SESSION.get(url, timeout=timeout)
+            res = requests.get(url, headers=HEADERS, timeout=timeout)
             res.raise_for_status()
             res.encoding = res.apparent_encoding
             return res.text
@@ -777,14 +775,14 @@ def normalize_name_cell_text(text):
     s = str(text or "").replace("\xa0", " ")
     s = s.replace("詳細", " ")
     s = re.sub(r"\(\d+\)", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return s.strip()
 
 
 def extract_name_from_racelist_cell_text(text):
     raw = normalize_name_cell_text(text)
     if not raw:
         return ""
+
     lines = [x.strip() for x in re.split(r"[\n\r]+", raw) if x.strip()]
     candidates = []
 
@@ -810,7 +808,8 @@ def extract_name_from_racelist_cell_text(text):
     if candidates:
         return normalize_player_name(candidates[0])
 
-    m = re.search(r"([一-龯]{1,4}\s*[一-龯ぁ-んァ-ヶー]{1,4})", raw)
+    compact_raw = re.sub(r"\s+", " ", raw).strip()
+    m = re.search(r"([一-龯]{1,4}\s*[一-龯ぁ-んァ-ヶー]{1,4})", compact_raw)
     if m:
         candidate = normalize_player_name(m.group(1))
         if is_probable_player_name(candidate):
@@ -903,7 +902,11 @@ def parse_racelist_page_all_races(jcd):
     venue = JCD_NAME_MAP.get(jcd, jcd)
     result = {}
     for race_no in range(1, 13):
-        url_candidates = [build_racelist_detail_url(jcd, race_no, scheme="https"), build_racelist_detail_url(jcd, race_no, scheme="http"), build_info_detail_url(jcd, race_no)]
+        url_candidates = [
+            build_racelist_detail_url(jcd, race_no, scheme="https"),
+            build_racelist_detail_url(jcd, race_no, scheme="http"),
+            build_info_detail_url(jcd, race_no),
+        ]
         url_candidates = [u for u in url_candidates if u]
         html = None
         used_url = ""
@@ -916,8 +919,12 @@ def parse_racelist_page_all_races(jcd):
         if not html:
             log(f"[racelist_page_error] jcd={jcd} venue={venue} race_no={race_no} all_failed=1")
             continue
+
         lane_map = parse_racelist_race_from_html(html, race_no, jcd, venue)
-        if lane_map:
+        class_map = lane_map.get("class_history_map", {}) if isinstance(lane_map, dict) else {}
+        name_map = lane_map.get("player_names", {}) if isinstance(lane_map, dict) else {}
+
+        if class_map or name_map:
             result[race_no] = lane_map
             log(f"[racelist_source_ok] jcd={jcd} venue={venue} race_no={race_no} url={used_url}")
         else:
@@ -1671,8 +1678,6 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
         head_local = avg_stat(head_stats, "local_win")
         head_motor = avg_stat(head_stats, "motor2")
         head_boat = avg_stat(head_stats, "boat2")
-        head_recent = avg_stat(head_stats, "recent")
-        head_top3 = avg_stat(head_stats, "top3")
         second_national = avg_stat(second_stats, "national_win")
         second_local = avg_stat(second_stats, "local_win")
         second_motor = avg_stat(second_stats, "motor2")
@@ -1770,22 +1775,6 @@ def analyze_candidate(official_rating, selection, exhibition_info, boat_stats=No
                 score += 0.08
             elif third_motor < 26:
                 score -= 0.08
-
-        if head_recent is not None:
-            details.append(f"1着直近平均着順{round(head_recent, 2)}")
-            if head_recent <= 2.2:
-                score += 0.25
-                reasons.append("1着候補の直近成績が良い")
-            elif head_recent >= 4.2:
-                score -= 0.22
-                reasons.append("1着候補の直近成績が悪い")
-
-        if head_top3 is not None:
-            details.append(f"1着直近3着内率{round(head_top3, 1)}")
-            if head_top3 >= 80:
-                score += 0.18
-            elif head_top3 <= 40:
-                score -= 0.14
 
     head_histories = [class_history_map[h] for h in unique_heads if h in class_history_map]
     second_histories = [class_history_map[s] for s in unique_seconds if s in class_history_map]
@@ -2046,7 +2035,7 @@ def log_beforeinfo_summary(beforeinfo_cache, keys):
 
 
 def build_candidates():
-    log("[collector_version] ai_recent_course_v7_venue_trend")
+    log("[collector_version] ai_recent_course_v7_venue_trend_fix1")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
@@ -2260,7 +2249,7 @@ def send_to_render(races):
         raise RuntimeError("IMPORT_TOKEN が未設定です")
     headers = {"Content-Type": "application/json", "X-IMPORT-TOKEN": IMPORT_TOKEN}
     payload = {"races": races}
-    res = SESSION.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
+    res = requests.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
     print("status_code =", res.status_code)
     print("response =", res.text)
     res.raise_for_status()
