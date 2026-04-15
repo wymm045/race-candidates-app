@@ -1023,7 +1023,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
-    display_ai_rating = display_text(r.get("final_ai_rating"), "") or display_text(r.get("base_ai_rating"), "") or display_text(r.get("ai_rating"), "AI評価なし")
+    display_ai_rating = display_text(r.get("final_ai_rating"), "") or display_text(r.get("base_ai_rating"), "") or display_ai_rating
     display_ai_selection = str(r.get("final_ai_selection") or "").strip() or str(r.get("base_ai_selection") or "").strip() or str(r.get("ai_selection") or "").strip()
     display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
     render_r = dict(r)
