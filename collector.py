@@ -543,49 +543,146 @@ def extract_course_recent_stats(lines):
     return stats
 
 
+
+def normalize_race_no_value(race_no):
+    try:
+        return int(str(race_no).replace("R", "").replace("r", "").strip())
+    except Exception:
+        m = re.search(r"(\d{1,2})", str(race_no or ""))
+        return int(m.group(1)) if m else 0
+
+
+def make_race_label(race_no):
+    n = normalize_race_no_value(race_no)
+    return f"{n}R" if n else f"{race_no}R"
+
+
+def is_exhibition_time_value(val):
+    return isinstance(val, (int, float)) and 6.2 <= float(val) <= 8.5
+
+
+def extract_exhibition_times_from_table(soup):
+    lane_times = {}
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if not cells:
+            continue
+        texts = [c.get_text(" ", strip=True) for c in cells]
+        if not texts:
+            continue
+        lane = None
+        first = texts[0].strip()
+        if re.fullmatch(r"[1-6]", first):
+            lane = int(first)
+        else:
+            full = " ".join(texts[:2])
+            m_lane = re.search(r"\b([1-6])\b", full)
+            if m_lane:
+                lane = int(m_lane.group(1))
+        if lane is None:
+            continue
+
+        vals = []
+        for txt in texts:
+            for x in re.findall(r"\b\d\.\d{2}\b", txt):
+                try:
+                    vals.append(float(x))
+                except Exception:
+                    pass
+        vals = [v for v in vals if is_exhibition_time_value(v)]
+        if vals:
+            lane_times[lane] = min(vals)
+
+    if len(lane_times) == 6:
+        return [f"{lane_times[lane]:.2f}" for lane in range(1, 7)]
+    return []
+
+
+def extract_exhibition_times_from_lines(lines):
+    lane_times = {}
+    lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
+    for idx, lane in lane_positions:
+        seg = lines[idx: idx + 20]
+        vals = []
+        for txt in seg:
+            for x in re.findall(r"\b\d\.\d{2}\b", txt):
+                try:
+                    vals.append(float(x))
+                except Exception:
+                    pass
+        vals = [v for v in vals if is_exhibition_time_value(v)]
+        if vals:
+            lane_times[lane] = min(vals)
+
+    if len(lane_times) == 6:
+        return [f"{lane_times[lane]:.2f}" for lane in range(1, 7)]
+
+    flat = []
+    for line in lines:
+        for x in re.findall(r"\b\d\.\d{2}\b", line):
+            try:
+                val = float(x)
+            except Exception:
+                continue
+            if is_exhibition_time_value(val):
+                flat.append(val)
+    if len(flat) >= 6:
+        return [f"{v:.2f}" for v in flat[:6]]
+    return []
+
+
+def build_exhibition_ranks_from_times(times):
+    ranks = {}
+    if len(times) != 6:
+        return ranks
+    float_pairs = []
+    for lane, t in enumerate(times, start=1):
+        try:
+            v = float(t)
+        except Exception:
+            return {}
+        if not is_exhibition_time_value(v):
+            return {}
+        float_pairs.append((lane, v))
+    sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
+    current_rank = 1
+    prev_time = None
+    for idx, (lane, t) in enumerate(sorted_pairs, start=1):
+        if prev_time is None or t != prev_time:
+            current_rank = idx
+        ranks[lane] = current_rank
+        prev_time = t
+    return ranks
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
+    race_no = normalize_race_no_value(race_no)
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
     empty_info = {
         "exhibition": {"times": [], "ranks": {}},
         "boat_stats": {},
         "environment": {"weather": "", "wind_speed": None, "wave_height": None, "water_temp": None, "air_temp": None, "wind_direction": "", "wind_type": "", "stabilizer": False},
         "player_names": {},
-        "extra_stats": {lane: {"course_rate": None, "avg_st": None, "recent_avg": None, "recent_top3": None} for lane in range(1, 7)},
+        "extra_stats": {lane: {"course_rate": None, "avg_st": None, "recent_avg": None, "recent_top3": None} for lane in range(1,7)},
     }
     try:
         html = fetch_html(beforeinfo_url)
     except Exception as e:
         log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
         return (jcd, race_no), empty_info
+
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines(html)
     environment = parse_environment_info(html, soup, lines)
-    time_candidates = []
-    for line in lines:
-        if re.fullmatch(r"\d\.\d{2}", line):
-            time_candidates.append(line)
-    if len(time_candidates) < 6:
-        for line in lines:
-            time_candidates.extend(re.findall(r"\d\.\d{2}", line))
-    times = time_candidates[:6]
-    ranks = {}
-    if len(times) == 6:
-        float_pairs = []
-        for lane, t in enumerate(times, start=1):
-            try:
-                float_pairs.append((lane, float(t)))
-            except Exception:
-                float_pairs = []
-                break
-        if float_pairs:
-            sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
-            current_rank = 1
-            prev_time = None
-            for idx, (lane, t) in enumerate(sorted_pairs, start=1):
-                if prev_time is None or t != prev_time:
-                    current_rank = idx
-                ranks[lane] = current_rank
-                prev_time = t
+
+    times = extract_exhibition_times_from_table(soup)
+    ex_source = "table"
+    if len(times) != 6:
+        times = extract_exhibition_times_from_lines(lines)
+        ex_source = "lines" if len(times) == 6 else "none"
+
+    ranks = build_exhibition_ranks_from_times(times)
+
     stats = {lane: {"class": "", "national_win": None, "local_win": None, "motor2": None, "boat2": None} for lane in range(1, 7)}
     lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
     for pos_idx, lane in lane_positions:
@@ -607,6 +704,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
             stats[lane]["boat2"] = rate_like[-1]
         elif len(rate_like) == 1:
             stats[lane]["motor2"] = rate_like[-1]
+
     for lane in range(1, 7):
         s = stats[lane]
         if s["national_win"] is not None and s["national_win"] > 10:
@@ -625,6 +723,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
             s["motor2"] = None
         if s["boat2"] is not None and s["boat2"] <= 0:
             s["boat2"] = None
+
     player_names = extract_player_names_from_lines(lines)
     extra_stats = extract_course_recent_stats(lines)
     for lane in range(1, 7):
@@ -637,10 +736,17 @@ def parse_beforeinfo_for_key(jcd, race_no):
             ex["recent_avg"] = None
         if ex.get("recent_top3") is not None and ex.get("recent_top3") <= 0:
             ex["recent_top3"] = None
-    extras_count = sum(1 for lane in range(1, 7) if extra_stats.get(lane, {}).get("course_rate") is not None or extra_stats.get(lane, {}).get("avg_st") is not None)
-    log(f"[beforeinfo_env] jcd={jcd} race_no={race_no} times={len(times)} ranks={len(ranks)} names={len(player_names)} extras={extras_count} {summarize_environment_for_log(environment)}")
-    return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}, "boat_stats": stats, "environment": environment, "player_names": player_names, "extra_stats": extra_stats}
 
+    extras_count = sum(1 for lane in range(1,7) if extra_stats.get(lane, {}).get("course_rate") is not None or extra_stats.get(lane, {}).get("avg_st") is not None)
+    log(f"[beforeinfo_env] jcd={jcd} race_no={race_no} ex_source={ex_source} times={len(times)} ranks={len(ranks)} names={len(player_names)} extras={extras_count} {summarize_environment_for_log(environment)}")
+
+    return (jcd, race_no), {
+        "exhibition": {"times": times, "ranks": ranks},
+        "boat_stats": stats,
+        "environment": environment,
+        "player_names": player_names,
+        "extra_stats": extra_stats,
+    }
 
 def parse_racelist_race_from_html(html, race_no, jcd, venue):
     text = normalize_text_for_class_parse(html)
@@ -1956,7 +2062,7 @@ def build_candidates():
             "race_date": today_text(),
             "time": deadline,
             "venue": venue,
-            "race_no": f"{race_no}R",
+            "race_no": make_race_label(race_no),
             "race_no_num": race_no,
             "rating": rating,
             "bet_type": BET_TYPE,
