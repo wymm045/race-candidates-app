@@ -140,6 +140,35 @@ def yen(n):
     except Exception:
         return "0円"
 
+def lane_color_class(lane):
+    try:
+        lane_num = int(lane)
+    except Exception:
+        lane_num = 0
+    return f"lane-color lane-color-{lane_num}"
+
+
+def render_lane_badge(lane, suffix=""):
+    label = f"{lane}{suffix}" if suffix else str(lane)
+    return f'<span class="{lane_color_class(lane)}">{label}</span>'
+
+
+def render_colored_pick_html(pick_text):
+    s = normalize_pick_text(pick_text)
+    if not s:
+        return ""
+    parts = s.split("-")
+    html_parts = []
+    for idx, part in enumerate(parts):
+        if idx > 0:
+            html_parts.append('<span class="pick-sep">-</span>')
+        lane_text = str(part).strip()
+        if lane_text.isdigit():
+            html_parts.append(render_lane_badge(int(lane_text)))
+        else:
+            html_parts.append(f'<span class="pick-plain">{lane_text}</span>')
+    return f'<span class="pick-inline">{"".join(html_parts)}</span>'
+
 
 def percent(n):
     try:
@@ -192,6 +221,36 @@ def get_selected_total_amount(race):
     )
 
 
+
+def get_existing_row_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT *
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    existing_map = {}
+    for row in rows:
+        key = (
+            str(row['race_date']).strip(),
+            str(row['venue']).strip(),
+            str(row['race_no']).strip(),
+        )
+        if key not in existing_map:
+            existing_map[key] = row
+    return existing_map
+
+
 def get_saved_state_map_by_race(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -234,35 +293,6 @@ def get_saved_state_map_by_race(race_date):
             'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
         }
     return saved_map
-
-
-def get_existing_row_map_by_race(race_date):
-    conn = db_connect()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        '''
-        SELECT *
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
-        ORDER BY id DESC
-        ''',
-        (race_date,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    existing_map = {}
-    for row in rows:
-        key = (
-            str(row['race_date']).strip(),
-            str(row['venue']).strip(),
-            str(row['race_no']).strip(),
-        )
-        if key not in existing_map:
-            existing_map[key] = row
-    return existing_map
 
 
 def parse_exhibition_rank_map(rank_text):
@@ -308,7 +338,7 @@ def render_exhibition_rank_boxes(rank_text):
         rank_display = "-" if rank is None else str(rank)
         boxes += f'''
         <div class="{exhibition_rank_class(rank)}">
-          <div class="ex-lane">{lane}号艇</div>
+          <div class="ex-lane">{render_lane_badge(lane)}</div>
           <div class="ex-rank">{rank_display}</div>
         </div>
         '''
@@ -322,11 +352,89 @@ def render_exhibition_time_chips(exhibition_list):
     for i, t in enumerate(exhibition_list, start=1):
         chips += f'''
         <div class="ex-chip">
-          <span class="ex-chip-lane">{i}</span>
+          <span class="ex-chip-lane">{render_lane_badge(i)}</span>
           <span class="ex-chip-time">{t}</span>
         </div>
         '''
     return f'<div class="ex-chip-wrap">{chips}</div>'
+
+
+def parse_player_names_map(player_names_text):
+    result = {}
+    s = str(player_names_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        lane_part, name = part.split(":", 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        player_name = str(name).strip()
+        if player_name:
+            result[lane] = player_name
+    return result
+
+
+def render_player_names_html(player_names_text):
+    player_map = parse_player_names_map(player_names_text)
+    if not player_map:
+        return '<div class="player-empty">未取得</div>'
+
+    items = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        items += f'''
+        <div class="player-chip player-chip-{lane}">
+          <span class="player-chip-lane">{render_lane_badge(lane)}</span>
+          <span class="player-chip-name">{name}</span>
+        </div>
+        '''
+    return f'<div class="player-chip-wrap">{items}</div>'
+
+
+def render_player_rank_summary_html(player_names_text, class_history_text):
+    player_map = parse_player_names_map(player_names_text)
+    class_rows = parse_class_history_rows(class_history_text)
+    class_map = {}
+    for row in class_rows:
+        lane = row.get("lane")
+        if lane is None:
+            continue
+        class_map[lane] = row.get("classes", [])
+
+    has_any = bool(player_map) or bool(class_map)
+    if not has_any:
+        return '<div class="player-rank-empty">未取得</div>'
+
+    rows_html = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        classes = class_map.get(lane, [])
+        chips = ""
+        if classes:
+            for idx, cls in enumerate(classes):
+                cls_safe = (cls or "").lower()
+                sub = "現" if idx == 0 else f"-{idx}"
+                current_cls = " current-class-chip" if idx == 0 else ""
+                chips += f'<div class="class-chip class-chip-{cls_safe}{current_cls}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
+        else:
+            chips = '<div class="class-history-empty">未取得</div>'
+
+        rows_html += f'''
+        <div class="player-rank-row">
+          <div class="player-rank-main">
+            <span class="player-rank-lane">{render_lane_badge(lane)}</span>
+            <span class="player-rank-name">{name}</span>
+          </div>
+          <div class="player-rank-chips">{chips}</div>
+        </div>
+        '''
+
+    return f'<div class="player-rank-wrap">{rows_html}</div>'
 
 
 def parse_class_history_rows(class_history_text):
@@ -372,7 +480,7 @@ def render_class_history_blocks(class_history_text):
             chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
         html += f'''
         <div class="class-history-row">
-          <div class="class-history-lane">{lane}号艇</div>
+          <div class="class-history-lane">{render_lane_badge(lane)}</div>
           <div class="class-history-chips">{chips}</div>
         </div>
         '''
@@ -414,7 +522,7 @@ def render_lane_score_chips(lane_score_text):
     items = sorted(items, key=lambda x: (-x[1], x[0]))
     chips = ""
     for lane, score in items:
-        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{lane}号艇</span><span class="lane-score-value">{score:.2f}</span></div>'
+        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{render_lane_badge(lane)}</span><span class="lane-score-value">{score:.2f}</span></div>'
     return f'<div class="lane-score-wrap">{chips}</div>'
 
 
@@ -513,11 +621,12 @@ def render_selection_column(
             name="{input_name}"
             value="{item_clean}"
             data-pick-value="{item_clean}"
+            data-race-group="{race_id_key}"
             form="{form_id}"
             {checked}
             onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
           >
-          <span class="selection-choice-body selection-choice-body-{chip_kind}">{item_clean}</span>
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{render_colored_pick_html(item_clean)}</span>
         </label>
         '''
 
@@ -532,15 +641,6 @@ def render_selection_compare_html(r, race_id_key):
 
     data = build_selection_compare_data(official_text, ai_text)
 
-    official_html = render_selection_column(
-        data["official_items"],
-        data["overlap"],
-        "official",
-        "未取得",
-        race_id_key=race_id_key,
-        selected_items=selected_items,
-        form_id=form_id,
-    )
     ai_html = render_selection_column(
         data["ai_items"],
         data["overlap"],
@@ -550,26 +650,36 @@ def render_selection_compare_html(r, race_id_key):
         selected_items=selected_items,
         form_id=form_id,
     )
+    official_html = render_selection_column(
+        data["official_items"],
+        data["overlap"],
+        "official",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+        form_id=form_id,
+    )
 
     return f'''
-    <div class="selection-compare-wrap">
-      <div class="selection-compare-col">
-        <div class="selection-col-title">公式買い目</div>
-        {official_html}
-      </div>
-      <div class="selection-compare-col">
-        <div class="selection-col-title">AI買い目</div>
+    <div class="selection-compare-wrap ai-priority-wrap">
+      <div class="selection-compare-col selection-compare-col-ai">
+        <div class="selection-col-title selection-col-title-ai">AI買い目</div>
         {ai_html}
+      </div>
+      <div class="selection-compare-col selection-compare-col-official">
+        <div class="selection-col-title selection-col-title-official">参考: 公式買い目</div>
+        {official_html}
       </div>
     </div>
     '''
+
 
 
 def render_selected_summary_html(selected_text):
     items = selection_items(selected_text)
     if not items:
         return '<div class="selection-chip-empty">未選択</div>'
-    chips = "".join([f'<div class="picked-chip">{item}</div>' for item in items])
+    chips = "".join([f'<div class="picked-chip">{render_colored_pick_html(item)}</div>' for item in items])
     return f'<div class="picked-chip-wrap">{chips}</div>'
 
 
@@ -781,6 +891,36 @@ def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
 
 
+def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
+    filtered = list(rows)
+    if venue_filter:
+        filtered = [r for r in filtered if str(r.get("venue", "")).strip() == venue_filter]
+    if race_no_filter:
+        filtered = [r for r in filtered if str(r.get("race_no", "")).strip() == race_no_filter]
+    if purchased_only:
+        filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
+    if hit_only:
+        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+    return filtered
+
+
+def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
+    venues = sorted(set(str(r.get("venue", "")).strip() for r in rows if str(r.get("venue", "")).strip()))
+    race_nos = sorted(
+        set(str(r.get("race_no", "")).strip() for r in rows if str(r.get("race_no", "")).strip()),
+        key=lambda x: int(str(x).replace("R", "")) if str(x).replace("R", "").isdigit() else 999
+    )
+    venue_options = '<option value="">すべて</option>'
+    for venue in venues:
+        selected = "selected" if venue == selected_venue else ""
+        venue_options += f'<option value="{venue}" {selected}>{venue}</option>'
+    race_no_options = '<option value="">すべて</option>'
+    for race_no in race_nos:
+        selected = "selected" if race_no == selected_race_no else ""
+        race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
+    return venue_options, race_no_options, venues, race_nos
+
+
 def build_card_html(r, is_history=False, race_date=""):
     checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
     payout_value = r["payout"] if r["payout"] else ""
@@ -817,6 +957,8 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_score_value = safe_float(r.get("ai_score"), 0)
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
     class_history_html = render_class_history_blocks(r.get("class_history_text", ""))
+    player_names_html = render_player_names_html(r.get("player_names_text", ""))
+    player_rank_summary_html = render_player_rank_summary_html(r.get("player_names_text", ""), r.get("class_history_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
     final_rank_html = final_rank_badge(r.get("final_rank"))
@@ -846,7 +988,7 @@ def build_card_html(r, is_history=False, race_date=""):
         '''
 
     return f'''
-    <div class="{card_class}">
+    <div class="{card_class}" data-race-card-id="{race_id_key}">
       {top_checkbox}
       <div class="card-top card-top-main">
         <div class="card-top-left">
@@ -882,7 +1024,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
-        <div class="row"><span class="label">3期ランク</span><span class="value">{class_history_html}</span></div>
+        <div class="row"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
@@ -892,6 +1034,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
         <input type="hidden" name="race_id" value="{r['id']}">
+        <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
         <div id="detail-{race_id_key}" class="detail-box">
@@ -1048,18 +1191,68 @@ def render_history_page(date_summaries):
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
 
 
-def render_history_detail_page(race_date, races, summary, message_type="", message_text=""):
+def render_history_detail_page(
+    race_date,
+    races,
+    summary,
+    message_type="",
+    message_text="",
+    venue_filter="",
+    race_no_filter="",
+    purchased_only=False,
+    hit_only=False,
+):
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
         message_html = f'<div class="message {message_class}">{message_text}</div>'
     else:
         message_html = ""
-    if not races:
-        body = '<div class="empty">データがありません</div>'
+
+    venue_options_html, race_no_options_html, _all_venues, _all_race_nos = make_history_filter_options(
+        races,
+        selected_venue=venue_filter,
+        selected_race_no=race_no_filter,
+    )
+
+    filtered_races = filter_history_races(
+        races,
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
+
+    checked_purchased = "checked" if purchased_only else ""
+    checked_hit = "checked" if hit_only else ""
+
+    jump_items = []
+    seen_race_nos = set()
+    for r in filtered_races:
+        race_no = str(r.get("race_no", "")).strip()
+        if race_no and race_no not in seen_race_nos:
+            seen_race_nos.add(race_no)
+            jump_items.append(f'<a class="jump-chip" href="#race-card-{r["id"]}">{race_no}</a>')
+    jump_html = "".join(jump_items) if jump_items else '<span class="jump-empty">ジャンプ候補なし</span>'
+
+    if not filtered_races:
+        body = '<div class="empty">条件に合うデータがありません</div>'
     else:
-        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in races])
+        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
         body = f'''
         <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();"><input type="hidden" name="redirect_to" value="/history/{race_date}"></form>
+        <div class="header history-filter-box">
+          <div class="section-title">絞り込み</div>
+          <form method="get" action="/history/{race_date}" class="filter-box">
+            <div class="history-filter-grid">
+              <div class="filter-item"><label for="venue">会場</label><select name="venue" id="venue">{venue_options_html}</select></div>
+              <div class="filter-item"><label for="race_no">R</label><select name="race_no" id="race_no">{race_no_options_html}</select></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="purchased_only" value="1" {checked_purchased}>購入済みのみ</label></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="hit_only" value="1" {checked_hit}>的中のみ</label></div>
+              <div class="filter-actions"><button type="submit" class="filter-btn">絞り込む</button><a href="/history/{race_date}" class="filter-reset">解除</a></div>
+            </div>
+          </form>
+          <div class="history-filter-meta"><div class="history-filter-count">表示中 {len(filtered_races)} / 全{len(races)}件</div><div class="jump-wrap">{jump_html}</div></div>
+        </div>
         <div class="bulk-toolbar"><div class="bulk-toolbar-left"><button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button><button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button></div><div class="bulk-toolbar-right"><span class="bulk-count" id="bulk-delete-count">0件選択中</span><button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button></div></div>
         {cards_html}
         '''
@@ -1071,6 +1264,7 @@ def render_history_detail_page(race_date, races, summary, message_type="", messa
     </div>
     '''
     return render_layout("過去データ詳細", content)
+
 
 
 def render_layout(title, body_html):
@@ -1179,9 +1373,9 @@ def render_layout(title, body_html):
       .label{font-weight:700;color:#344054}
       .value{min-width:0}
       .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
-      .selection-col-title{font-size:12px;color:#667085;margin-bottom:8px;font-weight:700}
-      .selection-chip-grid{display:flex;gap:8px;flex-wrap:wrap}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
       .selection-choice-chip{
         display:inline-block;
         cursor:pointer;
@@ -1236,25 +1430,52 @@ def render_layout(title, body_html):
         box-shadow:0 0 0 2px rgba(166,75,0,.08) inset;
       }
 
-      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
-      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:8px 10px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0}
+      
+      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 4px;border-radius:2px;font-weight:800;font-size:14px;line-height:1;border:1px solid rgba(0,0,0,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+      .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
+      .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
+      .lane-color-3{background:#ef4444;color:#ffffff;border-color:#ef4444}
+      .lane-color-4{background:#3b82f6;color:#ffffff;border-color:#3b82f6}
+      .lane-color-5{background:#fde047;color:#111827;border-color:#eab308}
+      .lane-color-6{background:#22c55e;color:#ffffff;border-color:#22c55e}
+      .pick-inline .lane-color{min-width:22px;height:22px;font-size:14px;border-radius:2px;padding:0 3px}
+      .picked-chip .pick-inline .lane-color,.selection-choice-body .pick-inline .lane-color{min-width:21px;height:21px;font-size:13px}
+      .player-chip .lane-color,.class-history-lane .lane-color,.ex-chip-lane .lane-color,.ex-lane .lane-color{min-width:28px;height:24px;font-size:14px;border-radius:2px}
+      .ex-chip{display:inline-flex;align-items:center;gap:8px}
+      .ex-chip-time{font-weight:700}
+      .ex-lane{display:flex;justify-content:center;margin-bottom:6px}
+      .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
+      .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
+      .pick-plain{font-weight:800;color:#344054}
+      .player-chip-wrap{display:flex;flex-direction:column;gap:6px}
+      .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .player-chip-lane{flex:0 0 auto}
+      .player-chip-name{font-weight:700;color:#172033}
+      .player-rank-wrap{display:flex;flex-direction:column;gap:8px}
+      .player-rank-row{display:grid;grid-template-columns:minmax(180px,240px) 1fr;gap:10px;align-items:center;padding:6px 0}
+      .player-rank-main{display:flex;align-items:center;gap:8px;min-width:0}
+      .player-rank-lane{flex:0 0 auto}
+      .player-rank-name{font-weight:800;color:#172033;line-height:1.35;word-break:break-word}
+      .player-rank-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
-      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty{color:#667085}
-      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
       .lane-score-bad{background:#fef3f2}
       .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:12px;padding:8px;text-align:center}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:10px;padding:8px;text-align:center}
       .ex-rank-1{background:#ecfdf3}
       .ex-rank-2{background:#eef4ff}
       .ex-rank-3{background:#fff6e5}
       .ex-rank-low{background:#fef3f2}
       .class-history-wrap{display:flex;flex-direction:column;gap:8px}
       .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
-      .class-history-lane{font-weight:800}
-      .class-history-chips{display:flex;gap:6px;flex-wrap:wrap}
-      .class-chip{display:inline-flex;gap:6px;align-items:center;border-radius:999px;padding:7px 10px;border:1px solid #d0d5dd;background:#fff}
+      .class-history-lane{font-weight:800;display:flex;align-items:center}
+      .class-history-chips{display:flex;gap:5px;flex-wrap:wrap}
+      .class-chip{display:inline-flex;gap:5px;align-items:center;border-radius:10px;padding:6px 8px;border:1px solid #d0d5dd;background:#fff}
       .class-chip-a1{background:#ecfdf3}
       .class-chip-a2{background:#eef4ff}
       .class-chip-b1{background:#fff6e5}
@@ -1285,6 +1506,16 @@ def render_layout(title, body_html):
       .section-title{font-size:18px;font-weight:800}
       .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
       .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .history-filter-box{padding:16px}
+      .history-filter-grid{display:grid;grid-template-columns:1.2fr 180px auto auto auto;gap:12px;align-items:end;margin-top:10px}
+      .filter-item-check{display:flex;align-items:end}
+      .history-filter-meta{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:14px;flex-wrap:wrap}
+      .history-filter-count{font-size:13px;font-weight:800;color:#475467}
+      .jump-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .jump-chip{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:8px 12px;border-radius:999px;text-decoration:none;background:#eef4ff;color:#175cd3;border:1px solid #cdddff;font-weight:800}
+      .jump-empty{color:#98a2b3;font-size:13px}
+      .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
+      .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
       .bottom-nav{
         position:fixed;
         left:0;
@@ -1300,27 +1531,81 @@ def render_layout(title, body_html):
       .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
       .bottom-nav-item.active{color:#175cd3;font-weight:800}
 
+      .player-rank-row{
+        display:grid;
+        grid-template-columns:minmax(180px, 260px) minmax(360px, 1fr);
+        gap:12px;
+        align-items:center;
+      }
+      .player-rank-main{
+        min-width:0;
+        display:flex;
+        align-items:center;
+        gap:10px;
+      }
+      .player-rank-name{
+        min-width:0;
+        font-weight:800;
+        line-height:1.35;
+        word-break:keep-all;
+        overflow-wrap:anywhere;
+      }
+      .player-rank-chips{
+        display:grid;
+        grid-template-columns:repeat(4, minmax(72px, max-content));
+        gap:8px;
+        min-width:0;
+        justify-content:start;
+      }
+      .player-rank-chips .class-chip{
+        min-width:72px;
+        padding:8px 12px;
+        white-space:nowrap;
+        justify-content:center;
+      }
+
       @media (max-width: 760px){
-        .container{padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px))}
-        .topbar{
-          flex-direction:column;
-          align-items:flex-start;
-        }
-        .topbar-status{
-          width:100%;
-          justify-content:flex-start;
-        }
-        .top-pill{
-          width:100%;
-          border-radius:12px;
-        }
-        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap{grid-template-columns:1fr}
-        .row{grid-template-columns:1fr}
+        html{background:#f5f7fb}
+        .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
+        .topbar{flex-direction:column;align-items:flex-start;padding:14px;border-radius:18px;}
+        .topbar-status{width:100%;justify-content:flex-start;}
+        .top-pill{width:100%;border-radius:12px;}
+        .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid{grid-template-columns:1fr;}
+        .row{grid-template-columns:1fr;gap:8px;}
         .race-venue,.race-rno{font-size:20px}
         .time{font-size:22px}
         .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
         .card-top-main{flex-direction:column;align-items:flex-start}
         .status-wrap{margin-top:2px}
+        .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
+        .class-history-lane{font-size:15px;line-height:1.2;margin-bottom:2px;}
+        .class-history-chips{gap:8px}
+        .class-chip{padding:6px 8px;min-height:36px;border-radius:10px}
+        .class-chip-sub{font-size:12px;font-weight:700;color:#667085;min-width:auto;text-align:center;background:none;padding:0}
+        .class-chip-main{font-size:15px;font-weight:900}
+        .class-history-row .class-history-chips .class-chip:first-child{padding-left:10px;padding-right:10px;border-width:2px}
+        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:18px;font-weight:900;letter-spacing:.01em}
+        .history-filter-meta{flex-direction:column;align-items:flex-start}
+        .jump-wrap{width:100%}
+        .jump-chip{min-width:48px;padding:8px 11px}
+        .bulk-toolbar{flex-direction:column;align-items:stretch}
+        .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
+        .player-chip{align-items:flex-start}
+        .player-chip-name{font-size:14px;line-height:1.45}
+        .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:4px 0}
+        .player-rank-main{gap:8px}
+        .player-rank-name{font-size:14px;line-height:1.4}
+        .player-rank-chips{gap:6px;flex-wrap:wrap}
+        .player-rank-chips .class-chip{min-width:0}
+        .current-class-chip .class-chip-main{font-size:18px}
+        .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
+        .pick-inline{gap:5px}
+        .pick-sep{font-size:13px}
+        .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
+        .bottom-nav-item{border-radius:12px}
+        .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
+
       }
     </style>
     """
@@ -1328,31 +1613,62 @@ def render_layout(title, body_html):
     js = """
     <script>
       function getCardRootByRaceId(raceId){
-        return document.querySelector('[data-race-id="' + raceId + '"]');
+        return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
+      }
+
+      function parseSelectionText(text){
+        return String(text || '')
+          .split(' / ')
+          .map(x => String(x || '').replace(/\s+/g, '').trim())
+          .filter(Boolean);
+      }
+
+      function getRaceCheckboxes(raceId){
+        return Array.from(document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]'));
       }
 
       function getCheckedValues(raceId){
-        const root = getCardRootByRaceId(raceId);
-        if(!root){ return []; }
-        const checked = root.querySelectorAll('input[type="checkbox"][data-pick-value]:checked');
-        return Array.from(checked)
+        return getRaceCheckboxes(raceId)
+          .filter(x => x.checked)
           .map(x => (x.getAttribute('data-pick-value') || '').trim())
           .filter(Boolean);
       }
 
+      function setCheckedValuesFromHidden(raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return []; }
+        const values = parseSelectionText(hidden.value);
+        const valueSet = new Set(values);
+        getRaceCheckboxes(raceId).forEach(el => {
+          const pick = (el.getAttribute('data-pick-value') || '').trim();
+          el.checked = valueSet.has(pick);
+        });
+        return values;
+      }
+
       function syncSelectionValue(el, raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return true; }
+        const values = getCheckedValues(raceId);
+        hidden.value = values.join(' / ');
         return true;
       }
 
-      function updateSelectionSummary(raceId){
+      function updateSelectionSummary(raceId, preserveHiddenWhenEmpty=true){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return; }
 
-        const values = getCheckedValues(raceId);
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
-        const amount = parseInt(root.getAttribute('data-amount') || '0', 10);
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+
+        let values = getCheckedValues(raceId);
+        if(values.length === 0 && hidden && preserveHiddenWhenEmpty){
+          values = setCheckedValuesFromHidden(raceId);
+        }
 
         if(summaryEl){
           if(values.length === 0){
@@ -1368,6 +1684,10 @@ def render_layout(title, body_html):
 
         if(totalEl){
           totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
+        }
+
+        if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){
+          hidden.value = values.join(' / ');
         }
       }
 
@@ -1401,7 +1721,12 @@ def render_layout(title, body_html):
 
       document.addEventListener('DOMContentLoaded', function(){
         document.querySelectorAll('form[data-race-id]').forEach(form => {
-          updateSelectionSummary(form.getAttribute('data-race-id'));
+          const raceId = form.getAttribute('data-race-id');
+          setCheckedValuesFromHidden(raceId);
+          updateSelectionSummary(raceId, true);
+          form.addEventListener('submit', function(){
+            syncSelectionValue(null, raceId);
+          });
         });
         updateBulkDeleteCount();
       });
@@ -1454,6 +1779,7 @@ def init_db():
             ai_confidence TEXT NOT NULL DEFAULT '',
             ai_lane_score_text TEXT NOT NULL DEFAULT '',
             class_history_text TEXT NOT NULL DEFAULT '',
+            player_names_text TEXT NOT NULL DEFAULT '',
 
             purchased INTEGER NOT NULL DEFAULT 0,
             purchased_selection_text TEXT NOT NULL DEFAULT '',
@@ -1480,6 +1806,7 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
@@ -1641,6 +1968,10 @@ def index():
 
 
 def parse_selected_from_request():
+    selected_text = normalize_pick_text(request.form.get("selected_text", ""))
+    if selected_text:
+        return " / ".join(unique_preserve(selection_items(selected_text)))
+
     official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
     ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
     return " / ".join(merge_selected_items(official, ai))
@@ -1738,12 +2069,21 @@ def history():
 
 @app.route("/history/<race_date>")
 def history_detail(race_date):
+    venue_filter = request.args.get("venue", "").strip()
+    race_no_filter = request.args.get("race_no", "").strip()
+    purchased_only = request.args.get("purchased_only", "").strip() == "1"
+    hit_only = request.args.get("hit_only", "").strip() == "1"
+    races = get_races_by_date(race_date)
     return render_history_detail_page(
         race_date,
-        get_races_by_date(race_date),
+        races,
         get_summary_by_date(race_date),
         request.args.get("type", "").strip(),
         request.args.get("msg", "").strip(),
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
     )
 
 
