@@ -56,33 +56,6 @@ JCD_NAME_MAP = {
 NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
 RATING_PAGE_MAP = {"★★★★★": "s5"}
 
-TILT_ALERT_ENABLED = os.environ.get("TILT_ALERT_ENABLED", "1").strip() == "1"
-TILT_ALERT_OUTER_LANES = set(int(x) for x in os.environ.get("TILT_ALERT_OUTER_LANES", "3,4,5,6").split(",") if x.strip().isdigit())
-TILT_ALERT_RANK_BORDER = int(os.environ.get("TILT_ALERT_RANK_BORDER", "2"))
-TILT_ALERT_INNER_DIFF = float(os.environ.get("TILT_ALERT_INNER_DIFF", "0.06"))
-TILT_ALERT_STRONG_BONUS = float(os.environ.get("TILT_ALERT_STRONG_BONUS", "0.28"))
-TILT_ALERT_MID_BONUS = float(os.environ.get("TILT_ALERT_MID_BONUS", "0.14"))
-
-MAKURI_ALERT_ENABLED = os.environ.get("MAKURI_ALERT_ENABLED", "1").strip() == "1"
-MAKURI_ALERT_INNER_DIFF = float(os.environ.get("MAKURI_ALERT_INNER_DIFF", "0.07"))
-MAKURI_ALERT_ALL_DIFF = float(os.environ.get("MAKURI_ALERT_ALL_DIFF", "0.10"))
-MAKURI_ALERT_STRONG_BONUS = float(os.environ.get("MAKURI_ALERT_STRONG_BONUS", "0.26"))
-MAKURI_ALERT_MID_BONUS = float(os.environ.get("MAKURI_ALERT_MID_BONUS", "0.14"))
-MAKURI_ALERT_TARGET_LANES = set(int(x) for x in os.environ.get("MAKURI_ALERT_TARGET_LANES", "2,3,4,5,6").split(",") if x.strip().isdigit())
-
-SENZUKE_ALERT_ENABLED = os.environ.get("SENZUKE_ALERT_ENABLED", "1").strip() == "1"
-SENZUKE_ALERT_TARGET_LANES = set(int(x) for x in os.environ.get("SENZUKE_ALERT_TARGET_LANES", "4,5,6").split(",") if x.strip().isdigit())
-SENZUKE_STRONG_OUTER_RANK = int(os.environ.get("SENZUKE_STRONG_OUTER_RANK", "2"))
-SENZUKE_TIME_DIFF = float(os.environ.get("SENZUKE_TIME_DIFF", "0.04"))
-SENZUKE_STRONG_PENALTY = float(os.environ.get("SENZUKE_STRONG_PENALTY", "0.30"))
-SENZUKE_MID_PENALTY = float(os.environ.get("SENZUKE_MID_PENALTY", "0.14"))
-
-LATEST_EXTRA_POSITIVE_CAP = float(os.environ.get("LATEST_EXTRA_POSITIVE_CAP", "0.45"))
-LATEST_TOTAL_POSITIVE_CAP = float(os.environ.get("LATEST_TOTAL_POSITIVE_CAP", "1.10"))
-LATEST_TOTAL_NEGATIVE_CAP = float(os.environ.get("LATEST_TOTAL_NEGATIVE_CAP", "0.75"))
-
-
-
 
 def log(msg):
     print(msg, flush=True)
@@ -422,10 +395,72 @@ def build_exhibition_ranks_from_times(times):
     return ranks
 
 
+def parse_weather_info_from_lines(lines):
+    joined = " ".join(lines)
+    weather = {
+        "weather": "",
+        "wind_speed": None,
+        "wave_height": None,
+        "wind_type": "",
+        "water_state_score": 0.0,
+    }
+
+    weather_words = ["晴", "曇", "雨", "雪"]
+    for word in weather_words:
+        if word in joined:
+            weather["weather"] = word
+            break
+
+    m_wind = re.search(r"風速\s*([0-9]+(?:\.[0-9]+)?)", joined)
+    if m_wind:
+        try:
+            weather["wind_speed"] = float(m_wind.group(1))
+        except Exception:
+            pass
+
+    m_wave = re.search(r"波高\s*([0-9]+(?:\.[0-9]+)?)", joined)
+    if m_wave:
+        try:
+            weather["wave_height"] = float(m_wave.group(1))
+        except Exception:
+            pass
+
+    if "向い風" in joined:
+        weather["wind_type"] = "向い風"
+    elif "追い風" in joined:
+        weather["wind_type"] = "追い風"
+    elif "横風" in joined:
+        weather["wind_type"] = "横風"
+
+    wind = weather["wind_speed"]
+    wave = weather["wave_height"]
+    score = 0.0
+    if isinstance(wind, (int, float)):
+        if wind >= 7:
+            score -= 0.18
+        elif wind >= 5:
+            score -= 0.10
+        elif wind <= 2:
+            score += 0.04
+    if isinstance(wave, (int, float)):
+        if wave >= 7:
+            score -= 0.18
+        elif wave >= 5:
+            score -= 0.10
+        elif wave <= 2:
+            score += 0.04
+    if weather["wind_type"] == "向い風":
+        score -= 0.04
+    elif weather["wind_type"] == "追い風":
+        score += 0.03
+    weather["water_state_score"] = round(score, 2)
+    return weather
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     race_no = normalize_race_no_value(race_no)
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-    empty = {"exhibition": {"times": [], "ranks": {}}}
+    empty = {"exhibition": {"times": [], "ranks": {}}, "weather": {}}
     try:
         html = fetch_html(beforeinfo_url)
     except Exception as e:
@@ -438,7 +473,8 @@ def parse_beforeinfo_for_key(jcd, race_no):
     if len(times) != 6:
         times = extract_exhibition_times_from_lines(lines)
     ranks = build_exhibition_ranks_from_times(times)
-    return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}}
+    weather = parse_weather_info_from_lines(lines)
+    return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}, "weather": weather}
 
 
 def fetch_beforeinfo_parallel(keys):
@@ -508,372 +544,10 @@ def fetch_base_map_today():
     raise last_err
 
 
-
-
-def detect_tilt_jump_alert(exhibition_info):
-    result = {
-        "level": "none",
-        "target_lane": None,
-        "bonus": 0.0,
-        "reasons": [],
-    }
-    if not TILT_ALERT_ENABLED:
-        return result
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    if not ranks or len(times) != 6:
-        return result
-
-    float_times = {}
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_times[lane] = float(t)
-        except Exception:
-            return result
-
-    candidates = []
-    for lane in sorted(TILT_ALERT_OUTER_LANES):
-        if lane not in float_times:
-            continue
-        rank = ranks.get(lane, 9)
-        inner_lanes = [x for x in range(1, lane) if x in float_times]
-        if not inner_lanes:
-            continue
-        inner_best = min(float_times[x] for x in inner_lanes)
-        diff = round(inner_best - float_times[lane], 3)
-        score = 0.0
-        reasons = []
-        if rank <= TILT_ALERT_RANK_BORDER:
-            score += 1.0
-            reasons.append(f"{lane}号艇の展示順位が上位")
-        if diff >= TILT_ALERT_INNER_DIFF:
-            score += 1.0
-            reasons.append(f"{lane}号艇が内側より展示良化")
-        elif diff >= max(TILT_ALERT_INNER_DIFF - 0.02, 0.03):
-            score += 0.5
-            reasons.append(f"{lane}号艇が内側よりやや展示良化")
-        if rank == 1 and diff >= TILT_ALERT_INNER_DIFF:
-            score += 0.5
-            reasons.append(f"{lane}号艇の外攻め気配")
-        if score > 0:
-            candidates.append((score, lane, diff, reasons))
-
-    if not candidates:
-        return result
-
-    candidates.sort(key=lambda x: (-x[0], -x[2], x[1]))
-    score, lane, diff, reasons = candidates[0]
-    result["target_lane"] = lane
-    result["reasons"] = reasons[:3]
-    if score >= 2.0:
-        result["level"] = "strong"
-        result["bonus"] = TILT_ALERT_STRONG_BONUS
-    else:
-        result["level"] = "mid"
-        result["bonus"] = TILT_ALERT_MID_BONUS
-    return result
-
-
-def rebuild_final_selection_with_tilt(base_selection, exhibition_info, tilt_result):
-    triplets = selection_triplets(base_selection)
-    if not triplets:
-        return ""
-
-    target_lane = tilt_result.get("target_lane")
-    if not target_lane:
-        return rebuild_final_selection(base_selection, exhibition_info)
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-
-    def tri_score(tri):
-        parts = tri.split("-")
-        if len(parts) != 3:
-            return -999
-        try:
-            a, b, c = map(int, parts)
-        except Exception:
-            return -999
-        score = 0.0
-        if a == target_lane:
-            score += 2.3
-        elif b == target_lane:
-            score += 1.0
-        elif c == target_lane:
-            score += 0.45
-        score -= ranks.get(a, 9) * 1.25
-        score -= ranks.get(b, 9) * 0.85
-        score -= ranks.get(c, 9) * 0.55
-        return score
-
-    sorted_tris = sorted(triplets, key=lambda tri: (tri_score(tri), tri), reverse=True)
-    dedup = []
-    for tri in sorted_tris:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return " / ".join(dedup)
-
-
-def detect_makuri_alert(exhibition_info):
-    result = {
-        "level": "none",
-        "target_lane": None,
-        "bonus": 0.0,
-        "reasons": [],
-    }
-    if not MAKURI_ALERT_ENABLED:
-        return result
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    if len(times) != 6:
-        return result
-
-    float_times = {}
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_times[lane] = float(t)
-        except Exception:
-            return result
-
-    candidates = []
-    all_best = min(float_times.values())
-    for lane in sorted(MAKURI_ALERT_TARGET_LANES):
-        if lane not in float_times or lane <= 1:
-            continue
-        inner_lanes = [x for x in range(1, lane) if x in float_times]
-        if not inner_lanes:
-            continue
-        inner_best = min(float_times[x] for x in inner_lanes)
-        diff_inner = round(inner_best - float_times[lane], 3)
-        diff_all = round((all_best - float_times[lane]) * -1, 3)
-        # lane faster than others => negative if using all_best - lane_time, so compute separately
-        diff_vs_all = round(min(float_times[x] - float_times[lane] for x in float_times if x != lane), 3)
-        score = 0.0
-        reasons = []
-        if diff_inner >= MAKURI_ALERT_INNER_DIFF:
-            score += 1.2
-            reasons.append(f"{lane}号艇が内側より展示速い")
-        elif diff_inner >= max(MAKURI_ALERT_INNER_DIFF - 0.02, 0.04):
-            score += 0.6
-            reasons.append(f"{lane}号艇が内側よりやや展示速い")
-        if diff_vs_all >= MAKURI_ALERT_ALL_DIFF:
-            score += 1.0
-            reasons.append(f"{lane}号艇が全体でも展示優勢")
-        elif diff_vs_all >= max(MAKURI_ALERT_ALL_DIFF - 0.02, 0.08):
-            score += 0.5
-            reasons.append(f"{lane}号艇が全体でもやや展示優勢")
-        rank = ranks.get(lane, 9)
-        if rank <= 2:
-            score += 0.4
-            reasons.append(f"{lane}号艇の展示順位が上位")
-        if lane in {3, 4, 5}:
-            score += 0.15
-        if score > 0:
-            candidates.append((score, lane, diff_inner, diff_vs_all, reasons))
-
-    if not candidates:
-        return result
-
-    candidates.sort(key=lambda x: (-x[0], -x[2], -x[3], x[1]))
-    score, lane, diff_inner, diff_vs_all, reasons = candidates[0]
-    result["target_lane"] = lane
-    result["reasons"] = reasons[:3]
-    if score >= 2.0:
-        result["level"] = "strong"
-        result["bonus"] = MAKURI_ALERT_STRONG_BONUS
-    else:
-        result["level"] = "mid"
-        result["bonus"] = MAKURI_ALERT_MID_BONUS
-    return result
-
-
-def rebuild_final_selection_with_alerts(base_selection, exhibition_info, tilt_result, makuri_result, senzuke_result):
-    triplets = selection_triplets(base_selection)
-    if not triplets:
-        return ""
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    tilt_lane = tilt_result.get("target_lane") if tilt_result else None
-    makuri_lane = makuri_result.get("target_lane") if makuri_result else None
-    senzuke_lane = senzuke_result.get("target_lane") if senzuke_result else None
-
-    if not tilt_lane and not makuri_lane and not senzuke_lane:
-        return rebuild_final_selection(base_selection, exhibition_info)
-
-    def tri_score(tri):
-        parts = tri.split("-")
-        if len(parts) != 3:
-            return -999
-        try:
-            a, b, c = map(int, parts)
-        except Exception:
-            return -999
-        score = 0.0
-        if makuri_lane:
-            if a == makuri_lane:
-                score += 2.6
-            elif b == makuri_lane:
-                score += 1.1
-            elif c == makuri_lane:
-                score += 0.45
-        if tilt_lane and tilt_lane != makuri_lane:
-            if a == tilt_lane:
-                score += 1.6
-            elif b == tilt_lane:
-                score += 0.8
-            elif c == tilt_lane:
-                score += 0.3
-        if senzuke_lane:
-            if a == 1:
-                score -= 0.75
-            elif b == 1:
-                score -= 0.30
-            if a == senzuke_lane:
-                score += 0.55
-            elif b == senzuke_lane:
-                score += 0.25
-            elif c == senzuke_lane:
-                score += 0.10
-        score -= ranks.get(a, 9) * 1.25
-        score -= ranks.get(b, 9) * 0.85
-        score -= ranks.get(c, 9) * 0.55
-        return score
-
-    sorted_tris = sorted(triplets, key=lambda tri: (tri_score(tri), tri), reverse=True)
-    dedup = []
-    for tri in sorted_tris:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return " / ".join(dedup)
-
-
-def detect_senzuke_alert(exhibition_info):
-    result = {
-        "level": "none",
-        "target_lane": None,
-        "penalty": 0.0,
-        "reasons": [],
-    }
-    if not SENZUKE_ALERT_ENABLED:
-        return result
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    if len(times) != 6 or not ranks:
-        return result
-
-    float_times = {}
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_times[lane] = float(t)
-        except Exception:
-            return result
-
-    candidates = []
-    for lane in sorted(SENZUKE_ALERT_TARGET_LANES):
-        if lane not in float_times:
-            continue
-        rank = ranks.get(lane, 9)
-        inner_lanes = [x for x in range(1, lane) if x in float_times]
-        if not inner_lanes:
-            continue
-        inner_best = min(float_times[x] for x in inner_lanes)
-        diff = round(inner_best - float_times[lane], 3)
-        score = 0.0
-        reasons = []
-
-        if rank <= SENZUKE_STRONG_OUTER_RANK:
-            score += 1.2
-            reasons.append(f"{lane}号艇が展示上位")
-        elif rank <= SENZUKE_STRONG_OUTER_RANK + 1:
-            score += 0.6
-            reasons.append(f"{lane}号艇が展示まずまず")
-
-        if diff >= SENZUKE_TIME_DIFF:
-            score += 1.0
-            reasons.append(f"{lane}号艇が内側より展示良化")
-        elif diff >= max(SENZUKE_TIME_DIFF - 0.02, 0.02):
-            score += 0.5
-            reasons.append(f"{lane}号艇が内側よりやや展示良化")
-
-        if lane in {5, 6}:
-            score += 0.25
-        elif lane == 4:
-            score += 0.10
-
-        if score > 0:
-            candidates.append((score, lane, diff, reasons))
-
-    if not candidates:
-        return result
-
-    candidates.sort(key=lambda x: (-x[0], -x[2], -x[1]))
-    score, lane, diff, reasons = candidates[0]
-    result["target_lane"] = lane
-    result["reasons"] = reasons[:3]
-    if score >= 2.0:
-        result["level"] = "strong"
-        result["penalty"] = SENZUKE_STRONG_PENALTY
-    else:
-        result["level"] = "mid"
-        result["penalty"] = SENZUKE_MID_PENALTY
-    return result
-
-
-def apply_latest_bonus_cap(base_ai_score, analyzed_score, extra_bonus):
-    base_ai_score = float(base_ai_score or 0)
-    analyzed_score = float(analyzed_score or 0)
-    extra_bonus = float(extra_bonus or 0)
-
-    if extra_bonus > LATEST_EXTRA_POSITIVE_CAP:
-        extra_bonus = LATEST_EXTRA_POSITIVE_CAP
-
-    final_score = analyzed_score + extra_bonus
-    max_score = base_ai_score + LATEST_TOTAL_POSITIVE_CAP
-    if final_score > max_score:
-        final_score = max_score
-    return round(final_score, 2)
-
-
-
-
-def combine_overlap_bonus(tilt_result, makuri_result):
-    tilt_bonus = float((tilt_result or {}).get("bonus", 0) or 0)
-    makuri_bonus = float((makuri_result or {}).get("bonus", 0) or 0)
-    tilt_lane = (tilt_result or {}).get("target_lane")
-    makuri_lane = (makuri_result or {}).get("target_lane")
-
-    if tilt_bonus <= 0 and makuri_bonus <= 0:
-        return 0.0
-
-    if tilt_lane and makuri_lane and tilt_lane == makuri_lane:
-        hi = max(tilt_bonus, makuri_bonus)
-        lo = min(tilt_bonus, makuri_bonus)
-        return round(hi + lo * 0.35, 3)
-
-    return round(tilt_bonus + makuri_bonus, 3)
-
-
-def clamp_final_score(base_ai_score, final_score):
-    base_ai_score = float(base_ai_score or 0)
-    final_score = float(final_score or 0)
-    max_score = base_ai_score + LATEST_TOTAL_POSITIVE_CAP
-    min_score = base_ai_score - LATEST_TOTAL_NEGATIVE_CAP
-    if final_score > max_score:
-        final_score = max_score
-    if final_score < min_score:
-        final_score = min_score
-    return round(final_score, 2)
-
-
-def analyze_latest(base_ai_score, exhibition_info):
+def analyze_latest(base_ai_score, exhibition_info, weather_info=None):
     score = float(base_ai_score or 0)
     reasons = []
+    weather_info = weather_info or {}
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
@@ -910,6 +584,25 @@ def analyze_latest(base_ai_score, exhibition_info):
             elif spread >= 0.12:
                 score += 0.12
                 reasons.append("展示差ややあり")
+
+
+    wind = weather_info.get("wind_speed")
+    wave = weather_info.get("wave_height")
+    water_state_score = float(weather_info.get("water_state_score") or 0)
+    if water_state_score != 0:
+        score += water_state_score
+        if water_state_score > 0:
+            reasons.append("気象安定")
+        else:
+            reasons.append("気象荒れ気味")
+    if weather_info.get("wind_type") == "向い風":
+        reasons.append("向い風")
+    elif weather_info.get("wind_type") == "追い風":
+        reasons.append("追い風")
+    if isinstance(wind, (int, float)) and wind >= 7:
+        reasons.append(f"風速{wind:g}m")
+    if isinstance(wave, (int, float)) and wave >= 5:
+        reasons.append(f"波高{wave:g}cm")
 
     return {
         "final_ai_score": round(score, 2),
@@ -953,72 +646,8 @@ def rebuild_final_selection(base_selection, exhibition_info):
     return " / ".join(dedup)
 
 
-
-
-def split_reason_items(text):
-    if not text:
-        return []
-    return [x.strip() for x in str(text).split(" / ") if str(x).strip()]
-
-
-def join_reason_section(label, items, max_items=3):
-    clean=[]
-    seen=set()
-    for item in items:
-        s=str(item or '').strip()
-        if not s or s in seen:
-            continue
-        seen.add(s)
-        clean.append(s)
-    if not clean:
-        return ''
-    return f"{label}[" + "、".join(clean[:max_items]) + "]"
-
-
-def build_grouped_reason_text(base_reason_text, analyzed, tilt_result, makuri_result, senzuke_result):
-    sections=[]
-
-    base_items = split_reason_items(base_reason_text)
-    sec = join_reason_section('朝要因', base_items, max_items=3)
-    if sec:
-        sections.append(sec)
-
-    display_items = split_reason_items((analyzed or {}).get('latest_reason_text', ''))
-    sec = join_reason_section('展示要因', display_items, max_items=3)
-    if sec:
-        sections.append(sec)
-
-    attack_items=[]
-    if (tilt_result or {}).get('level') == 'strong':
-        lane = tilt_result.get('target_lane')
-        attack_items.append(f'{lane}号艇チルト系外攻め強め')
-    elif (tilt_result or {}).get('level') == 'mid':
-        lane = tilt_result.get('target_lane')
-        attack_items.append(f'{lane}号艇チルト系外攻め注意')
-
-    if (makuri_result or {}).get('level') == 'strong':
-        lane = makuri_result.get('target_lane')
-        attack_items.append(f'{lane}号艇まくり頭警戒')
-    elif (makuri_result or {}).get('level') == 'mid':
-        lane = makuri_result.get('target_lane')
-        attack_items.append(f'{lane}号艇まくり注意')
-
-    if (senzuke_result or {}).get('level') == 'strong':
-        lane = senzuke_result.get('target_lane')
-        attack_items.append(f'{lane}号艇で進入乱れ警戒')
-    elif (senzuke_result or {}).get('level') == 'mid':
-        lane = senzuke_result.get('target_lane')
-        attack_items.append(f'{lane}号艇外前づけ注意')
-
-    sec = join_reason_section('外攻め要因', attack_items, max_items=4)
-    if sec:
-        sections.append(sec)
-
-    return ' / '.join(sections[:3])
-
-
 def build_candidates():
-    log("[collector_version] collector_latest_senzuke_tilt_makuri_v8_reason_groups")
+    log("[collector_version] collector_latest_weather_v2")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1093,30 +722,18 @@ def build_candidates():
 
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
+        weather_info = beforeinfo.get("weather", {})
 
-        analyzed = analyze_latest(base_ai_score, exhibition_info)
-        tilt_result = detect_tilt_jump_alert(exhibition_info)
-        makuri_result = detect_makuri_alert(exhibition_info)
-        senzuke_result = detect_senzuke_alert(exhibition_info)
+        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info)
 
-        extra_bonus = combine_overlap_bonus(tilt_result, makuri_result)
-        final_ai_score = apply_latest_bonus_cap(
-            base_ai_score,
-            analyzed["final_ai_score"],
-            extra_bonus,
-        )
-        final_ai_score = round(final_ai_score - float(senzuke_result.get("penalty", 0) or 0), 2)
-        final_ai_score = clamp_final_score(base_ai_score, final_ai_score)
+        latest_reason_parts = []
+        if base_reason_text:
+            latest_reason_parts.append(f"朝:{base_reason_text}")
+        if analyzed["latest_reason_text"]:
+            latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
-        latest_reason_text = build_grouped_reason_text(
-            base_reason_text,
-            analyzed,
-            tilt_result,
-            makuri_result,
-            senzuke_result,
-        )
-
-        final_ai_selection = rebuild_final_selection_with_alerts(base_ai_selection, exhibition_info, tilt_result, makuri_result, senzuke_result)
+        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info)
+        final_ai_score = analyzed["final_ai_score"]
 
         candidate = {
             "race_date": today_text(),
@@ -1129,7 +746,7 @@ def build_candidates():
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
             "final_rank": score_to_final_rank(final_ai_score),
-            "latest_reason_text": latest_reason_text,
+            "latest_reason_text": " / ".join(latest_reason_parts[:8]),
             "latest_updated_at": jst_now_str(),
         }
         results.append(candidate)
