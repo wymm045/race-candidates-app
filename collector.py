@@ -953,8 +953,72 @@ def rebuild_final_selection(base_selection, exhibition_info):
     return " / ".join(dedup)
 
 
+
+
+def split_reason_items(text):
+    if not text:
+        return []
+    return [x.strip() for x in str(text).split(" / ") if str(x).strip()]
+
+
+def join_reason_section(label, items, max_items=3):
+    clean=[]
+    seen=set()
+    for item in items:
+        s=str(item or '').strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        clean.append(s)
+    if not clean:
+        return ''
+    return f"{label}[" + "、".join(clean[:max_items]) + "]"
+
+
+def build_grouped_reason_text(base_reason_text, analyzed, tilt_result, makuri_result, senzuke_result):
+    sections=[]
+
+    base_items = split_reason_items(base_reason_text)
+    sec = join_reason_section('朝要因', base_items, max_items=3)
+    if sec:
+        sections.append(sec)
+
+    display_items = split_reason_items((analyzed or {}).get('latest_reason_text', ''))
+    sec = join_reason_section('展示要因', display_items, max_items=3)
+    if sec:
+        sections.append(sec)
+
+    attack_items=[]
+    if (tilt_result or {}).get('level') == 'strong':
+        lane = tilt_result.get('target_lane')
+        attack_items.append(f'{lane}号艇チルト系外攻め強め')
+    elif (tilt_result or {}).get('level') == 'mid':
+        lane = tilt_result.get('target_lane')
+        attack_items.append(f'{lane}号艇チルト系外攻め注意')
+
+    if (makuri_result or {}).get('level') == 'strong':
+        lane = makuri_result.get('target_lane')
+        attack_items.append(f'{lane}号艇まくり頭警戒')
+    elif (makuri_result or {}).get('level') == 'mid':
+        lane = makuri_result.get('target_lane')
+        attack_items.append(f'{lane}号艇まくり注意')
+
+    if (senzuke_result or {}).get('level') == 'strong':
+        lane = senzuke_result.get('target_lane')
+        attack_items.append(f'{lane}号艇で進入乱れ警戒')
+    elif (senzuke_result or {}).get('level') == 'mid':
+        lane = senzuke_result.get('target_lane')
+        attack_items.append(f'{lane}号艇外前づけ注意')
+
+    sec = join_reason_section('外攻め要因', attack_items, max_items=4)
+    if sec:
+        sections.append(sec)
+
+    return ' / '.join(sections[:3])
+
+
 def build_candidates():
-    log("[collector_version] collector_latest_senzuke_tilt_makuri_v7_balanced")
+    log("[collector_version] collector_latest_senzuke_tilt_makuri_v8_reason_groups")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1044,23 +1108,13 @@ def build_candidates():
         final_ai_score = round(final_ai_score - float(senzuke_result.get("penalty", 0) or 0), 2)
         final_ai_score = clamp_final_score(base_ai_score, final_ai_score)
 
-        latest_reason_parts = []
-        if base_reason_text:
-            latest_reason_parts.append(f"朝:{base_reason_text}")
-        if analyzed["latest_reason_text"]:
-            latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
-        if tilt_result.get("level") == "strong":
-            latest_reason_parts.append(f"チルト警戒:{tilt_result['target_lane']}号艇外攻め強め")
-        elif tilt_result.get("level") == "mid":
-            latest_reason_parts.append(f"チルト警戒:{tilt_result['target_lane']}号艇外攻め注意")
-        if makuri_result.get("level") == "strong":
-            latest_reason_parts.append(f"まくり警戒:{makuri_result['target_lane']}号艇頭警戒")
-        elif makuri_result.get("level") == "mid":
-            latest_reason_parts.append(f"まくり警戒:{makuri_result['target_lane']}号艇注意")
-        if senzuke_result.get("level") == "strong":
-            latest_reason_parts.append(f"前づけ警戒:{senzuke_result['target_lane']}号艇で進入乱れ警戒")
-        elif senzuke_result.get("level") == "mid":
-            latest_reason_parts.append(f"前づけ警戒:{senzuke_result['target_lane']}号艇外前づけ注意")
+        latest_reason_text = build_grouped_reason_text(
+            base_reason_text,
+            analyzed,
+            tilt_result,
+            makuri_result,
+            senzuke_result,
+        )
 
         final_ai_selection = rebuild_final_selection_with_alerts(base_ai_selection, exhibition_info, tilt_result, makuri_result, senzuke_result)
 
@@ -1075,7 +1129,7 @@ def build_candidates():
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
             "final_rank": score_to_final_rank(final_ai_score),
-            "latest_reason_text": " / ".join(latest_reason_parts[:8]),
+            "latest_reason_text": latest_reason_text,
             "latest_updated_at": jst_now_str(),
         }
         results.append(candidate)
