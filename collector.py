@@ -43,8 +43,13 @@ RETRY_SLEEP_SEC = 0.8
 OFFICIAL_MAX_WORKERS = 4
 BEFOREINFO_MAX_WORKERS = 6
 
-ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "12"))
+ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
+
+# kyoteibiyori系 直前補正 第1弾: まくりアラート相当
+MAKURI_ALERT_ENABLED = os.environ.get("MAKURI_ALERT_ENABLED", "1").strip() == "1"
+MAKURI_ALERT_INNER_DIFF = float(os.environ.get("MAKURI_ALERT_INNER_DIFF", "0.07"))
+MAKURI_ALERT_ALL_DIFF = float(os.environ.get("MAKURI_ALERT_ALL_DIFF", "0.10"))
 
 JCD_NAME_MAP = {
     "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川",
@@ -521,10 +526,17 @@ def analyze_latest(base_ai_score, exhibition_info):
                 score += 0.12
                 reasons.append("展示差ややあり")
 
+    makuri_result = analyze_makuri_alert(exhibition_info)
+    if makuri_result["score_adjust"]:
+        score += makuri_result["score_adjust"]
+        if makuri_result["reason_text"]:
+            reasons.append(makuri_result["reason_text"])
+
     return {
         "final_ai_score": round(score, 2),
         "final_ai_rating": score_to_ai_rating(score),
-        "latest_reason_text": " / ".join(reasons[:6]),
+        "latest_reason_text": " / ".join(reasons[:8]),
+        "makuri_result": makuri_result,
     }
 
 
@@ -563,8 +575,146 @@ def rebuild_final_selection(base_selection, exhibition_info):
     return " / ".join(dedup)
 
 
+
+
+def analyze_makuri_alert(exhibition_info):
+    if not MAKURI_ALERT_ENABLED:
+        return {
+            "score_adjust": 0.0,
+            "reason_text": "",
+            "head_lanes": [],
+            "alert_rows": [],
+        }
+
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    if len(times) != 6:
+        return {
+            "score_adjust": 0.0,
+            "reason_text": "",
+            "head_lanes": [],
+            "alert_rows": [],
+        }
+
+    time_map = {}
+    for lane, raw in enumerate(times, start=1):
+        try:
+            time_map[lane] = float(raw)
+        except Exception:
+            return {
+                "score_adjust": 0.0,
+                "reason_text": "",
+                "head_lanes": [],
+                "alert_rows": [],
+            }
+
+    alert_rows = []
+    head_lanes = []
+    score_adjust = 0.0
+
+    for lane in range(2, 7):
+        lane_time = time_map[lane]
+        inner_times = [time_map[x] for x in range(1, lane)]
+        if not inner_times:
+            continue
+
+        inner_best = min(inner_times)
+        all_best_other = min(time_map[x] for x in range(1, 7) if x != lane)
+        inner_diff = round(inner_best - lane_time, 2)
+        all_diff = round(all_best_other - lane_time, 2)
+
+        if inner_diff < MAKURI_ALERT_INNER_DIFF and all_diff < MAKURI_ALERT_ALL_DIFF:
+            continue
+
+        is_strong = all_diff >= MAKURI_ALERT_ALL_DIFF
+        is_inner = inner_diff >= MAKURI_ALERT_INNER_DIFF
+
+        add = 0.22
+        if lane in (3, 4, 5):
+            add += 0.06
+        if is_inner:
+            add += 0.12
+        if is_strong:
+            add += 0.10
+
+        score_adjust += add
+        head_lanes.append(lane)
+
+        if is_strong and is_inner:
+            label = f"{lane}号艇まくり強警戒"
+        elif is_strong:
+            label = f"{lane}号艇全艇より展示優勢"
+        else:
+            label = f"{lane}号艇内側より展示優勢"
+
+        alert_rows.append({
+            "lane": lane,
+            "inner_diff": inner_diff,
+            "all_diff": all_diff,
+            "label": label,
+        })
+
+    reason_parts = []
+    for row in alert_rows[:3]:
+        detail = []
+        if row["inner_diff"] >= MAKURI_ALERT_INNER_DIFF:
+            detail.append(f"内+{row['inner_diff']:.2f}")
+        if row["all_diff"] >= MAKURI_ALERT_ALL_DIFF:
+            detail.append(f"全+{row['all_diff']:.2f}")
+        joined = " ".join(detail)
+        reason_parts.append(f"{row['label']} {joined}".strip())
+
+    return {
+        "score_adjust": round(score_adjust, 2),
+        "reason_text": " / ".join(reason_parts[:3]),
+        "head_lanes": head_lanes[:3],
+        "alert_rows": alert_rows,
+    }
+
+
+def rebuild_final_selection_with_alert(base_selection, exhibition_info, makuri_result):
+    triplets = selection_triplets(base_selection)
+    if not triplets:
+        return ""
+
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    head_lanes = makuri_result.get("head_lanes", []) if makuri_result else []
+
+    if not ranks and not head_lanes:
+        return " / ".join(triplets[:6])
+
+    def triplet_score(tri):
+        parts = tri.split("-")
+        if len(parts) != 3:
+            return -999
+        try:
+            a, b, c = map(int, parts)
+        except Exception:
+            return -999
+
+        score = 0.0
+        score += 20 - (ranks.get(a, 9) * 1.3 + ranks.get(b, 9) * 0.9 + ranks.get(c, 9) * 0.6)
+
+        if a in head_lanes:
+            score += 6.0
+        if b in head_lanes:
+            score += 1.4
+        if c in head_lanes:
+            score += 0.7
+
+        return score
+
+    ranked = sorted(triplets, key=lambda tri: (triplet_score(tri), tri), reverse=True)
+    dedup = []
+    for tri in ranked:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return " / ".join(dedup)
+
+
 def build_candidates():
-    log("[collector_version] collector_latest_base_link_v1")
+    log("[collector_version] collector_latest_base_link_v2_makuri")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -648,7 +798,11 @@ def build_candidates():
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
-        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info)
+        final_ai_selection = rebuild_final_selection_with_alert(
+            base_ai_selection,
+            exhibition_info,
+            analyzed.get("makuri_result", {}),
+        )
         final_ai_score = analyzed["final_ai_score"]
 
         candidate = {
