@@ -140,6 +140,7 @@ def yen(n):
     except Exception:
         return "0円"
 
+
 def lane_color_class(lane):
     try:
         lane_num = int(lane)
@@ -251,6 +252,7 @@ def get_existing_row_map_by_race(race_date):
     return existing_map
 
 
+
 def get_saved_state_map_by_race(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -295,6 +297,7 @@ def get_saved_state_map_by_race(race_date):
     return saved_map
 
 
+
 def parse_exhibition_rank_map(rank_text):
     result = {}
     s = (rank_text or "").strip()
@@ -312,6 +315,7 @@ def parse_exhibition_rank_map(rank_text):
     return result
 
 
+
 def exhibition_rank_class(rank):
     try:
         r = int(rank)
@@ -326,6 +330,7 @@ def exhibition_rank_class(rank):
     if r >= 5:
         return "ex-rank-box ex-rank-low"
     return "ex-rank-box"
+
 
 
 def render_exhibition_rank_boxes(rank_text):
@@ -345,6 +350,7 @@ def render_exhibition_rank_boxes(rank_text):
     return f'<div class="ex-rank-grid">{boxes}</div>'
 
 
+
 def render_exhibition_time_chips(exhibition_list):
     if not exhibition_list:
         return '<div class="ex-chip-empty">未取得</div>'
@@ -357,6 +363,7 @@ def render_exhibition_time_chips(exhibition_list):
         </div>
         '''
     return f'<div class="ex-chip-wrap">{chips}</div>'
+
 
 
 def parse_player_names_map(player_names_text):
@@ -379,6 +386,7 @@ def parse_player_names_map(player_names_text):
     return result
 
 
+
 def render_player_names_html(player_names_text):
     player_map = parse_player_names_map(player_names_text)
     if not player_map:
@@ -394,6 +402,7 @@ def render_player_names_html(player_names_text):
         </div>
         '''
     return f'<div class="player-chip-wrap">{items}</div>'
+
 
 
 def render_player_rank_summary_html(player_names_text, class_history_text):
@@ -437,6 +446,7 @@ def render_player_rank_summary_html(player_names_text, class_history_text):
     return f'<div class="player-rank-wrap">{rows_html}</div>'
 
 
+
 def parse_class_history_rows(class_history_text):
     rows = []
     s = str(class_history_text or "").strip()
@@ -464,6 +474,7 @@ def parse_class_history_rows(class_history_text):
     return rows
 
 
+
 def render_class_history_blocks(class_history_text):
     rows = parse_class_history_rows(class_history_text)
     if not rows:
@@ -487,6 +498,7 @@ def render_class_history_blocks(class_history_text):
     return f'<div class="class-history-wrap">{html}</div>'
 
 
+
 def parse_lane_score_items(lane_score_text):
     items = []
     s = str(lane_score_text or "").strip()
@@ -505,6 +517,7 @@ def parse_lane_score_items(lane_score_text):
     return items
 
 
+
 def lane_score_class(score):
     if score >= 1.5:
         return "lane-score-chip lane-score-verygood"
@@ -513,6 +526,7 @@ def lane_score_class(score):
     if score <= -0.4:
         return "lane-score-chip lane-score-bad"
     return "lane-score-chip"
+
 
 
 def render_lane_score_chips(lane_score_text):
@@ -526,11 +540,13 @@ def render_lane_score_chips(lane_score_text):
     return f'<div class="lane-score-wrap">{chips}</div>'
 
 
+
 def parse_detail_material_list(detail_text):
     s = str(detail_text or "").strip()
     if not s:
         return []
     return [x.strip() for x in s.split("/") if x.strip()]
+
 
 
 def render_detail_material_chips(detail_text):
@@ -539,6 +555,7 @@ def render_detail_material_chips(detail_text):
         return '<div class="detail-chip-empty">未取得</div>'
     chips = "".join([f'<div class="detail-chip">{item}</div>' for item in items])
     return f'<div class="detail-chip-wrap">{chips}</div>'
+
 
 
 def final_rank_badge(rank_text):
@@ -554,6 +571,7 @@ def final_rank_badge(rank_text):
     return ""
 
 
+
 def render_ai_rating_filter_options(current_value):
     html = '<option value="">すべて</option>'
     for value in AI_RATING_OPTIONS:
@@ -564,11 +582,13 @@ def render_ai_rating_filter_options(current_value):
     return html
 
 
+
 def safe_redirect_path(path, default="/"):
     s = str(path or "").strip()
     if not s.startswith("/") or s.startswith("//"):
         return default
     return s
+
 
 
 def build_selection_compare_data(official_text, ai_text):
@@ -581,6 +601,7 @@ def build_selection_compare_data(official_text, ai_text):
         "ai_items": ai_items,
         "overlap": overlap,
     }
+
 
 
 def render_selection_column(
@@ -633,6 +654,7 @@ def render_selection_column(
     return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
 
 
+
 def render_selection_compare_html(r, race_id_key):
     official_text = r.get("selection", "")
     ai_text = r.get("ai_selection", "")
@@ -683,6 +705,7 @@ def render_selected_summary_html(selected_text):
     return f'<div class="picked-chip-wrap">{chips}</div>'
 
 
+
 def get_races_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -701,6 +724,7 @@ def get_races_by_date(race_date):
     return rows
 
 
+
 def get_race_by_id(race_id):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -711,8 +735,10 @@ def get_race_by_id(race_id):
     return row
 
 
+
 def get_today_races():
     return get_races_by_date(today_text())
+
 
 
 def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
@@ -724,13 +750,15 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
     return rows
 
 
+
 def delete_today_races():
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM races WHERE race_date = %s", (today_text(),))
+    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (today_text(),))
     conn.commit()
     cur.close()
     conn.close()
+
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
@@ -756,6 +784,7 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
     )
 
 
+
 def delete_race(race_id):
     conn = db_connect()
     cur = conn.cursor()
@@ -766,6 +795,7 @@ def delete_race(race_id):
     conn.close()
     log(f"delete_race race_id={race_id} deleted={deleted}")
     return deleted
+
 
 
 def delete_races_bulk(race_ids):
@@ -781,6 +811,7 @@ def delete_races_bulk(race_ids):
     conn.close()
     log(f"delete_races_bulk race_ids={race_ids} deleted={deleted}")
     return deleted
+
 
 
 def get_summary_by_date(race_date):
@@ -825,6 +856,7 @@ def get_summary_by_date(race_date):
         "roi": roi,
         "last_imported_at": row["last_imported_at"] or "",
     }
+
 
 
 def get_group_summary(race_date, group_key):
@@ -877,6 +909,7 @@ def get_group_summary(race_date, group_key):
     return results
 
 
+
 def get_history_dates():
     conn = db_connect()
     cur = conn.cursor()
@@ -887,8 +920,10 @@ def get_history_dates():
     return [row[0] for row in rows]
 
 
+
 def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
+
 
 
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
@@ -902,6 +937,7 @@ def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_onl
     if hit_only:
         filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
     return filtered
+
 
 
 def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
@@ -919,6 +955,7 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
         selected = "selected" if race_no == selected_race_no else ""
         race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
     return venue_options, race_no_options, venues, race_nos
+
 
 
 def build_card_html(r, is_history=False, race_date=""):
@@ -956,8 +993,6 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_detail_text = normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("ai_score"), 0)
     ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
-    class_history_html = render_class_history_blocks(r.get("class_history_text", ""))
-    player_names_html = render_player_names_html(r.get("player_names_text", ""))
     player_rank_summary_html = render_player_rank_summary_html(r.get("player_names_text", ""), r.get("class_history_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
@@ -988,7 +1023,7 @@ def build_card_html(r, is_history=False, race_date=""):
         '''
 
     return f'''
-    <div class="{card_class}" data-race-card-id="{race_id_key}">
+    <div class="{card_class}" data-race-card-id="{race_id_key}" id="race-card-{r['id']}">
       {top_checkbox}
       <div class="card-top card-top-main">
         <div class="card-top-left">
@@ -1061,6 +1096,7 @@ def build_card_html(r, is_history=False, race_date=""):
     '''
 
 
+
 def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
@@ -1130,6 +1166,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     return render_layout("今日の買い候補", content)
 
 
+
 def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
     def make_table(rows):
         if not rows:
@@ -1171,11 +1208,32 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
           <div class="summary-box"><div class="summary-label">1点あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_points']) if summary['total_points'] else 0)}</div></div>
         </div>
       </div>
-      <div class="stats-grid"><div><div class="header"><div class="section-title">公式星別集計</div></div>{make_table(by_rating)}</div><div><div class="header"><div class="section-title">AI補正星別集計</div></div>{make_table(by_ai_rating)}</div></div>
-      <div class="stats-grid"><div><div class="header"><div class="section-title">最終判定別集計</div></div>{make_table(by_final_rank)}</div><div><div class="header"><div class="section-title">会場別集計</div></div>{make_table(by_venue)}</div></div>
+
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">公式星別集計</div></div>
+          {make_table(by_rating)}
+        </div>
+        <div>
+          <div class="header"><div class="section-title">AI補正星別集計</div></div>
+          {make_table(by_ai_rating)}
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">最終判定別集計</div></div>
+          {make_table(by_final_rank)}
+        </div>
+        <div>
+          <div class="header"><div class="section-title">会場別集計</div></div>
+          {make_table(by_venue)}
+        </div>
+      </div>
     </div>
     '''
     return render_layout("今日の集計", content)
+
 
 
 def render_history_page(date_summaries):
@@ -1189,6 +1247,7 @@ def render_history_page(date_summaries):
             items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div></div></div>'''
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
+
 
 
 def render_history_detail_page(
@@ -1405,32 +1464,10 @@ def render_layout(title, body_html):
       }
       .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
       .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
-
-      .selection-choice-body-overlap{
-        background:#f3fbf6;
-        border-color:#bfe7cc;
-        color:#5f7a68;
-      }
-      .selection-choice-input:checked + .selection-choice-body-overlap{
-        background:#dcfae6;
-        border-color:#6fd69a;
-        color:#05603a;
-        box-shadow:0 0 0 2px rgba(5,96,58,.08) inset;
-      }
-      .selection-choice-input:checked + .selection-choice-body-official{
-        background:#e7f0ff;
-        border-color:#8fb4ff;
-        color:#124fc2;
-        box-shadow:0 0 0 2px rgba(18,79,194,.08) inset;
-      }
-      .selection-choice-input:checked + .selection-choice-body-ai{
-        background:#fff1db;
-        border-color:#f2b96b;
-        color:#a64b00;
-        box-shadow:0 0 0 2px rgba(166,75,0,.08) inset;
-      }
-
-      
+      .selection-choice-body-overlap{background:#f3fbf6;border-color:#bfe7cc;color:#5f7a68}
+      .selection-choice-input:checked + .selection-choice-body-overlap{background:#dcfae6;border-color:#6fd69a;color:#05603a;box-shadow:0 0 0 2px rgba(5,96,58,.08) inset}
+      .selection-choice-input:checked + .selection-choice-body-official{background:#e7f0ff;border-color:#8fb4ff;color:#124fc2;box-shadow:0 0 0 2px rgba(18,79,194,.08) inset}
+      .selection-choice-input:checked + .selection-choice-body-ai{background:#fff1db;border-color:#f2b96b;color:#a64b00;box-shadow:0 0 0 2px rgba(166,75,0,.08) inset}
       .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 4px;border-radius:2px;font-weight:800;font-size:14px;line-height:1;border:1px solid rgba(0,0,0,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
       .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
       .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
@@ -1457,7 +1494,7 @@ def render_layout(title, body_html):
       .player-rank-lane{flex:0 0 auto}
       .player-rank-name{font-weight:800;color:#172033;line-height:1.35;word-break:break-word}
       .player-rank-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
-.picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
@@ -1516,54 +1553,14 @@ def render_layout(title, body_html):
       .jump-empty{color:#98a2b3;font-size:13px}
       .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
       .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
-      .bottom-nav{
-        position:fixed;
-        left:0;
-        right:0;
-        bottom:0;
-        display:grid;
-        grid-template-columns:repeat(3,1fr);
-        background:#fff;
-        border-top:1px solid #eaecf0;
-        padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));
-        z-index:50;
-      }
+      .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));z-index:50}
       .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
       .bottom-nav-item.active{color:#175cd3;font-weight:800}
-
-      .player-rank-row{
-        display:grid;
-        grid-template-columns:minmax(180px, 260px) minmax(360px, 1fr);
-        gap:12px;
-        align-items:center;
-      }
-      .player-rank-main{
-        min-width:0;
-        display:flex;
-        align-items:center;
-        gap:10px;
-      }
-      .player-rank-name{
-        min-width:0;
-        font-weight:800;
-        line-height:1.35;
-        word-break:keep-all;
-        overflow-wrap:anywhere;
-      }
-      .player-rank-chips{
-        display:grid;
-        grid-template-columns:repeat(4, minmax(72px, max-content));
-        gap:8px;
-        min-width:0;
-        justify-content:start;
-      }
-      .player-rank-chips .class-chip{
-        min-width:72px;
-        padding:8px 12px;
-        white-space:nowrap;
-        justify-content:center;
-      }
-
+      .player-rank-row{display:grid;grid-template-columns:minmax(180px, 260px) minmax(360px, 1fr);gap:12px;align-items:center}
+      .player-rank-main{min-width:0;display:flex;align-items:center;gap:10px}
+      .player-rank-name{min-width:0;font-weight:800;line-height:1.35;word-break:keep-all;overflow-wrap:anywhere}
+      .player-rank-chips{display:grid;grid-template-columns:repeat(4, minmax(72px, max-content));gap:8px;min-width:0;justify-content:start}
+      .player-rank-chips .class-chip{min-width:72px;padding:8px 12px;white-space:nowrap;justify-content:center}
       @media (max-width: 760px){
         html{background:#f5f7fb}
         .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
@@ -1605,7 +1602,6 @@ def render_layout(title, body_html):
         .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
         .bottom-nav-item{border-radius:12px}
         .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
-
       }
     </style>
     """
@@ -1619,7 +1615,7 @@ def render_layout(title, body_html):
       function parseSelectionText(text){
         return String(text || '')
           .split(' / ')
-          .map(x => String(x || '').replace(/\s+/g, '').trim())
+          .map(x => String(x || '').replace(/\\s+/g, '').trim())
           .filter(Boolean);
       }
 
@@ -1632,6 +1628,18 @@ def render_layout(title, body_html):
           .filter(x => x.checked)
           .map(x => (x.getAttribute('data-pick-value') || '').trim())
           .filter(Boolean);
+      }
+
+      function renderColoredPickHtml(value){
+        const s = String(value || '').replace(/\\s+/g, '').trim();
+        if(!s){ return ''; }
+        return '<span class="pick-inline">' + s.split('-').map((part, idx) => {
+          const sep = idx > 0 ? '<span class="pick-sep">-</span>' : '';
+          if(/^\\d+$/.test(part)){
+            return sep + '<span class="lane-color lane-color-' + part + '">' + part + '</span>';
+          }
+          return sep + '<span class="pick-plain">' + part + '</span>';
+        }).join('') + '</span>';
       }
 
       function setCheckedValuesFromHidden(raceId){
@@ -1674,7 +1682,7 @@ def render_layout(title, body_html):
           if(values.length === 0){
             summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
           }else{
-            summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + v + '</div>').join('') + '</div>';
+            summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + renderColoredPickHtml(v) + '</div>').join('') + '</div>';
           }
         }
 
@@ -1743,9 +1751,11 @@ def render_layout(title, body_html):
     return """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>{}</title>{}</head><body><div class="container">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
 
+
 def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
+
 
 
 def init_db():
@@ -1825,6 +1835,7 @@ def init_db():
     conn.close()
 
 
+
 def replace_today_candidates(cleaned):
     if not cleaned:
         return {'inserted': 0, 'updated': 0, 'deleted': 0, 'frozen_closed': 0}
@@ -1835,7 +1846,7 @@ def replace_today_candidates(cleaned):
 
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute('DELETE FROM races WHERE race_date = %s', (race_date,))
+    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
     deleted = cur.rowcount
 
     inserted = 0
@@ -1980,6 +1991,7 @@ def index():
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
     )
+
 
 
 def parse_selected_from_request():
@@ -2143,6 +2155,7 @@ def import_candidates():
                 "ai_confidence": str(r.get("ai_confidence", "")).strip(),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text", "")).strip(),
                 "class_history_text": str(r.get("class_history_text", "")).strip(),
+                "player_names_text": str(r.get("player_names_text", "")).strip(),
             }
         )
     if not cleaned:
