@@ -192,17 +192,78 @@ def get_selected_total_amount(race):
     )
 
 
-def get_saved_state_map_by_race(` を探す
-#    → 下の `get_saved_state_map_by_race` に丸ごと置き換え
-# 2. app.py に `def get_existing_row_map_by_race(` が無ければ追加
-#    → 下の関数をそのまま追加
-# 3. app.py で `def replace_today_candidates(` を探す
-#    → 下の `replace_today_candidates` に丸ごと置き換え
-#
-# これで「締切後にAI予想が変わる問題」をかなり防げます。
-# 締切後のレースは、前回保存されていた予想値を優先して保持します。
-#
-# 反映後は app.py を再デプロイ / 再起動してください。
+def get_saved_state_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY
+            CASE
+                WHEN hit = 1 THEN 4
+                WHEN purchased = 1 THEN 3
+                WHEN payout > 0 THEN 2
+                WHEN COALESCE(memo, '') <> '' THEN 1
+                ELSE 0
+            END DESC,
+            id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    saved_map = {}
+    for row in rows:
+        key = (
+            str(row['race_date']).strip(),
+            str(row['venue']).strip(),
+            str(row['race_no']).strip(),
+        )
+        if key in saved_map:
+            continue
+        saved_map[key] = {
+            'purchased': int(row.get('purchased') or 0),
+            'hit': int(row.get('hit') or 0),
+            'payout': int(row.get('payout') or 0),
+            'memo': str(row.get('memo') or '').strip(),
+            'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
+        }
+    return saved_map
+
+
+def get_existing_row_map_by_race(race_date):
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT *
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    existing_map = {}
+    for row in rows:
+        key = (
+            str(row['race_date']).strip(),
+            str(row['venue']).strip(),
+            str(row['race_no']).strip(),
+        )
+        if key not in existing_map:
+            existing_map[key] = row
+    return existing_map
+
 
 def parse_exhibition_rank_map(rank_text):
     result = {}
@@ -1437,13 +1498,118 @@ def init_db():
     conn.close()
 
 
-def replace_today_candidates(` を探す
-#    → 下の `replace_today_candidates` に丸ごと置き換え
-#
-# これで「締切後にAI予想が変わる問題」をかなり防げます。
-# 締切後のレースは、前回保存されていた予想値を優先して保持します。
-#
-# 反映後は app.py を再デプロイ / 再起動してください。
+def replace_today_candidates(cleaned):
+    if not cleaned:
+        return {'inserted': 0, 'updated': 0, 'deleted': 0, 'frozen_closed': 0}
+
+    race_date = str(cleaned[0]['race_date']).strip()
+    saved_map = get_saved_state_map_by_race(race_date)
+    existing_map = get_existing_row_map_by_race(race_date)
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute('DELETE FROM races WHERE race_date = %s', (race_date,))
+    deleted = cur.rowcount
+
+    inserted = 0
+    updated = 0
+    frozen_closed = 0
+    imported_at = jst_now_str()
+
+    freeze_fields = [
+        'time',
+        'rating', 'bet_type', 'selection', 'amount',
+        'ai_score', 'ai_rating', 'ai_label', 'final_rank',
+        'ai_reasons', 'exhibition', 'exhibition_rank', 'motor_rank',
+        'ai_detail', 'ai_selection', 'ai_confidence', 'ai_lane_score_text',
+        'class_history_text', 'player_names_text'
+    ]
+
+    for r in cleaned:
+        key = (
+            str(r['race_date']).strip(),
+            str(r['venue']).strip(),
+            str(r['race_no']).strip(),
+        )
+        saved = saved_map.get(key, {})
+        existing = existing_map.get(key)
+
+        candidate_time = str(r.get('time') or '').strip()
+        should_freeze = bool(existing) and candidate_time and not is_not_started(candidate_time)
+        if should_freeze:
+            for field in freeze_fields:
+                if field in existing and existing[field] is not None:
+                    r[field] = existing[field]
+            frozen_closed += 1
+
+        purchased = int(saved.get('purchased') or 0)
+        purchased_selection_text = str(saved.get('purchased_selection_text') or '').strip()
+        hit = int(saved.get('hit') or 0)
+        payout = int(saved.get('payout') or 0)
+        memo = str(saved.get('memo') or '').strip()
+
+        cur.execute(
+            '''
+            INSERT INTO races (
+                race_date, time, venue, race_no, race_no_num,
+                rating, bet_type, selection, amount,
+                ai_score, ai_rating, ai_label, final_rank,
+                ai_reasons, exhibition, exhibition_rank, motor_rank,
+                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
+                purchased, purchased_selection_text, hit, payout, memo, imported_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
+            ''',
+            (
+                str(r['race_date']).strip(),
+                str(r['time']).strip(),
+                str(r['venue']).strip(),
+                str(r['race_no']).strip(),
+                int(r['race_no_num']),
+                str(r['rating']).strip(),
+                str(r['bet_type']).strip(),
+                str(r['selection']).strip(),
+                int(r['amount']),
+                safe_float(r.get('ai_score', 0), 0),
+                str(r.get('ai_rating', '')).strip(),
+                str(r.get('ai_label', '')).strip(),
+                str(r.get('final_rank', '')).strip(),
+                json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
+                json.dumps(r.get('exhibition', []), ensure_ascii=False),
+                str(r.get('exhibition_rank', '')).strip(),
+                str(r.get('motor_rank', '')).strip(),
+                str(r.get('ai_detail', '')).strip(),
+                str(r.get('ai_selection', '')).strip(),
+                str(r.get('ai_confidence', '')).strip(),
+                str(r.get('ai_lane_score_text', '')).strip(),
+                str(r.get('class_history_text', '')).strip(),
+                str(r.get('player_names_text', '')).strip(),
+                purchased,
+                purchased_selection_text,
+                hit,
+                payout,
+                memo,
+                imported_at,
+            )
+        )
+        inserted += 1
+        if key in saved_map:
+            updated += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    log(f'replace_today_candidates inserted={inserted} updated={updated} deleted={deleted} frozen_closed={frozen_closed}')
+    return {'inserted': inserted, 'updated': updated, 'deleted': deleted, 'frozen_closed': frozen_closed}
+
 
 @app.route("/healthz")
 def healthz():
@@ -1639,6 +1805,7 @@ def import_candidates():
             "inserted": result["inserted"],
             "updated": result["updated"],
             "deleted": result["deleted"],
+            "frozen_closed": result.get("frozen_closed", 0),
             "imported_at": jst_now_str(),
         }
     if "frozen_closed" in result:
