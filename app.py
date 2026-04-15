@@ -1730,6 +1730,10 @@ def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
+def is_valid_read_token(req):
+    sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
+    return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
+
 
 _db_initialized = False
 
@@ -2233,6 +2237,61 @@ def import_base_candidates():
             "imported_at": jst_now_str(),
         }
     )
+
+@app.route("/api/base_map_today", methods=["GET"])
+def api_base_map_today():
+    if not is_valid_read_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    race_date = request.args.get("race_date", "").strip() or today_text()
+
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT
+            race_date,
+            venue,
+            race_no,
+            base_ai_score,
+            base_ai_rating,
+            base_ai_selection,
+            base_reason_text,
+            final_ai_score,
+            final_ai_rating,
+            final_ai_selection,
+            latest_reason_text
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    base_map = {}
+    for row in rows:
+        key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
+        base_map[key] = {
+            "base_ai_score": safe_float(row.get("base_ai_score"), 0),
+            "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
+            "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
+            "base_reason_text": str(row.get("base_reason_text") or "").strip(),
+            "final_ai_score": safe_float(row.get("final_ai_score"), 0),
+            "final_ai_rating": str(row.get("final_ai_rating") or "").strip(),
+            "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
+            "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
+        }
+
+    return jsonify({
+        "ok": True,
+        "race_date": race_date,
+        "count": len(base_map),
+        "base_map": base_map,
+    })
 
 
 @app.route("/api/import_latest_candidates", methods=["POST"])
