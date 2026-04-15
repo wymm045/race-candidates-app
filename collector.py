@@ -20,6 +20,11 @@ IMPORT_TOKEN = os.environ.get(
     "race-token-2026",
 ).strip()
 
+BASE_MAP_URL = os.environ.get(
+    "BASE_MAP_URL",
+    "https://race-candidates-app.onrender.com/api/base_map_today",
+).strip()
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -39,7 +44,6 @@ RETRY_SLEEP_SEC = 0.8
 OFFICIAL_MAX_WORKERS = 4
 BEFOREINFO_MAX_WORKERS = 6
 
-# 軽量化設定
 ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
 
@@ -433,6 +437,51 @@ def score_to_ai_rating(score):
     return "AI★☆☆☆☆"
 
 
+def score_to_final_rank(score):
+    if score >= 2.0:
+        return "買い強め"
+    if score >= 1.0:
+        return "買い"
+    if score >= 0:
+        return "様子見"
+    return "見送り寄り"
+
+
+def exhibition_rank_text_from_map(rank_map):
+    if not rank_map:
+        return ""
+    return " / ".join([f"{lane}:{rank_map.get(lane, '-')}" for lane in range(1, 7)])
+
+
+def fetch_base_map_today():
+    if not BASE_MAP_URL:
+        raise RuntimeError("BASE_MAP_URL が未設定です")
+    if not IMPORT_TOKEN:
+        raise RuntimeError("IMPORT_TOKEN が未設定です")
+
+    headers = {"X-IMPORT-TOKEN": IMPORT_TOKEN}
+    params = {"race_date": today_text()}
+
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            log(f"[base_map_try] attempt={attempt} url={BASE_MAP_URL}")
+            res = requests.get(BASE_MAP_URL, headers=headers, params=params, timeout=(8, 20))
+            res.raise_for_status()
+            data = res.json()
+            if not data.get("ok"):
+                raise RuntimeError(f"base_map api error: {data}")
+            base_map = data.get("base_map", {}) or {}
+            log(f"[base_map_ok] count={len(base_map)}")
+            return base_map
+        except Exception as e:
+            last_err = e
+            log(f"[base_map_retry] attempt={attempt} err={e}")
+            if attempt < 3:
+                time.sleep(1.5 * attempt)
+    raise last_err
+
+
 def analyze_latest(base_ai_score, exhibition_info):
     score = float(base_ai_score or 0)
     reasons = []
@@ -515,17 +564,13 @@ def rebuild_final_selection(base_selection, exhibition_info):
     return " / ".join(dedup)
 
 
-def exhibition_rank_text_from_map(rank_map):
-    if not rank_map:
-        return ""
-    return " / ".join([f"{lane}:{rank_map.get(lane, '-')}" for lane in range(1, 7)])
-
-
 def build_candidates():
-    log("[collector_version] collector_latest_light_v1")
+    log("[collector_version] collector_latest_base_link_v1")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
+
+    base_map = fetch_base_map_today()
 
     raw_rows = parse_rating_page()
 
@@ -572,16 +617,40 @@ def build_candidates():
     beforeinfo_cache = fetch_beforeinfo_parallel(all_keys) if all_keys else {}
 
     results = []
+    skipped_no_base = 0
+
     for row in rows:
         venue = row["venue"]
         race_no = row["race_no"]
-        selection = row.get("selection", "")
+        selection_from_rating_page = row.get("selection", "")
         jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
         deadline = row.get("time", "")
 
+        race_key = f"{venue}|{race_no}R"
+        base_info = base_map.get(race_key)
+
+        if not base_info:
+            skipped_no_base += 1
+            log(f"[skip_no_base] key={race_key}")
+            continue
+
+        base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
+        base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
+        base_reason_text = str(base_info.get("base_reason_text") or "").strip()
+
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
-        analyzed = analyze_latest(0, exhibition_info)
+
+        analyzed = analyze_latest(base_ai_score, exhibition_info)
+
+        latest_reason_parts = []
+        if base_reason_text:
+            latest_reason_parts.append(f"朝:{base_reason_text}")
+        if analyzed["latest_reason_text"]:
+            latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
+
+        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info)
+        final_ai_score = analyzed["final_ai_score"]
 
         candidate = {
             "race_date": today_text(),
@@ -590,16 +659,24 @@ def build_candidates():
             "time": deadline,
             "exhibition": exhibition_info.get("times", []),
             "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
-            "final_ai_score": analyzed["final_ai_score"],
-            "final_ai_rating": analyzed["final_ai_rating"],
-            "final_ai_selection": rebuild_final_selection(selection, exhibition_info),
-            "final_rank": "買い強め" if analyzed["final_ai_score"] >= 2.0 else ("買い" if analyzed["final_ai_score"] >= 1.0 else ("様子見" if analyzed["final_ai_score"] >= 0 else "見送り寄り")),
-            "latest_reason_text": analyzed["latest_reason_text"],
+            "final_ai_score": final_ai_score,
+            "final_ai_rating": score_to_ai_rating(final_ai_score),
+            "final_ai_selection": final_ai_selection,
+            "final_rank": score_to_final_rank(final_ai_score),
+            "latest_reason_text": " / ".join(latest_reason_parts[:8]),
             "latest_updated_at": jst_now_str(),
         }
         results.append(candidate)
 
-    results.sort(key=lambda x: (to_minutes(x["time"]) if x["time"] else 9999, x["venue"], int(str(x["race_no"]).replace("R", ""))))
+    results.sort(
+        key=lambda x: (
+            to_minutes(x["time"]) if x["time"] else 9999,
+            x["venue"],
+            int(str(x["race_no"]).replace("R", "")),
+        )
+    )
+
+    log(f"[skip_no_base_summary] count={skipped_no_base}")
     log(f"build_candidates final_count={len(results)}")
     log("========== build_candidates end ==========")
     return results
