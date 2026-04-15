@@ -1,7 +1,7 @@
-
 from datetime import datetime, timezone, timedelta
 import os
 import re
+import json
 import time
 from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,40 +31,26 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-REQUEST_TIMEOUT = (10, 20)
-POST_TIMEOUT = 40
-MAX_RETRIES = 3
-RETRY_SLEEP_SEC = 1.2
+REQUEST_TIMEOUT = (8, 16)
+POST_TIMEOUT = 35
+MAX_RETRIES = 2
+RETRY_SLEEP_SEC = 0.8
 
-OFFICIAL_MAX_WORKERS = 6
-BEFOREINFO_MAX_WORKERS = 12
+OFFICIAL_MAX_WORKERS = 4
+BEFOREINFO_MAX_WORKERS = 6
+
+# 軽量化設定
+ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
+SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
 
 JCD_NAME_MAP = {
-    "01": "桐生",
-    "02": "戸田",
-    "03": "江戸川",
-    "04": "平和島",
-    "05": "多摩川",
-    "06": "浜名湖",
-    "07": "蒲郡",
-    "08": "常滑",
-    "09": "津",
-    "10": "三国",
-    "11": "びわこ",
-    "12": "住之江",
-    "13": "尼崎",
-    "14": "鳴門",
-    "15": "丸亀",
-    "16": "児島",
-    "17": "宮島",
-    "20": "若松",
-    "21": "芦屋",
-    "22": "福岡",
-    "23": "唐津",
-    "24": "大村",
+    "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川",
+    "06": "浜名湖", "07": "蒲郡", "08": "常滑", "09": "津", "10": "三国",
+    "11": "びわこ", "12": "住之江", "13": "尼崎", "14": "鳴門", "15": "丸亀",
+    "16": "児島", "17": "宮島", "20": "若松", "21": "芦屋", "22": "福岡",
+    "23": "唐津", "24": "大村",
 }
 NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
-
 RATING_PAGE_MAP = {"★★★★★": "s5"}
 
 
@@ -95,6 +81,20 @@ def current_hhmm():
 def to_minutes(hhmm):
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
+
+
+def is_target_deadline(hhmm):
+    if not hhmm:
+        return False
+    try:
+        now_min = to_minutes(current_hhmm())
+        target_min = to_minutes(hhmm)
+        diff = target_min - now_min
+        if SKIP_PAST_RACES and diff < 0:
+            return False
+        return diff <= ONLY_UPCOMING_HOURS * 60
+    except Exception:
+        return False
 
 
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
@@ -215,7 +215,6 @@ def parse_rating_page_dom(rating_text):
             "venue": info["venue"],
             "jcd": info["jcd"],
             "race_no": info["race_no"],
-            "rating": rating_text,
             "selection": " / ".join(triplets[:6]),
         })
     dedup = {}
@@ -226,9 +225,9 @@ def parse_rating_page_dom(rating_text):
     return list(dedup.values())
 
 
-def parse_rating_page(rating_text):
-    rows = parse_rating_page_dom(rating_text)
-    log(f"[rating_page_summary] {rating_text} count={len(rows)}")
+def parse_rating_page():
+    rows = parse_rating_page_dom("★★★★★")
+    log(f"[rating_page_summary] count={len(rows)}")
     return rows
 
 
@@ -251,22 +250,19 @@ def parse_official_deadlines_from_html(html):
 
 
 def parse_official_deadlines_for_jcd(jcd):
-    venue = JCD_NAME_MAP.get(jcd, jcd)
     try:
         html = fetch_html(build_official_url(jcd, race_no=1))
     except Exception as e:
-        log(f"[official_deadlines_error] jcd={jcd} venue={venue} err={e}")
+        log(f"[official_deadlines_error] jcd={jcd} err={e}")
         return jcd, {}
-    deadlines = parse_official_deadlines_from_html(html)
-    return jcd, deadlines
+    return jcd, parse_official_deadlines_from_html(html)
 
 
 def parse_single_race_deadline(jcd, race_no):
     url = build_official_url(jcd, race_no=race_no)
     try:
         html = fetch_html(url)
-    except Exception as e:
-        log(f"[official_single_error] jcd={jcd} race_no={race_no} err={e}")
+    except Exception:
         return ""
     lines = normalize_lines(html)
     for i, line in enumerate(lines):
@@ -369,18 +365,6 @@ def extract_exhibition_times_from_lines(lines):
 
     if len(lane_times) == 6:
         return [f"{lane_times[lane]:.2f}" for lane in range(1, 7)]
-
-    flat = []
-    for line in lines:
-        for x in re.findall(r"\b\d\.\d{2}\b", line):
-            try:
-                val = float(x)
-            except Exception:
-                continue
-            if is_exhibition_time_value(val):
-                flat.append(val)
-    if len(flat) >= 6:
-        return [f"{v:.2f}" for v in flat[:6]]
     return []
 
 
@@ -420,12 +404,10 @@ def parse_beforeinfo_for_key(jcd, race_no):
 
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines(html)
-
     times = extract_exhibition_times_from_table(soup)
     if len(times) != 6:
         times = extract_exhibition_times_from_lines(lines)
     ranks = build_exhibition_ranks_from_times(times)
-
     return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}}
 
 
@@ -540,11 +522,12 @@ def exhibition_rank_text_from_map(rank_map):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_split_v1")
+    log("[collector_version] collector_latest_light_v1")
+    log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
-    raw_rows = parse_rating_page("★★★★★")
+    raw_rows = parse_rating_page()
 
     dedup = {}
     for row in raw_rows:
@@ -564,8 +547,6 @@ def build_candidates():
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
     filtered_rows = []
-    all_keys = set()
-
     for row in rows:
         venue = row["venue"]
         race_no = row["race_no"]
@@ -574,10 +555,20 @@ def build_candidates():
             continue
         deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
         row["time"] = deadline
-        filtered_rows.append(row)
-        all_keys.add((jcd, race_no))
+        if is_target_deadline(deadline):
+            filtered_rows.append(row)
 
     rows = filtered_rows
+    log(f"[target_races_summary] count={len(rows)}")
+
+    all_keys = set()
+    for row in rows:
+        venue = row["venue"]
+        race_no = row["race_no"]
+        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        if jcd:
+            all_keys.add((jcd, race_no))
+
     beforeinfo_cache = fetch_beforeinfo_parallel(all_keys) if all_keys else {}
 
     results = []
@@ -590,9 +581,6 @@ def build_candidates():
 
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
-
-        # latest-only scorer; collector_base score is unknown here,
-        # so use 0 baseline and let app keep old base score
         analyzed = analyze_latest(0, exhibition_info)
 
         candidate = {
