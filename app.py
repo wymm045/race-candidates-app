@@ -222,37 +222,6 @@ def get_selected_total_amount(race):
     )
 
 
-
-def get_existing_row_map_by_race(race_date):
-    conn = db_connect()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        '''
-        SELECT *
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
-        ORDER BY id DESC
-        ''',
-        (race_date,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    existing_map = {}
-    for row in rows:
-        key = (
-            str(row['race_date']).strip(),
-            str(row['venue']).strip(),
-            str(row['race_no']).strip(),
-        )
-        if key not in existing_map:
-            existing_map[key] = row
-    return existing_map
-
-
-
 def make_race_key(race_date, venue, race_no):
     return (
         str(race_date or "").strip(),
@@ -331,7 +300,6 @@ def get_saved_state_map_by_race(race_date):
     return saved_map
 
 
-
 def parse_exhibition_rank_map(rank_text):
     result = {}
     s = (rank_text or "").strip()
@@ -349,7 +317,6 @@ def parse_exhibition_rank_map(rank_text):
     return result
 
 
-
 def exhibition_rank_class(rank):
     try:
         r = int(rank)
@@ -364,7 +331,6 @@ def exhibition_rank_class(rank):
     if r >= 5:
         return "ex-rank-box ex-rank-low"
     return "ex-rank-box"
-
 
 
 def render_exhibition_rank_boxes(rank_text):
@@ -384,7 +350,6 @@ def render_exhibition_rank_boxes(rank_text):
     return f'<div class="ex-rank-grid">{boxes}</div>'
 
 
-
 def render_exhibition_time_chips(exhibition_list):
     if not exhibition_list:
         return '<div class="ex-chip-empty">未取得</div>'
@@ -397,7 +362,6 @@ def render_exhibition_time_chips(exhibition_list):
         </div>
         '''
     return f'<div class="ex-chip-wrap">{chips}</div>'
-
 
 
 def parse_player_names_map(player_names_text):
@@ -420,7 +384,6 @@ def parse_player_names_map(player_names_text):
     return result
 
 
-
 def render_player_names_html(player_names_text):
     player_map = parse_player_names_map(player_names_text)
     if not player_map:
@@ -436,7 +399,6 @@ def render_player_names_html(player_names_text):
         </div>
         '''
     return f'<div class="player-chip-wrap">{items}</div>'
-
 
 
 def render_player_rank_summary_html(player_names_text, class_history_text):
@@ -480,7 +442,6 @@ def render_player_rank_summary_html(player_names_text, class_history_text):
     return f'<div class="player-rank-wrap">{rows_html}</div>'
 
 
-
 def parse_class_history_rows(class_history_text):
     rows = []
     s = str(class_history_text or "").strip()
@@ -508,7 +469,6 @@ def parse_class_history_rows(class_history_text):
     return rows
 
 
-
 def render_class_history_blocks(class_history_text):
     rows = parse_class_history_rows(class_history_text)
     if not rows:
@@ -532,7 +492,6 @@ def render_class_history_blocks(class_history_text):
     return f'<div class="class-history-wrap">{html}</div>'
 
 
-
 def parse_lane_score_items(lane_score_text):
     items = []
     s = str(lane_score_text or "").strip()
@@ -551,7 +510,6 @@ def parse_lane_score_items(lane_score_text):
     return items
 
 
-
 def lane_score_class(score):
     if score >= 1.5:
         return "lane-score-chip lane-score-verygood"
@@ -560,7 +518,6 @@ def lane_score_class(score):
     if score <= -0.4:
         return "lane-score-chip lane-score-bad"
     return "lane-score-chip"
-
 
 
 def render_lane_score_chips(lane_score_text):
@@ -574,13 +531,11 @@ def render_lane_score_chips(lane_score_text):
     return f'<div class="lane-score-wrap">{chips}</div>'
 
 
-
 def parse_detail_material_list(detail_text):
     s = str(detail_text or "").strip()
     if not s:
         return []
     return [x.strip() for x in s.split("/") if x.strip()]
-
 
 
 def render_detail_material_chips(detail_text):
@@ -589,7 +544,6 @@ def render_detail_material_chips(detail_text):
         return '<div class="detail-chip-empty">未取得</div>'
     chips = "".join([f'<div class="detail-chip">{item}</div>' for item in items])
     return f'<div class="detail-chip-wrap">{chips}</div>'
-
 
 
 def final_rank_badge(rank_text):
@@ -605,7 +559,6 @@ def final_rank_badge(rank_text):
     return ""
 
 
-
 def render_ai_rating_filter_options(current_value):
     html = '<option value="">すべて</option>'
     for value in AI_RATING_OPTIONS:
@@ -616,13 +569,11 @@ def render_ai_rating_filter_options(current_value):
     return html
 
 
-
 def safe_redirect_path(path, default="/"):
     s = str(path or "").strip()
     if not s.startswith("/") or s.startswith("//"):
         return default
     return s
-
 
 
 def build_selection_compare_data(official_text, ai_text):
@@ -635,7 +586,6 @@ def build_selection_compare_data(official_text, ai_text):
         "ai_items": ai_items,
         "overlap": overlap,
     }
-
 
 
 def render_selection_column(
@@ -688,7 +638,6 @@ def render_selection_column(
     return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
 
 
-
 def render_selection_compare_html(r, race_id_key):
     official_text = r.get("selection", "")
     ai_text = r.get("ai_selection", "")
@@ -730,14 +679,12 @@ def render_selection_compare_html(r, race_id_key):
     '''
 
 
-
 def render_selected_summary_html(selected_text):
     items = selection_items(selected_text)
     if not items:
         return '<div class="selection-chip-empty">未選択</div>'
     chips = "".join([f'<div class="picked-chip">{render_colored_pick_html(item)}</div>' for item in items])
     return f'<div class="picked-chip-wrap">{chips}</div>'
-
 
 
 def get_races_by_date(race_date):
@@ -758,7 +705,6 @@ def get_races_by_date(race_date):
     return rows
 
 
-
 def get_race_by_id(race_id):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -769,10 +715,8 @@ def get_race_by_id(race_id):
     return row
 
 
-
 def get_today_races():
     return get_races_by_date(today_text())
-
 
 
 def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
@@ -782,17 +726,6 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
     if not show_closed:
         rows = [r for r in rows if is_not_started(r["time"])]
     return rows
-
-
-
-def delete_today_races():
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (today_text(),))
-    conn.commit()
-    cur.close()
-    conn.close()
-
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
@@ -818,7 +751,6 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
     )
 
 
-
 def delete_race(race_id):
     conn = db_connect()
     cur = conn.cursor()
@@ -829,7 +761,6 @@ def delete_race(race_id):
     conn.close()
     log(f"delete_race race_id={race_id} deleted={deleted}")
     return deleted
-
 
 
 def delete_races_bulk(race_ids):
@@ -845,7 +776,6 @@ def delete_races_bulk(race_ids):
     conn.close()
     log(f"delete_races_bulk race_ids={race_ids} deleted={deleted}")
     return deleted
-
 
 
 def get_summary_by_date(race_date):
@@ -890,7 +820,6 @@ def get_summary_by_date(race_date):
         "roi": roi,
         "last_imported_at": row["last_imported_at"] or "",
     }
-
 
 
 def get_group_summary(race_date, group_key):
@@ -943,7 +872,6 @@ def get_group_summary(race_date, group_key):
     return results
 
 
-
 def get_history_dates():
     conn = db_connect()
     cur = conn.cursor()
@@ -954,10 +882,8 @@ def get_history_dates():
     return [row[0] for row in rows]
 
 
-
 def get_history_date_summaries():
     return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
-
 
 
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
@@ -971,7 +897,6 @@ def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_onl
     if hit_only:
         filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
     return filtered
-
 
 
 def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
@@ -989,7 +914,6 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
         selected = "selected" if race_no == selected_race_no else ""
         race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
     return venue_options, race_no_options, venues, race_nos
-
 
 
 def build_card_html(r, is_history=False, race_date=""):
@@ -1135,7 +1059,6 @@ def build_card_html(r, is_history=False, race_date=""):
     '''
 
 
-
 def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
@@ -1203,7 +1126,6 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     </div>
     '''
     return render_layout("今日の買い候補", content)
-
 
 
 def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
@@ -1274,7 +1196,6 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
     return render_layout("今日の集計", content)
 
 
-
 def render_history_page(date_summaries):
     if not date_summaries:
         list_html = '<div class="empty">過去データはありません</div>'
@@ -1286,7 +1207,6 @@ def render_history_page(date_summaries):
             items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div></div></div>'''
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
-
 
 
 def render_history_detail_page(
@@ -1362,7 +1282,6 @@ def render_history_detail_page(
     </div>
     '''
     return render_layout("過去データ詳細", content)
-
 
 
 def render_layout(title, body_html):
@@ -1790,11 +1709,9 @@ def render_layout(title, body_html):
     return """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>{}</title>{}</head><body><div class="container">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
 
-
 def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
-
 
 
 def init_db():
@@ -1897,7 +1814,6 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-
 
 
 def upsert_base_candidates(cleaned):
@@ -2083,140 +1999,11 @@ def upsert_latest_candidates(cleaned):
     return {'updated': updated, 'skipped': skipped}
 
 
-def replace_today_candidates(cleaned):
-    if not cleaned:
-        return {'inserted': 0, 'updated': 0, 'deleted': 0, 'frozen_closed': 0}
-
-    race_date = str(cleaned[0]['race_date']).strip()
-    saved_map = get_saved_state_map_by_race(race_date)
-    existing_map = get_existing_row_map_by_race(race_date)
-
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
-    deleted = cur.rowcount
-
-    inserted = 0
-    updated = 0
-    frozen_closed = 0
-    imported_at = jst_now_str()
-
-    freeze_fields = [
-        'time',
-        'rating', 'bet_type', 'selection', 'amount',
-        'ai_score', 'ai_rating', 'ai_label', 'final_rank',
-        'ai_reasons', 'exhibition', 'exhibition_rank', 'motor_rank',
-        'ai_detail', 'ai_selection', 'ai_confidence', 'ai_lane_score_text',
-        'class_history_text', 'player_names_text'
-    ]
-
-    def is_blank_value(v):
-        if v is None:
-            return True
-        if isinstance(v, list):
-            return len(v) == 0
-        if isinstance(v, dict):
-            return len(v) == 0
-        s = str(v).strip()
-        return s == '' or s == '-' or s == '[]' or s == '{}'
-
-    for r in cleaned:
-        key = (
-            str(r['race_date']).strip(),
-            str(r['venue']).strip(),
-            str(r['race_no']).strip(),
-        )
-        saved = saved_map.get(key, {})
-        existing = existing_map.get(key)
-
-        candidate_time = str(r.get('time') or '').strip()
-        should_freeze = bool(existing) and candidate_time and not is_not_started(candidate_time)
-        if should_freeze:
-            merged = dict(r)
-            for field in freeze_fields:
-                old_val = existing.get(field)
-                new_val = r.get(field)
-                merged[field] = old_val
-                if is_blank_value(old_val) and not is_blank_value(new_val):
-                    merged[field] = new_val
-            r = merged
-            frozen_closed += 1
-
-        purchased = int(saved.get('purchased') or 0)
-        purchased_selection_text = str(saved.get('purchased_selection_text') or '').strip()
-        hit = int(saved.get('hit') or 0)
-        payout = int(saved.get('payout') or 0)
-        memo = str(saved.get('memo') or '').strip()
-
-        cur.execute(
-            '''
-            INSERT INTO races (
-                race_date, time, venue, race_no, race_no_num,
-                rating, bet_type, selection, amount,
-                ai_score, ai_rating, ai_label, final_rank,
-                ai_reasons, exhibition, exhibition_rank, motor_rank,
-                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
-                purchased, purchased_selection_text, hit, payout, memo, imported_at
-            )
-            VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
-            )
-            ''',
-            (
-                str(r['race_date']).strip(),
-                str(r['time']).strip(),
-                str(r['venue']).strip(),
-                str(r['race_no']).strip(),
-                int(r['race_no_num']),
-                str(r['rating']).strip(),
-                str(r['bet_type']).strip(),
-                str(r['selection']).strip(),
-                int(r['amount']),
-                safe_float(r.get('ai_score', 0), 0),
-                str(r.get('ai_rating', '')).strip(),
-                str(r.get('ai_label', '')).strip(),
-                str(r.get('final_rank', '')).strip(),
-                json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
-                json.dumps(r.get('exhibition', []), ensure_ascii=False),
-                str(r.get('exhibition_rank', '')).strip(),
-                str(r.get('motor_rank', '')).strip(),
-                str(r.get('ai_detail', '')).strip(),
-                str(r.get('ai_selection', '')).strip(),
-                str(r.get('ai_confidence', '')).strip(),
-                str(r.get('ai_lane_score_text', '')).strip(),
-                str(r.get('class_history_text', '')).strip(),
-                str(r.get('player_names_text', '')).strip(),
-                purchased,
-                purchased_selection_text,
-                hit,
-                payout,
-                memo,
-                imported_at,
-            )
-        )
-        inserted += 1
-        if key in saved_map:
-            updated += 1
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    log(f'replace_today_candidates inserted={inserted} updated={updated} deleted={deleted} frozen_closed={frozen_closed}')
-    return {'inserted': inserted, 'updated': updated, 'deleted': deleted, 'frozen_closed': frozen_closed}
-
-
 @app.route("/healthz")
 def healthz():
     return "ok", 200
 
 
-@app.route("/reset_today")
 def reset_today():
     delete_today_races()
     return redirect("/")
@@ -2238,7 +2025,6 @@ def index():
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
     )
-
 
 
 def parse_selected_from_request():
@@ -2484,7 +2270,6 @@ def import_latest_candidates():
     )
 
 
-@app.route("/api/import_candidates", methods=["POST"])
 def import_candidates():
     if not is_valid_import_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
