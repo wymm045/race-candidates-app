@@ -257,6 +257,7 @@ def get_existing_race_map_by_date(race_date):
 
 
 def get_saved_state_map_by_race(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -688,6 +689,7 @@ def render_selected_summary_html(selected_text):
 
 
 def get_races_by_date(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -706,6 +708,7 @@ def get_races_by_date(race_date):
 
 
 def get_race_by_id(race_id):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM races WHERE id = %s", (race_id,))
@@ -729,6 +732,7 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
+    ensure_db_initialized()
     selected_text = " / ".join(
         unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
     )
@@ -752,6 +756,7 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
 
 
 def delete_race(race_id):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM races WHERE id = %s", (race_id,))
@@ -764,6 +769,7 @@ def delete_race(race_id):
 
 
 def delete_races_bulk(race_ids):
+    ensure_db_initialized()
     race_ids = [int(x) for x in race_ids if str(x).strip().isdigit()]
     if not race_ids:
         return 0
@@ -779,6 +785,7 @@ def delete_races_bulk(race_ids):
 
 
 def get_summary_by_date(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -823,6 +830,7 @@ def get_summary_by_date(race_date):
 
 
 def get_group_summary(race_date, group_key):
+    ensure_db_initialized()
     if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
         return []
     conn = db_connect()
@@ -873,6 +881,7 @@ def get_group_summary(race_date, group_key):
 
 
 def get_history_dates():
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC")
@@ -1722,6 +1731,16 @@ def is_valid_import_token(req):
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
 
+_db_initialized = False
+
+def ensure_db_initialized():
+    global _db_initialized
+    if _db_initialized:
+        return
+    init_db()
+    _db_initialized = True
+
+
 def init_db():
     conn = db_connect()
     cur = conn.cursor()
@@ -2276,7 +2295,8 @@ def import_latest_candidates():
 
 
 
+init_db()
+
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
