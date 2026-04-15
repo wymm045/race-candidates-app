@@ -1852,6 +1852,16 @@ def replace_today_candidates(cleaned):
         'class_history_text', 'player_names_text'
     ]
 
+    def is_blank_value(v):
+        if v is None:
+            return True
+        if isinstance(v, list):
+            return len(v) == 0
+        if isinstance(v, dict):
+            return len(v) == 0
+        s = str(v).strip()
+        return s == '' or s == '-' or s == '[]' or s == '{}'
+
     for r in cleaned:
         key = (
             str(r['race_date']).strip(),
@@ -1864,9 +1874,14 @@ def replace_today_candidates(cleaned):
         candidate_time = str(r.get('time') or '').strip()
         should_freeze = bool(existing) and candidate_time and not is_not_started(candidate_time)
         if should_freeze:
+            merged = dict(r)
             for field in freeze_fields:
-                if field in existing and existing[field] is not None:
-                    r[field] = existing[field]
+                old_val = existing.get(field)
+                new_val = r.get(field)
+                merged[field] = old_val
+                if is_blank_value(old_val) and not is_blank_value(new_val):
+                    merged[field] = new_val
+            r = merged
             frozen_closed += 1
 
         purchased = int(saved.get('purchased') or 0)
