@@ -22,7 +22,7 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python collector.py
-    schedule: "*/10 * * * *"
+    schedule: "*/10 23,0-9 * * *"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
