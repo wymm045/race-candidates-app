@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 import os
 import json
 import time
-from threading import Lock
+import traceback
 from urllib.parse import quote
 
 import psycopg2
@@ -14,8 +14,12 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "").strip()
 IMPORT_TOKEN = os.environ.get("IMPORT_TOKEN", "").strip()
+DB_CONNECT_TIMEOUT = int(os.environ.get("DB_CONNECT_TIMEOUT", "10"))
+DB_INIT_MAX_RETRIES = int(os.environ.get("DB_INIT_MAX_RETRIES", "5"))
 
 JST = timezone(timedelta(hours=9))
+
+_DB_INITIALIZED = False
 
 AI_RATING_OPTIONS = [
     "",
@@ -86,36 +90,29 @@ def render_countdown_badge(time_str):
 def db_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が設定されていません")
-    return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=DB_CONNECT_TIMEOUT)
 
 
-_DB_INIT_LOCK = Lock()
-_DB_INITIALIZED = False
-
-
-def ensure_db_initialized(max_retries=3):
+def ensure_db_initialized():
     global _DB_INITIALIZED
     if _DB_INITIALIZED:
         return
 
-    with _DB_INIT_LOCK:
-        if _DB_INITIALIZED:
+    last_err = None
+    for attempt in range(1, DB_INIT_MAX_RETRIES + 1):
+        try:
+            log(f"ensure_db_initialized ok attempt={attempt}")
+            init_db()
+            _DB_INITIALIZED = True
             return
+        except Exception as e:
+            last_err = e
+            log(f"ensure_db_initialized failed attempt={attempt} err={e}")
+            log(traceback.format_exc())
+            if attempt < DB_INIT_MAX_RETRIES:
+                time.sleep(min(2 * attempt, 8))
 
-        last_err = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                init_db()
-                _DB_INITIALIZED = True
-                log(f"ensure_db_initialized ok attempt={attempt}")
-                return
-            except Exception as e:
-                last_err = e
-                log(f"ensure_db_initialized retry={attempt}/{max_retries} err={e}")
-                if attempt < max_retries:
-                    time.sleep(1.5 * attempt)
-
-        raise last_err
+    raise RuntimeError(f"DB 初期化に失敗しました: {last_err}")
 
 
 def parse_json_array_text(value):
@@ -254,7 +251,10 @@ def get_selected_total_amount(race):
 
 
 
-def fetch_existing_maps_by_race(cur, race_date):
+def get_existing_row_map_by_race(race_date):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         '''
         SELECT *
@@ -262,13 +262,14 @@ def fetch_existing_maps_by_race(cur, race_date):
         WHERE race_date = %s
           AND venue <> 'テスト会場'
         ORDER BY id DESC
-        ''' ,
+        ''',
         (race_date,),
     )
     rows = cur.fetchall()
+    cur.close()
+    conn.close()
 
     existing_map = {}
-    saved_map = {}
     for row in rows:
         key = (
             str(row['race_date']).strip(),
@@ -277,34 +278,52 @@ def fetch_existing_maps_by_race(cur, race_date):
         )
         if key not in existing_map:
             existing_map[key] = row
-        if key not in saved_map:
-            saved_map[key] = {
-                'purchased': int(row.get('purchased') or 0),
-                'hit': int(row.get('hit') or 0),
-                'payout': int(row.get('payout') or 0),
-                'memo': str(row.get('memo') or '').strip(),
-                'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
-            }
-    return existing_map, saved_map
-
-
-
-def get_existing_row_map_by_race(race_date):
-    conn = db_connect()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    existing_map, _saved_map = fetch_existing_maps_by_race(cur, race_date)
-    cur.close()
-    conn.close()
     return existing_map
 
 
 
 def get_saved_state_map_by_race(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    _existing_map, saved_map = fetch_existing_maps_by_race(cur, race_date)
+    cur.execute(
+        '''
+        SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY
+            CASE
+                WHEN hit = 1 THEN 4
+                WHEN purchased = 1 THEN 3
+                WHEN payout > 0 THEN 2
+                WHEN COALESCE(memo, '') <> '' THEN 1
+                ELSE 0
+            END DESC,
+            id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
     cur.close()
     conn.close()
+
+    saved_map = {}
+    for row in rows:
+        key = (
+            str(row['race_date']).strip(),
+            str(row['venue']).strip(),
+            str(row['race_no']).strip(),
+        )
+        if key in saved_map:
+            continue
+        saved_map[key] = {
+            'purchased': int(row.get('purchased') or 0),
+            'hit': int(row.get('hit') or 0),
+            'payout': int(row.get('payout') or 0),
+            'memo': str(row.get('memo') or '').strip(),
+            'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
+        }
     return saved_map
 
 
@@ -718,6 +737,7 @@ def render_selected_summary_html(selected_text):
 
 
 def get_races_by_date(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -737,6 +757,7 @@ def get_races_by_date(race_date):
 
 
 def get_race_by_id(race_id):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM races WHERE id = %s", (race_id,))
@@ -763,16 +784,20 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
 
 
 def delete_today_races():
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (today_text(),))
+    log("replace_today_candidates commit start")
     conn.commit()
+    log("replace_today_candidates commit done")
     cur.close()
     conn.close()
 
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
+    ensure_db_initialized()
     selected_text = " / ".join(
         unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
     )
@@ -797,6 +822,7 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
 
 
 def delete_race(race_id):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM races WHERE id = %s", (race_id,))
@@ -810,6 +836,7 @@ def delete_race(race_id):
 
 
 def delete_races_bulk(race_ids):
+    ensure_db_initialized()
     race_ids = [int(x) for x in race_ids if str(x).strip().isdigit()]
     if not race_ids:
         return 0
@@ -826,6 +853,7 @@ def delete_races_bulk(race_ids):
 
 
 def get_summary_by_date(race_date):
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
@@ -871,6 +899,7 @@ def get_summary_by_date(race_date):
 
 
 def get_group_summary(race_date, group_key):
+    ensure_db_initialized()
     if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
         return []
     conn = db_connect()
@@ -922,6 +951,7 @@ def get_group_summary(race_date, group_key):
 
 
 def get_history_dates():
+    ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC")
@@ -1848,10 +1878,27 @@ def init_db():
 
 
 def replace_today_candidates(cleaned):
+    ensure_db_initialized()
+    log(f"replace_today_candidates start rows={len(cleaned)}")
     if not cleaned:
         return {'inserted': 0, 'updated': 0, 'deleted': 0, 'frozen_closed': 0}
 
     race_date = str(cleaned[0]['race_date']).strip()
+    log(f"replace_today_candidates race_date={race_date}")
+    log("replace_today_candidates loading saved_map")
+    saved_map = get_saved_state_map_by_race(race_date)
+    log(f"replace_today_candidates saved_map={len(saved_map)}")
+    log("replace_today_candidates loading existing_map")
+    existing_map = get_existing_row_map_by_race(race_date)
+    log(f"replace_today_candidates existing_map={len(existing_map)}")
+
+    log("replace_today_candidates opening write connection")
+    conn = db_connect()
+    cur = conn.cursor()
+    log("replace_today_candidates deleting today rows")
+    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
+    deleted = cur.rowcount
+
     inserted = 0
     updated = 0
     frozen_closed = 0
@@ -1876,16 +1923,7 @@ def replace_today_candidates(cleaned):
         s = str(v).strip()
         return s == '' or s == '-' or s == '[]' or s == '{}'
 
-    conn = db_connect()
-    cur_read = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    existing_map, saved_map = fetch_existing_maps_by_race(cur_read, race_date)
-    cur_read.close()
-
-    cur = conn.cursor()
-    cur.execute("DELETE FROM races WHERE race_date = %s AND venue <> 'テスト会場'", (race_date,))
-    deleted = cur.rowcount
-
-    insert_rows = []
+    log("replace_today_candidates inserting rows")
     for r in cleaned:
         key = (
             str(r['race_date']).strip(),
@@ -1914,56 +1952,60 @@ def replace_today_candidates(cleaned):
         payout = int(saved.get('payout') or 0)
         memo = str(saved.get('memo') or '').strip()
 
-        insert_rows.append((
-            str(r['race_date']).strip(),
-            str(r['time']).strip(),
-            str(r['venue']).strip(),
-            str(r['race_no']).strip(),
-            int(r['race_no_num']),
-            str(r['rating']).strip(),
-            str(r['bet_type']).strip(),
-            str(r['selection']).strip(),
-            int(r['amount']),
-            safe_float(r.get('ai_score', 0), 0),
-            str(r.get('ai_rating', '')).strip(),
-            str(r.get('ai_label', '')).strip(),
-            str(r.get('final_rank', '')).strip(),
-            json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
-            json.dumps(r.get('exhibition', []), ensure_ascii=False),
-            str(r.get('exhibition_rank', '')).strip(),
-            str(r.get('motor_rank', '')).strip(),
-            str(r.get('ai_detail', '')).strip(),
-            str(r.get('ai_selection', '')).strip(),
-            str(r.get('ai_confidence', '')).strip(),
-            str(r.get('ai_lane_score_text', '')).strip(),
-            str(r.get('class_history_text', '')).strip(),
-            str(r.get('player_names_text', '')).strip(),
-            purchased,
-            purchased_selection_text,
-            hit,
-            payout,
-            memo,
-            imported_at,
-        ))
+        cur.execute(
+            '''
+            INSERT INTO races (
+                race_date, time, venue, race_no, race_no_num,
+                rating, bet_type, selection, amount,
+                ai_score, ai_rating, ai_label, final_rank,
+                ai_reasons, exhibition, exhibition_rank, motor_rank,
+                ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
+                purchased, purchased_selection_text, hit, payout, memo, imported_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
+            ''',
+            (
+                str(r['race_date']).strip(),
+                str(r['time']).strip(),
+                str(r['venue']).strip(),
+                str(r['race_no']).strip(),
+                int(r['race_no_num']),
+                str(r['rating']).strip(),
+                str(r['bet_type']).strip(),
+                str(r['selection']).strip(),
+                int(r['amount']),
+                safe_float(r.get('ai_score', 0), 0),
+                str(r.get('ai_rating', '')).strip(),
+                str(r.get('ai_label', '')).strip(),
+                str(r.get('final_rank', '')).strip(),
+                json.dumps(r.get('ai_reasons', []), ensure_ascii=False),
+                json.dumps(r.get('exhibition', []), ensure_ascii=False),
+                str(r.get('exhibition_rank', '')).strip(),
+                str(r.get('motor_rank', '')).strip(),
+                str(r.get('ai_detail', '')).strip(),
+                str(r.get('ai_selection', '')).strip(),
+                str(r.get('ai_confidence', '')).strip(),
+                str(r.get('ai_lane_score_text', '')).strip(),
+                str(r.get('class_history_text', '')).strip(),
+                str(r.get('player_names_text', '')).strip(),
+                purchased,
+                purchased_selection_text,
+                hit,
+                payout,
+                memo,
+                imported_at,
+            )
+        )
         inserted += 1
         if key in saved_map:
             updated += 1
-
-    psycopg2.extras.execute_values(
-        cur,
-        '''
-        INSERT INTO races (
-            race_date, time, venue, race_no, race_no_num,
-            rating, bet_type, selection, amount,
-            ai_score, ai_rating, ai_label, final_rank,
-            ai_reasons, exhibition, exhibition_rank, motor_rank,
-            ai_detail, ai_selection, ai_confidence, ai_lane_score_text, class_history_text, player_names_text,
-            purchased, purchased_selection_text, hit, payout, memo, imported_at
-        ) VALUES %s
-        ''',
-        insert_rows,
-        page_size=100,
-    )
 
     conn.commit()
     cur.close()
@@ -1973,17 +2015,21 @@ def replace_today_candidates(cleaned):
     return {'inserted': inserted, 'updated': updated, 'deleted': deleted, 'frozen_closed': frozen_closed}
 
 
-@app.before_request
-def before_request_init_db():
-    if request.path == "/healthz":
-        return None
-    ensure_db_initialized()
-    return None
-
-
 @app.route("/healthz")
 def healthz():
-    return "ok", 200
+    try:
+        ensure_db_initialized()
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        conn.close()
+        return "ok", 200
+    except Exception as e:
+        log(f"healthz failed err={e}")
+        log(traceback.format_exc())
+        return "ng", 503
 
 
 @app.route("/reset_today")
@@ -2133,13 +2179,15 @@ def history_detail(race_date):
 
 @app.route("/api/import_candidates", methods=["POST"])
 def import_candidates():
+    log("import_candidates start")
     try:
         ensure_db_initialized()
-
         if not is_valid_import_token(request):
+            log("import_candidates unauthorized")
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         data = request.get_json(silent=True) or {}
         races = data.get("races", [])
+        log(f"import_candidates received_type={type(races).__name__} count={len(races) if isinstance(races, list) else 'NA'}")
         if not isinstance(races, list):
             return jsonify({"ok": False, "error": "races must be a list"}), 400
 
@@ -2182,11 +2230,14 @@ def import_candidates():
             return jsonify({"ok": False, "error": "races is empty"}), 400
 
         race_dates = sorted(set(r["race_date"] for r in cleaned))
+        log(f"import_candidates race_dates={race_dates}")
         if len(race_dates) != 1:
             return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
 
+        log("import_candidates replace_today_candidates start")
         result = replace_today_candidates(cleaned)
-        log(f"import api success count={len(cleaned)}")
+        log(f"import_candidates replace_today_candidates done result={result}")
+
         response = {
             "ok": True,
             "received": len(cleaned),
@@ -2198,13 +2249,17 @@ def import_candidates():
         }
         if "frozen_closed" in result:
             response["frozen_closed"] = result["frozen_closed"]
+        log(f"import_candidates success response={response}")
         return jsonify(response)
     except Exception as e:
-        log(f"import api error err={e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        log(f"import_candidates failed err={e}")
+        log(traceback.format_exc())
+        return jsonify({"ok": False, "error": "internal_error", "message": str(e)}), 500
 
 
-init_db()
+@app.before_request
+def ensure_ready_for_request():
+    ensure_db_initialized()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
