@@ -948,14 +948,18 @@ def build_card_html(r, is_history=False, race_date=""):
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
     display_ai_rating = display_text(r.get("final_ai_rating"), "") or display_text(r.get("base_ai_rating"), "") or display_ai_rating
-    display_ai_selection = str(r.get("final_ai_selection") or "").strip() or str(r.get("base_ai_selection") or "").strip() or str(r.get("ai_selection") or "").strip()
+    display_ai_selection = (
+        str(r.get("final_ai_selection") or "").strip()
+        or str(r.get("base_ai_selection") or "").strip()
+        or ""
+    )
     display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
     render_r = dict(r)
     render_r["ai_selection"] = display_ai_selection
     selection_compare_html = render_selection_compare_html(render_r, race_id_key)
     ai_detail_text = display_ai_detail_text or normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
-    ai_confidence_value = display_text(r.get("ai_confidence"), "未取得")
+    ai_confidence_value = ""
     player_rank_summary_html = render_player_rank_summary_html(r.get("player_names_text", ""), r.get("class_history_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
