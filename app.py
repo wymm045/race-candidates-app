@@ -2012,10 +2012,6 @@ def healthz():
     return "ok", 200
 
 
-def reset_today():
-    delete_today_races()
-    return redirect("/")
-
 
 @app.route("/")
 def index():
