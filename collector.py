@@ -748,15 +748,144 @@ def parse_beforeinfo_for_key(jcd, race_no):
         "extra_stats": extra_stats,
     }
 
+def parse_class_tokens_from_cell_text(text):
+    cell_text = str(text or "").replace("\xa0", " ")
+    tokens = re.findall(r"\b(A1|A2|B1|B2|-)\b", cell_text)
+    tokens = tokens[:4]
+    while len(tokens) < 4:
+        tokens.append("")
+    return {
+        "current_class": "" if tokens[0] == "-" else tokens[0],
+        "prev1_class": "" if tokens[1] == "-" else tokens[1],
+        "prev2_class": "" if tokens[2] == "-" else tokens[2],
+        "prev3_class": "" if tokens[3] == "-" else tokens[3],
+    }
+
+
+def normalize_name_cell_text(text):
+    s = str(text or "").replace("\xa0", " ")
+    s = s.replace("詳細", " ")
+    s = re.sub(r"\(\d+\)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def extract_name_from_racelist_cell_text(text):
+    raw = normalize_name_cell_text(text)
+    if not raw:
+        return ""
+    lines = [x.strip() for x in re.split(r"[\n\r]+", raw) if x.strip()]
+    candidates = []
+
+    for line in lines:
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line:
+            continue
+        if is_probable_player_name(line):
+            candidates.append(line)
+            continue
+
+        compact = line.replace(" ", "")
+        if is_probable_player_name(compact):
+            candidates.append(compact)
+            continue
+
+        m = re.search(r"([一-龯ぁ-んァ-ヶー]{1,6}\s*[一-龯ぁ-んァ-ヶー]{1,6})", line)
+        if m:
+            candidate = normalize_player_name(m.group(1))
+            if is_probable_player_name(candidate):
+                candidates.append(candidate)
+
+    if candidates:
+        return normalize_player_name(candidates[0])
+
+    m = re.search(r"([一-龯]{1,4}\s*[一-龯ぁ-んァ-ヶー]{1,4})", raw)
+    if m:
+        candidate = normalize_player_name(m.group(1))
+        if is_probable_player_name(candidate):
+            return candidate
+
+    return ""
+
+
+def parse_racelist_table_bundle(html):
+    soup = BeautifulSoup(html, "html.parser")
+    best_bundle = {"class_history_map": {}, "player_names": {}}
+
+    for table in soup.find_all("table"):
+        table_text = table.get_text(" ", strip=True)
+        if "級" not in table_text and "名前" not in table_text:
+            continue
+
+        lane_headers = {}
+        name_map = {}
+        class_map = {}
+
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["td", "th"], recursive=False)
+            if len(cells) < 7:
+                continue
+
+            cell_texts = [c.get_text("\n", strip=True) for c in cells]
+            row_label = re.sub(r"\s+", "", cell_texts[0])
+
+            if not lane_headers:
+                for idx, txt in enumerate(cell_texts[1:], start=1):
+                    m = re.fullmatch(r"\s*([1-6])\s*", txt.replace("\n", " ").strip())
+                    if m:
+                        lane_headers[int(m.group(1))] = idx
+
+            if "名前" in row_label:
+                for lane, col_idx in lane_headers.items():
+                    if col_idx < len(cells):
+                        name = extract_name_from_racelist_cell_text(cells[col_idx].get_text("\n", strip=True))
+                        if name:
+                            name_map[lane] = name
+
+            if "級" in row_label:
+                for lane, col_idx in lane_headers.items():
+                    if col_idx < len(cells):
+                        class_map[lane] = parse_class_tokens_from_cell_text(cells[col_idx].get_text(" ", strip=True))
+
+        if len(class_map) >= len(best_bundle["class_history_map"]):
+            best_bundle["class_history_map"] = class_map
+        if len(name_map) >= len(best_bundle["player_names"]):
+            best_bundle["player_names"] = name_map
+
+        if len(best_bundle["class_history_map"]) == 6 and len(best_bundle["player_names"]) == 6:
+            break
+
+    return best_bundle
+
+
 def parse_racelist_race_from_html(html, race_no, jcd, venue):
+    bundle = parse_racelist_table_bundle(html)
+    class_map = bundle.get("class_history_map", {})
+    name_map = bundle.get("player_names", {})
+
+    if len(class_map) == 6:
+        log(
+            f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} "
+            f"class_sample={class_map.get(1, {})} names={len(name_map)}"
+        )
+        return bundle
+
     text = normalize_text_for_class_parse(html)
-    lane_map = extract_class_block_tokens(text)
-    if len(lane_map) == 6:
-        log(f"[racelist_race_ok] jcd={jcd} venue={venue} race_no={race_no} sample={lane_map.get(1, {})}")
-        return lane_map
+    fallback_class_map = extract_class_block_tokens(text)
+    if len(fallback_class_map) == 6:
+        bundle["class_history_map"] = fallback_class_map
+        log(
+            f"[racelist_race_ok_fallback] jcd={jcd} venue={venue} race_no={race_no} "
+            f"class_sample={fallback_class_map.get(1, {})} names={len(name_map)}"
+        )
+        return bundle
+
     snippet = text[:1200].replace("\n", " / ")
-    log(f"[racelist_race_lane_short] jcd={jcd} venue={venue} race_no={race_no} lanes={len(lane_map)} snippet={snippet}")
-    return {}
+    log(
+        f"[racelist_race_lane_short] jcd={jcd} venue={venue} race_no={race_no} "
+        f"lanes={len(class_map)} names={len(name_map)} snippet={snippet}"
+    )
+    return bundle
 
 
 def parse_racelist_page_all_races(jcd):
@@ -2003,7 +2132,8 @@ def build_candidates():
         environment = beforeinfo.get("environment", {})
         player_names = beforeinfo.get("player_names", {})
         extra_stats = beforeinfo.get("extra_stats", {})
-        class_history_map = racelist_cache.get(jcd, {}).get(race_no, {})
+        racelist_race_info = racelist_cache.get(jcd, {}).get(race_no, {})
+        class_history_map = racelist_race_info.get("class_history_map", {})
         venue_trend = summarize_venue_trend(result_cache, jcd, race_no)
 
         if sample_logged < 3:
