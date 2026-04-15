@@ -1730,6 +1730,7 @@ def is_valid_import_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
+
 def is_valid_read_token(req):
     sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
@@ -2237,6 +2238,8 @@ def import_base_candidates():
             "imported_at": jst_now_str(),
         }
     )
+
+
 
 @app.route("/api/base_map_today", methods=["GET"])
 def api_base_map_today():
