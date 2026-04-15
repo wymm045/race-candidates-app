@@ -500,6 +500,17 @@ def make_player_names_text(player_names_map):
     return " / ".join([f"{lane}:{player_names_map.get(lane, '')}" for lane in range(1, 7) if player_names_map.get(lane)])
 
 
+def merge_player_name_maps(primary_map, fallback_map):
+    merged = {}
+    primary_map = primary_map or {}
+    fallback_map = fallback_map or {}
+    for lane in range(1, 7):
+        name = primary_map.get(lane) or fallback_map.get(lane) or ""
+        if name:
+            merged[lane] = normalize_player_name(name)
+    return merged
+
+
 def extract_course_recent_stats(lines):
     stats = {lane: {"course_rate": None, "avg_st": None, "recent_avg": None, "recent_top3": None} for lane in range(1, 7)}
     lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
@@ -2130,10 +2141,12 @@ def build_candidates():
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         boat_stats = beforeinfo.get("boat_stats", {})
         environment = beforeinfo.get("environment", {})
-        player_names = beforeinfo.get("player_names", {})
+        beforeinfo_player_names = beforeinfo.get("player_names", {})
         extra_stats = beforeinfo.get("extra_stats", {})
         racelist_race_info = racelist_cache.get(jcd, {}).get(race_no, {})
         class_history_map = racelist_race_info.get("class_history_map", {})
+        racelist_player_names = racelist_race_info.get("player_names", {})
+        player_names = merge_player_name_maps(beforeinfo_player_names, racelist_player_names)
         venue_trend = summarize_venue_trend(result_cache, jcd, race_no)
 
         if sample_logged < 3:
@@ -2143,6 +2156,7 @@ def build_candidates():
                 sample_bits.append(f"{lane}:course={ex.get('course_rate')} st={ex.get('avg_st')} recent={ex.get('recent_avg')} top3={ex.get('recent_top3')}")
             log(f"[extra_stats_sample] jcd={jcd} race_no={race_no} " + " | ".join(sample_bits))
             log(f"[venue_trend_sample] jcd={jcd} race_no={race_no} trend={venue_trend.get('trend_text', '')} bias={venue_trend.get('trend_bias', {})}")
+            log(f"[player_names_sample] jcd={jcd} race_no={race_no} beforeinfo={len(beforeinfo_player_names)} racelist={len(racelist_player_names)} merged={len(player_names)} names={player_names}")
             sample_logged += 1
 
         analyzed = analyze_candidate(
