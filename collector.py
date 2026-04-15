@@ -2247,12 +2247,53 @@ def send_to_render(races):
         raise RuntimeError("RENDER_IMPORT_URL が未設定です")
     if not IMPORT_TOKEN:
         raise RuntimeError("IMPORT_TOKEN が未設定です")
+
     headers = {"Content-Type": "application/json", "X-IMPORT-TOKEN": IMPORT_TOKEN}
     payload = {"races": races}
-    res = requests.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
-    print("status_code =", res.status_code)
-    print("response =", res.text)
-    res.raise_for_status()
+    retry_statuses = {502, 503, 504}
+    max_attempts = 6
+    health_url = RENDER_IMPORT_URL.replace('/api/import_candidates', '/healthz') if '/api/import_candidates' in RENDER_IMPORT_URL else ''
+    last_err = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if health_url:
+                try:
+                    health_res = requests.get(health_url, timeout=(5, 10))
+                    log(f"[render_health] attempt={attempt} status={health_res.status_code}")
+                except Exception as health_err:
+                    log(f"[render_health_error] attempt={attempt} err={health_err}")
+
+            log(f"[render_post_try] attempt={attempt}/{max_attempts} url={RENDER_IMPORT_URL} races={len(races)}")
+            res = requests.post(
+                RENDER_IMPORT_URL,
+                headers=headers,
+                json=payload,
+                timeout=POST_TIMEOUT,
+            )
+            print("status_code =", res.status_code)
+            print("response =", res.text)
+
+            if res.status_code in retry_statuses:
+                raise requests.exceptions.HTTPError(
+                    f"{res.status_code} Server Error: {res.text}",
+                    response=res,
+                )
+
+            res.raise_for_status()
+            log(f"[render_post_ok] attempt={attempt}")
+            return
+
+        except Exception as e:
+            last_err = e
+            wait_sec = min(45, 5 * attempt)
+            log(f"[render_post_retry] attempt={attempt}/{max_attempts} wait={wait_sec}s err={e}")
+            if attempt < max_attempts:
+                time.sleep(wait_sec)
+            else:
+                log(f"[render_post_failed] attempts={max_attempts} err={e}")
+
+    raise last_err
 
 
 def main():
