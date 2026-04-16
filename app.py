@@ -210,6 +210,16 @@ def yen(n):
         return "0円"
 
 
+def signed_yen(n):
+    try:
+        v = int(n)
+    except Exception:
+        return "0円"
+    if v > 0:
+        return f"+{v:,}円"
+    return f"{v:,}円"
+
+
 def lane_color_class(lane):
     try:
         lane_num = int(lane)
@@ -1179,12 +1189,11 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
         <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
-        <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
-        <div class="row"><span class="label">結果反映時刻</span><span class="value">{display_text(settled_at_text, '未反映')}</span></div>
+        <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
-        <div class="row"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row row-player-rank"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
-        <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+        <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
         <div class="row"><span class="label">詳細材料</span><span class="value">{detail_material_html}</span></div>
         {ai_reason_html}
@@ -1312,7 +1321,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
           <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
           <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
           <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
-          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div>
         </div>
       </div>
       {cards_html}
@@ -1328,7 +1337,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
             return '<div class="empty">データがありません</div>'
         body = ""
         for r in rows:
-            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_points']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
+            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_points']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{signed_yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
         return f"<div class='table-wrap'><table><thead><tr><th>区分</th><th>購入レース</th><th>購入点数</th><th>的中</th><th>投資</th><th>払戻</th><th>収支</th><th>的中率</th><th>回収率</th></tr></thead><tbody>{body}</tbody></table></div>"
 
     content = f'''
@@ -1357,7 +1366,7 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
           <div class="summary-box"><div class="summary-label">払戻額</div><div class="summary-value">{yen(summary['total_payout'])}</div></div>
         </div>
         <div class="summary" style="margin-top:8px;">
-          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div>
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div>
           <div class="summary-box"><div class="summary-label">的中率</div><div class="summary-value">{percent(summary['hit_rate'])}</div></div>
           <div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div>
           <div class="summary-box"><div class="summary-label">1点あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_points']) if summary['total_points'] else 0)}</div></div>
@@ -1398,7 +1407,7 @@ def render_history_page(date_summaries):
         for item in date_summaries:
             d = item["race_date"]
             s = item["summary"]
-            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{yen(s['total_profit'])}</div></div></div></div>'''
+            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{signed_yen(s['total_profit'])}</div></div></div></div>'''
         list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
     return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
 
@@ -1471,7 +1480,7 @@ def render_history_detail_page(
     content = f'''
     <div class="app-shell">
       <div class="topbar"><div class="brand"><div class="brand-logo">🧾</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ詳細</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
-      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{yen(summary['total_profit'])}</div></div></div></div>
+      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div></div></div>
       {body}
     </div>
     '''
@@ -1538,8 +1547,8 @@ def render_layout(title, body_html):
       .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
       .summary-label,.history-mini-label{font-size:12px;color:#667085}
       .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
-      .profit-plus{color:#d92d20}
-      .profit-minus{color:#175cd3}
+      .profit-plus{color:#175cd3}
+      .profit-minus{color:#d92d20}
       .profit-zero{color:#344054}
       .filter-box,.info-box{margin-top:10px}
       .filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:10px;align-items:end}
@@ -1636,7 +1645,7 @@ def render_layout(title, body_html):
       .player-chip .lane-color,.class-history-lane .lane-color,.ex-chip-lane .lane-color,.ex-lane .lane-color{min-width:28px;height:24px;font-size:14px;border-radius:2px}
       .ex-chip{display:inline-flex;align-items:center;gap:8px}
       .ex-chip-time{font-weight:700}
-      .ex-lane{display:flex;justify-content:center;margin-bottom:6px}
+      .ex-lane{display:flex;justify-content:center;margin-bottom:4px}
       .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
       .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
       .pick-plain{font-weight:800;color:#344054}
@@ -1644,12 +1653,15 @@ def render_layout(title, body_html):
       .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       .player-chip-lane{flex:0 0 auto}
       .player-chip-name{font-weight:700;color:#172033}
-      .player-rank-wrap{display:flex;flex-direction:column;gap:8px}
-      .player-rank-row{display:grid;grid-template-columns:minmax(180px,240px) 1fr;gap:10px;align-items:center;padding:6px 0}
-      .player-rank-main{display:flex;align-items:center;gap:8px;min-width:0}
+      .row-player-rank .label,.row-exhibition-rank .label{padding-top:4px}
+      .row-player-rank .value{width:100%}
+      .player-rank-wrap{display:flex;flex-direction:column;gap:10px;padding:4px 0}
+      .player-rank-row{display:grid;grid-template-columns:minmax(200px,260px) 1fr;gap:16px;align-items:start;padding:8px 0}
+      .player-rank-main{display:flex;align-items:center;gap:10px;min-width:0}
       .player-rank-lane{flex:0 0 auto}
-      .player-rank-name{font-weight:800;color:#172033;line-height:1.35;word-break:break-word}
-      .player-rank-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+      .player-rank-name{min-width:0;font-weight:800;color:#172033;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+      .player-rank-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start}
+      .player-rank-chips .class-chip{min-width:56px;padding:5px 8px;border-radius:8px}
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
@@ -1658,12 +1670,13 @@ def render_layout(title, body_html):
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
       .lane-score-bad{background:#fef3f2}
-      .ex-rank-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:10px;padding:8px;text-align:center}
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:8px;padding:6px 4px;text-align:center}
       .ex-rank-1{background:#ecfdf3}
       .ex-rank-2{background:#eef4ff}
       .ex-rank-3{background:#fff6e5}
       .ex-rank-low{background:#fef3f2}
+      .ex-rank{font-size:14px;font-weight:800;line-height:1.1}
       .class-history-wrap{display:flex;flex-direction:column;gap:8px}
       .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
       .class-history-lane{font-weight:800;display:flex;align-items:center}
@@ -1673,8 +1686,9 @@ def render_layout(title, body_html):
       .class-chip-a2{background:#eef4ff}
       .class-chip-b1{background:#fff6e5}
       .class-chip-b2{background:#fef3f2}
-      .class-chip-sub{font-size:11px;color:#667085}
-      .class-chip-main{font-weight:800}
+      .class-chip-sub{font-size:10px;color:#667085}
+      .class-chip-main{font-size:13px;font-weight:800}
+      .current-class-chip .class-chip-main{font-size:15px}
       .form{margin-top:12px}
       .detail-box{display:flex;flex-direction:column;gap:10px}
       .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
@@ -1712,11 +1726,6 @@ def render_layout(title, body_html):
       .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));z-index:50}
       .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
       .bottom-nav-item.active{color:#175cd3;font-weight:800}
-      .player-rank-row{display:grid;grid-template-columns:minmax(180px, 260px) minmax(360px, 1fr);gap:12px;align-items:center}
-      .player-rank-main{min-width:0;display:flex;align-items:center;gap:10px}
-      .player-rank-name{min-width:0;font-weight:800;line-height:1.35;word-break:keep-all;overflow-wrap:anywhere}
-      .player-rank-chips{display:grid;grid-template-columns:repeat(4, minmax(72px, max-content));gap:8px;min-width:0;justify-content:start}
-      .player-rank-chips .class-chip{min-width:72px;padding:8px 12px;white-space:nowrap;justify-content:center}
       @media (max-width: 760px){
         html{background:#f5f7fb}
         .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
@@ -1728,7 +1737,9 @@ def render_layout(title, body_html):
         .row{grid-template-columns:1fr;gap:8px;}
         .race-venue,.race-rno{font-size:20px}
         .time{font-size:22px}
-        .ex-rank-grid{grid-template-columns:repeat(2,1fr)}
+        .ex-rank-grid{grid-template-columns:repeat(3,1fr);gap:6px}
+        .ex-rank-box{padding:6px 4px}
+        .ex-rank{font-size:13px}
         .card-top-main{flex-direction:column;align-items:flex-start}
         .status-wrap{margin-top:2px}
         .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
@@ -1746,12 +1757,13 @@ def render_layout(title, body_html):
         .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
         .player-chip{align-items:flex-start}
         .player-chip-name{font-size:14px;line-height:1.45}
-        .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:4px 0}
+        .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:6px 0}
         .player-rank-main{gap:8px}
         .player-rank-name{font-size:14px;line-height:1.4}
-        .player-rank-chips{gap:6px;flex-wrap:wrap}
-        .player-rank-chips .class-chip{min-width:0}
-        .current-class-chip .class-chip-main{font-size:18px}
+        .player-rank-chips{gap:5px;flex-wrap:wrap}
+        .player-rank-chips .class-chip{min-width:0;padding:5px 7px}
+        .class-chip-main{font-size:12px}
+        .current-class-chip .class-chip-main{font-size:14px}
         .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
         .pick-inline{gap:5px}
         .pick-sep{font-size:13px}
