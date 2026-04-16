@@ -25,6 +25,61 @@ AI_RATING_OPTIONS = [
     "AI★☆☆☆☆",
 ]
 
+CARD_SELECT_COLUMNS = '''
+    id,
+    race_date,
+    time,
+    venue,
+    race_no,
+    race_no_num,
+    rating,
+    bet_type,
+    selection,
+    amount,
+    ai_reasons,
+    exhibition,
+    exhibition_rank,
+    ai_lane_score_text,
+    class_history_text,
+    player_names_text,
+    ai_score,
+    ai_rating,
+    ai_selection,
+    ai_detail,
+    ai_confidence,
+    base_ai_score,
+    base_ai_rating,
+    base_ai_selection,
+    base_reason_text,
+    base_updated_at,
+    final_ai_score,
+    final_ai_rating,
+    final_ai_selection,
+    final_rank,
+    latest_reason_text,
+    latest_updated_at,
+    purchased,
+    purchased_selection_text,
+    hit,
+    payout,
+    memo,
+    imported_at
+'''
+
+POINT_COUNT_SQL = """
+CASE
+    WHEN COALESCE(BTRIM(purchased_selection_text), '') = '' THEN 0
+    ELSE COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0)
+END
+"""
+
+ALLOWED_GROUP_COLUMNS = {
+    "rating": "rating",
+    "venue": "venue",
+    "ai_rating": "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, ''), '')",
+    "final_rank": "final_rank",
+}
+
 
 def log(msg):
     print(f"[DEBUG][{jst_now_str()}] {msg}", flush=True)
@@ -46,8 +101,6 @@ def current_hhmm():
     return jst_now().strftime("%H:%M")
 
 
-def is_star5_only(race):
-    return str(race.get("rating", "")).strip() == "★★★★★"
 
 
 def hhmm_to_minutes(hhmm):
@@ -219,8 +272,6 @@ def unique_preserve(seq):
     return result
 
 
-def merge_selected_items(official_selected, ai_selected):
-    return unique_preserve(list(official_selected) + list(ai_selected))
 
 
 def get_selected_count_from_text(selection_text):
@@ -247,7 +298,7 @@ def get_existing_race_map_by_date(race_date):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         '''
-        SELECT *
+        SELECT id, race_date, venue, race_no
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -266,50 +317,6 @@ def get_existing_race_map_by_date(race_date):
             race_map[key] = row
     return race_map
 
-
-def get_saved_state_map_by_race(race_date):
-    ensure_db_initialized()
-    conn = db_connect()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        '''
-        SELECT id, race_date, venue, race_no, purchased, hit, payout, memo, purchased_selection_text
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
-        ORDER BY
-            CASE
-                WHEN hit = 1 THEN 4
-                WHEN purchased = 1 THEN 3
-                WHEN payout > 0 THEN 2
-                WHEN COALESCE(memo, '') <> '' THEN 1
-                ELSE 0
-            END DESC,
-            id DESC
-        ''',
-        (race_date,),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    saved_map = {}
-    for row in rows:
-        key = (
-            str(row['race_date']).strip(),
-            str(row['venue']).strip(),
-            str(row['race_no']).strip(),
-        )
-        if key in saved_map:
-            continue
-        saved_map[key] = {
-            'purchased': int(row.get('purchased') or 0),
-            'hit': int(row.get('hit') or 0),
-            'payout': int(row.get('payout') or 0),
-            'memo': str(row.get('memo') or '').strip(),
-            'purchased_selection_text': str(row.get('purchased_selection_text') or '').strip(),
-        }
-    return saved_map
 
 
 def parse_exhibition_rank_map(rank_text):
@@ -396,21 +403,6 @@ def parse_player_names_map(player_names_text):
     return result
 
 
-def render_player_names_html(player_names_text):
-    player_map = parse_player_names_map(player_names_text)
-    if not player_map:
-        return '<div class="player-empty">未取得</div>'
-
-    items = ""
-    for lane in range(1, 7):
-        name = player_map.get(lane, "未取得")
-        items += f'''
-        <div class="player-chip player-chip-{lane}">
-          <span class="player-chip-lane">{render_lane_badge(lane)}</span>
-          <span class="player-chip-name">{name}</span>
-        </div>
-        '''
-    return f'<div class="player-chip-wrap">{items}</div>'
 
 
 def render_player_rank_summary_html(player_names_text, class_history_text):
@@ -481,27 +473,6 @@ def parse_class_history_rows(class_history_text):
     return rows
 
 
-def render_class_history_blocks(class_history_text):
-    rows = parse_class_history_rows(class_history_text)
-    if not rows:
-        return '<div class="class-history-empty">未取得</div>'
-
-    html = ""
-    for row in rows:
-        lane = row.get("lane")
-        classes = row.get("classes", [])
-        chips = ""
-        for idx, cls in enumerate(classes):
-            cls_safe = (cls or "").lower()
-            sub = "現" if idx == 0 else f"-{idx}"
-            chips += f'<div class="class-chip class-chip-{cls_safe}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
-        html += f'''
-        <div class="class-history-row">
-          <div class="class-history-lane">{render_lane_badge(lane)}</div>
-          <div class="class-history-chips">{chips}</div>
-        </div>
-        '''
-    return f'<div class="class-history-wrap">{html}</div>'
 
 
 def parse_lane_score_items(lane_score_text):
@@ -713,11 +684,12 @@ def get_races_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        '''
-        SELECT *
+        f'''
+        SELECT {CARD_SELECT_COLUMNS}
         FROM races
-        WHERE race_date = %s AND venue <> 'テスト会場'
-        ORDER BY time ASC, venue ASC, race_no_num ASC
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
         ''',
         (race_date,),
     )
@@ -727,28 +699,62 @@ def get_races_by_date(race_date):
     return rows
 
 
+
 def get_race_by_id(race_id):
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM races WHERE id = %s", (race_id,))
+    cur.execute(
+        '''
+        SELECT id, time, venue, race_no
+        FROM races
+        WHERE id = %s
+        ''',
+        (race_id,),
+    )
     row = cur.fetchone()
     cur.close()
     conn.close()
     return row
 
 
-def get_today_races():
-    return get_races_by_date(today_text())
-
 
 def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
-    rows = [r for r in get_today_races() if is_star5_only(r)]
+    ensure_db_initialized()
+
+    where_clauses = [
+        "race_date = %s",
+        "venue <> 'テスト会場'",
+        "rating = %s",
+    ]
+    params = [today_text(), "★★★★★"]
+
     if ai_rating_filter:
-        rows = [r for r in rows if str(r.get("ai_rating", "")).strip() == ai_rating_filter]
+        where_clauses.append(
+            "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, '')) = %s"
+        )
+        params.append(ai_rating_filter)
+
     if not show_closed:
-        rows = [r for r in rows if is_not_started(r["time"])]
+        where_clauses.append("time >= %s")
+        params.append(current_hhmm())
+
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f'''
+        SELECT {CARD_SELECT_COLUMNS}
+        FROM races
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
+        ''',
+        tuple(params),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     return rows
+
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
@@ -810,45 +816,34 @@ def get_summary_by_date(race_date):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        """
-        SELECT *
+        f'''
+        SELECT
+            COUNT(*) AS total_rows,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
         FROM races
-        WHERE race_date = %s AND venue <> 'テスト会場'
-        """,
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ''',
         (race_date,),
     )
-    rows = cur.fetchall()
+    row = cur.fetchone() or {}
     cur.close()
     conn.close()
 
-    total_rows = len(rows)
-    total_bets = 0
-    total_points = 0
-    total_investment = 0
-    total_payout = 0
-    total_hits = 0
-    imported_candidates = []
-
-    for row in rows:
-        purchased_text = str(row.get("purchased_selection_text") or "").strip()
-        selected_count = get_selected_count_from_text(purchased_text)
-
-        if selected_count > 0:
-            total_bets += 1
-            total_points += selected_count
-            total_investment += int(row.get("amount") or 0) * selected_count
-            total_payout += int(row.get("payout") or 0)
-            if int(row.get("hit") or 0) == 1:
-                total_hits += 1
-
-        imported_at = str(row.get("imported_at") or "").strip()
-        if imported_at:
-            imported_candidates.append(imported_at)
-
+    total_rows = int(row.get("total_rows") or 0)
+    total_bets = int(row.get("total_bets") or 0)
+    total_points = int(row.get("total_points") or 0)
+    total_investment = int(row.get("total_investment") or 0)
+    total_payout = int(row.get("total_payout") or 0)
+    total_hits = int(row.get("total_hits") or 0)
     total_profit = total_payout - total_investment
     hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
     roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
-    last_imported_at = max(imported_candidates) if imported_candidates else ""
 
     return {
         "total_rows": total_rows,
@@ -860,71 +855,54 @@ def get_summary_by_date(race_date):
         "total_hits": total_hits,
         "hit_rate": hit_rate,
         "roi": roi,
-        "last_imported_at": last_imported_at,
+        "last_imported_at": str(row.get("last_imported_at") or "").strip(),
     }
-
 
 
 
 def get_group_summary(race_date, group_key):
     ensure_db_initialized()
-    if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
+
+    group_sql = ALLOWED_GROUP_COLUMNS.get(group_key)
+    if not group_sql:
         return []
 
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f"""
-        SELECT *
+        f'''
+        SELECT
+            COALESCE(NULLIF(BTRIM({group_sql}), ''), '(空白)') AS group_name,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout
         FROM races
-        WHERE race_date = %s AND venue <> 'テスト会場'
-        ORDER BY {group_key} ASC, id ASC
-        """,
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        GROUP BY 1
+        ORDER BY 1 ASC
+        ''',
         (race_date,),
     )
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
-    grouped = {}
-    for row in rows:
-        group_name = str(row.get(group_key) or "").strip() or "(空白)"
-        if group_name not in grouped:
-            grouped[group_name] = {
-                "group_name": group_name,
-                "total_bets": 0,
-                "total_hits": 0,
-                "total_points": 0,
-                "total_investment": 0,
-                "total_payout": 0,
-            }
-
-        item = grouped[group_name]
-        purchased_text = str(row.get("purchased_selection_text") or "").strip()
-        selected_count = get_selected_count_from_text(purchased_text)
-
-        if selected_count > 0:
-            item["total_bets"] += 1
-            item["total_points"] += selected_count
-            item["total_investment"] += int(row.get("amount") or 0) * selected_count
-            item["total_payout"] += int(row.get("payout") or 0)
-            if int(row.get("hit") or 0) == 1:
-                item["total_hits"] += 1
-
     results = []
-    for group_name in sorted(grouped.keys()):
-        row = grouped[group_name]
-        total_bets = row["total_bets"]
-        total_hits = row["total_hits"]
-        total_points = row["total_points"]
-        total_investment = row["total_investment"]
-        total_payout = row["total_payout"]
+    for row in rows:
+        total_bets = int(row.get("total_bets") or 0)
+        total_hits = int(row.get("total_hits") or 0)
+        total_points = int(row.get("total_points") or 0)
+        total_investment = int(row.get("total_investment") or 0)
+        total_payout = int(row.get("total_payout") or 0)
         total_profit = total_payout - total_investment
         hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
         roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
         results.append(
             {
-                "group_name": group_name,
+                "group_name": str(row.get("group_name") or "(空白)"),
                 "total_bets": total_bets,
                 "total_hits": total_hits,
                 "total_points": total_points,
@@ -943,15 +921,70 @@ def get_history_dates():
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC")
+    cur.execute(
+        "SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC"
+    )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return [row[0] for row in rows]
 
 
+
 def get_history_date_summaries():
-    return [{"race_date": d, "summary": get_summary_by_date(d)} for d in get_history_dates()]
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f'''
+        SELECT
+            race_date,
+            COUNT(*) AS total_rows,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
+        FROM races
+        WHERE venue <> 'テスト会場'
+        GROUP BY race_date
+        ORDER BY race_date DESC
+        '''
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    results = []
+    for row in rows:
+        total_bets = int(row.get("total_bets") or 0)
+        total_hits = int(row.get("total_hits") or 0)
+        total_points = int(row.get("total_points") or 0)
+        total_investment = int(row.get("total_investment") or 0)
+        total_payout = int(row.get("total_payout") or 0)
+        total_profit = total_payout - total_investment
+        hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+        roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+        results.append(
+            {
+                "race_date": str(row.get("race_date") or "").strip(),
+                "summary": {
+                    "total_rows": int(row.get("total_rows") or 0),
+                    "total_bets": total_bets,
+                    "total_points": total_points,
+                    "total_investment": total_investment,
+                    "total_payout": total_payout,
+                    "total_profit": total_profit,
+                    "total_hits": total_hits,
+                    "hit_rate": hit_rate,
+                    "roi": roi,
+                    "last_imported_at": str(row.get("last_imported_at") or "").strip(),
+                },
+            }
+        )
+    return results
+
 
 
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
@@ -1820,6 +1853,7 @@ def is_valid_read_token(req):
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
 
+
 _db_initialized = False
 
 def ensure_db_initialized():
@@ -1827,10 +1861,11 @@ def ensure_db_initialized():
     if _db_initialized:
         return
     init_db()
-    _db_initialized = True
 
 
 def init_db():
+    global _db_initialized
+
     conn = db_connect()
     cur = conn.cursor()
 
@@ -1926,10 +1961,15 @@ def init_db():
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_today_view ON races (race_date, rating, time, venue, race_no_num)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_history_view ON races (race_date, venue, race_no_num, hit)")
 
     conn.commit()
     cur.close()
     conn.close()
+    _db_initialized = True
+
+
 
 
 def upsert_base_candidates(cleaned):
@@ -2453,4 +2493,4 @@ init_db()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
