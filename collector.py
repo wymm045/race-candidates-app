@@ -814,94 +814,6 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
     return lane_scores
 
 
-def build_generated_triplets_from_lane_scores(lane_score_map):
-    sorted_lanes = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
-    if len(sorted_lanes) < 4:
-        return []
-
-    a, b, c, d = sorted_lanes[:4]
-
-    candidates = [
-        normalize_triplet(a, b, c),
-        normalize_triplet(a, b, d),
-        normalize_triplet(a, c, b),
-        normalize_triplet(a, c, d),
-        normalize_triplet(b, a, c),
-        normalize_triplet(b, a, d),
-        normalize_triplet(a, d, b),
-        normalize_triplet(c, a, b),
-    ]
-
-    out = []
-    for tri in candidates:
-        if tri and tri not in out:
-            out.append(tri)
-    return out
-
-
-def inject_promoted_triplets(triplets, lane_score_map):
-    if not lane_score_map or len(lane_score_map) < 3:
-        return triplets[:6]
-
-    ranked = sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)
-    top_lane, top_score = ranked[0]
-    second_lane, second_score = ranked[1]
-
-    include_count = 0
-    head_count = 0
-    for tri in triplets:
-        parts = tri.split("-")
-        if len(parts) != 3:
-            continue
-        try:
-            a, b, c = map(int, parts)
-        except Exception:
-            continue
-        if top_lane in (a, b, c):
-            include_count += 1
-        if a == top_lane:
-            head_count += 1
-
-    if top_score < 0.55:
-        return triplets[:6]
-
-    if (top_score - second_score) < 0.18:
-        return triplets[:6]
-
-    generated = build_generated_triplets_from_lane_scores(lane_score_map)
-
-    promoted = []
-    for tri in generated:
-        parts = tri.split("-")
-        if len(parts) != 3:
-            continue
-        try:
-            a, b, c = map(int, parts)
-        except Exception:
-            continue
-        if a == top_lane or b == top_lane:
-            promoted.append(tri)
-
-    new_list = list(triplets)
-
-    if include_count == 0:
-        for tri in promoted[:2]:
-            if tri not in new_list:
-                new_list.insert(0, tri)
-    elif head_count == 0:
-        for tri in promoted[:1]:
-            if tri not in new_list:
-                new_list.insert(0, tri)
-
-    dedup = []
-    for tri in new_list:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return dedup
-
-
 def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
     lane_scores = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
     return " / ".join([f"{lane}:{lane_scores[lane]:.2f}" for lane in range(1, 7)])
@@ -988,59 +900,232 @@ def selection_triplets(selection):
     return [x.strip() for x in str(selection).split(" / ") if x.strip()]
 
 
-def rebuild_final_selection(base_selection, exhibition_info, weather_info=None, foot_material=None):
+def parse_selection_weight_map(base_selection):
     triplets = selection_triplets(base_selection)
-    if not triplets:
-        return ""
+    weight_map = {}
+    for idx, tri in enumerate(triplets):
+        weight_map[tri] = max(0.30, 1.0 - idx * 0.08)
+    return weight_map
 
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    foot_material = foot_material or {}
-    foot_lane_scores = foot_material.get("lane_scores", {}) or {}
 
+def build_role_score_maps(exhibition_info, weather_info=None, foot_material=None):
     lane_score_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
-    triplets = inject_promoted_triplets(triplets, lane_score_map)
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    st_map = (foot_material or {}).get("st_map", {}) or {}
 
-    if not ranks and not foot_lane_scores:
-        return " / ".join(triplets[:6])
+    head_score = {lane: float(lane_score_map.get(lane, 0) or 0) for lane in range(1, 7)}
+    second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.88 for lane in range(1, 7)}
+    third_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.72 for lane in range(1, 7)}
 
-    def triplet_score(tri):
-        parts = tri.split("-")
-        if len(parts) != 3:
-            return -999
+    # イン有利は頭で強め
+    head_score[1] += 0.38
+    second_score[1] += 0.10
+    third_score[1] -= 0.06
+
+    head_score[2] += 0.12
+    second_score[2] += 0.18
+    third_score[2] += 0.04
+
+    head_score[3] += 0.04
+    second_score[3] += 0.10
+    third_score[3] += 0.08
+
+    head_score[4] -= 0.06
+    second_score[4] += 0.02
+    third_score[4] += 0.08
+
+    head_score[5] -= 0.10
+    second_score[5] -= 0.02
+    third_score[5] += 0.10
+
+    head_score[6] -= 0.14
+    second_score[6] -= 0.04
+    third_score[6] += 0.12
+
+    # 展示順位
+    if ranks:
+        for lane in range(1, 7):
+            rank = ranks.get(lane)
+            if rank is None:
+                continue
+            if rank == 1:
+                head_score[lane] += 0.34
+                second_score[lane] += 0.16
+            elif rank == 2:
+                head_score[lane] += 0.20
+                second_score[lane] += 0.18
+                third_score[lane] += 0.06
+            elif rank == 3:
+                head_score[lane] += 0.08
+                second_score[lane] += 0.12
+                third_score[lane] += 0.10
+            elif rank == 4:
+                head_score[lane] -= 0.02
+                third_score[lane] += 0.06
+            elif rank == 5:
+                head_score[lane] -= 0.16
+                second_score[lane] -= 0.06
+            elif rank == 6:
+                head_score[lane] -= 0.28
+                second_score[lane] -= 0.10
+                third_score[lane] -= 0.04
+
+    # 展示タイム差
+    float_times = []
+    for lane, t in enumerate(times, start=1):
         try:
-            a, b, c = map(int, parts)
+            float_times.append((lane, float(t)))
         except Exception:
-            return -999
+            pass
 
-        rank_score = (
-            -(ranks.get(a, 9) * 1.3 + ranks.get(b, 9) * 0.9 + ranks.get(c, 9) * 0.6)
-            if ranks else 0
-        )
-        foot_score = (
-            float(foot_lane_scores.get(a, 0) or 0) * 1.2
-            + float(foot_lane_scores.get(b, 0) or 0) * 0.8
-            + float(foot_lane_scores.get(c, 0) or 0) * 0.5
-        )
-        lane_total_score = (
-            float(lane_score_map.get(a, 0) or 0) * 1.0
-            + float(lane_score_map.get(b, 0) or 0) * 0.7
-            + float(lane_score_map.get(c, 0) or 0) * 0.45
-        )
-        return rank_score + foot_score + lane_total_score
+    if len(float_times) == 6:
+        min_time = min(v for _, v in float_times)
+        max_time = max(v for _, v in float_times)
+        spread = max_time - min_time
+        avg_time = sum(v for _, v in float_times) / 6.0
 
-    triplets = sorted(triplets, key=lambda tri: (triplet_score(tri), tri), reverse=True)
+        for lane, v in float_times:
+            diff_min = v - min_time
+            diff_avg = v - avg_time
+
+            if diff_min <= 0.00:
+                head_score[lane] += 0.18
+                second_score[lane] += 0.10
+            elif diff_min <= 0.03:
+                head_score[lane] += 0.10
+                second_score[lane] += 0.08
+                third_score[lane] += 0.02
+            elif diff_min >= 0.10:
+                head_score[lane] -= 0.22
+                second_score[lane] -= 0.08
+            elif diff_min >= 0.06:
+                head_score[lane] -= 0.10
+                second_score[lane] -= 0.04
+
+            if diff_avg <= -0.04:
+                third_score[lane] += 0.04
+            elif diff_avg >= 0.05:
+                third_score[lane] -= 0.04
+
+        if spread >= 0.12:
+            fastest_lane = min(float_times, key=lambda x: x[1])[0]
+            head_score[fastest_lane] += 0.08
+
+    # ST
+    if len(st_map) >= 4:
+        sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
+        best_lane = sorted_st[0][0]
+        second_lane = sorted_st[1][0]
+        worst_lane = sorted_st[-1][0]
+        best_st = sorted_st[0][1]
+        worst_st = sorted_st[-1][1]
+        spread = worst_st - best_st
+
+        if best_st <= 0.10:
+            head_score[best_lane] += 0.20
+            second_score[best_lane] += 0.10
+        elif best_st <= 0.12:
+            head_score[best_lane] += 0.12
+            second_score[best_lane] += 0.08
+
+        if spread >= 0.10:
+            head_score[best_lane] += 0.10
+            second_score[second_lane] += 0.08
+            third_score[second_lane] += 0.04
+            head_score[worst_lane] -= 0.10
+
+    # 役割の自然さ調整
+    for lane in [4, 5, 6]:
+        if lane_score_map.get(lane, 0) > 0:
+            third_score[lane] += 0.05
+
+    return {
+        "lane": lane_score_map,
+        "head": head_score,
+        "second": second_score,
+        "third": third_score,
+    }
+
+
+def generate_top_triplets(base_selection, exhibition_info, weather_info=None, foot_material=None):
+    role_maps = build_role_score_maps(exhibition_info, weather_info, foot_material)
+    lane_score_map = role_maps["lane"]
+    head_score = role_maps["head"]
+    second_score = role_maps["second"]
+    third_score = role_maps["third"]
+
+    base_weight_map = parse_selection_weight_map(base_selection)
+    base_triplets = selection_triplets(base_selection)
+
+    scored = []
+    for a in range(1, 7):
+        for b in range(1, 7):
+            if b == a:
+                continue
+            for c in range(1, 7):
+                if c == a or c == b:
+                    continue
+
+                tri = f"{a}-{b}-{c}"
+                score = (
+                    head_score.get(a, 0) * 1.20
+                    + second_score.get(b, 0) * 1.00
+                    + third_score.get(c, 0) * 0.84
+                )
+
+                # 1-2着の並び重視
+                score += (lane_score_map.get(a, 0) - lane_score_map.get(b, 0)) * 0.10
+
+                # 3着は少し広げるが弱すぎは下げる
+                if third_score.get(c, 0) < -0.25:
+                    score -= 0.14
+                elif third_score.get(c, 0) > 0.18:
+                    score += 0.06
+
+                # base の買い目を少し尊重
+                score += base_weight_map.get(tri, 0) * 0.22
+
+                # 頭がかなり弱い外なら少し抑える
+                if a in [5, 6] and head_score.get(a, 0) < 0:
+                    score -= 0.10
+
+                # インがかなり強いときは頭1をやや優先
+                if a == 1 and head_score.get(1, 0) >= max(head_score.values()) - 0.02:
+                    score += 0.08
+
+                scored.append((tri, round(score, 4)))
+
+    scored.sort(key=lambda x: (x[1], x[0]), reverse=True)
+
+    top = []
+    for tri, _score in scored:
+        if tri not in top:
+            top.append(tri)
+        if len(top) >= 6:
+            break
+
+    # もし base の有力買い目が1つも残らないなら1つだけ救済
+    if base_triplets:
+        has_base = any(tri in base_triplets[:3] for tri in top)
+        if not has_base:
+            best_base = base_triplets[0]
+            if best_base not in top:
+                top = top[:5] + [best_base]
 
     dedup = []
-    for tri in triplets:
+    for tri in top:
         if tri not in dedup:
             dedup.append(tri)
         if len(dedup) >= 6:
             break
+
+    log(f"[selection_regen] base={base_triplets[:3]} final={dedup}")
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v5_promote_top_lane")
+    log("[collector_version] collector_latest_weather_v6_role_triplets")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1127,7 +1212,7 @@ def build_candidates():
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
-        final_ai_selection = rebuild_final_selection(
+        final_ai_selection = generate_top_triplets(
             base_ai_selection,
             exhibition_info,
             weather_info,
