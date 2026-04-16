@@ -497,31 +497,163 @@ def parse_st_value(text):
     return None
 
 
-def parse_start_info_from_lines(lines):
-    st_map = {}
+def parse_start_display_from_lines(lines):
+    empty = {
+        "course_order": [],
+        "course_map": {},
+        "st_map": {},
+        "entry_change": False,
+        "entry_text": "",
+        "pre_move_lanes": [],
+        "pulled_back_lanes": [],
+        "entry_severity": 0.0,
+        "entry_reason_text": "",
+    }
 
-    lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
-    for idx, lane in lane_positions:
-        seg = lines[idx: idx + 12]
-        for txt in seg:
-            v = parse_st_value(txt)
-            if v is not None:
-                st_map[lane] = v
-                break
+    start_idx = None
+    for idx, line in enumerate(lines):
+        if "スタート展示" in line:
+            start_idx = idx
+            break
+    if start_idx is None:
+        return empty
 
-    if len(st_map) < 6:
-        joined = " ".join(lines)
-        pattern = re.compile(r"([1-6])\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
-        for m in pattern.finditer(joined):
-            try:
-                lane = int(m.group(1))
-            except Exception:
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        if any(marker in lines[idx] for marker in ["水面気象情報", "スタンド", "スマートフォン版へ", "PAGE TOP"]):
+            end_idx = idx
+            break
+
+    segment_lines = lines[start_idx:end_idx]
+    segment = " ".join(segment_lines)
+
+    pairs = []
+    pattern = re.compile(r"([1-6])\s*(?:Image)?\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
+    for m in pattern.finditer(segment):
+        try:
+            lane = int(m.group(1))
+        except Exception:
+            continue
+        st = parse_st_value(m.group(2))
+        if st is None:
+            continue
+        pairs.append((lane, st))
+
+    if len(pairs) < 6:
+        for idx, line in enumerate(segment_lines):
+            s = str(line).strip()
+            lane = None
+            if re.fullmatch(r"[1-6]", s):
+                lane = int(s)
+            else:
+                m = re.match(r"^([1-6])(?:\s+Image)?\s+([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})$", s)
+                if m:
+                    lane = int(m.group(1))
+                    st = parse_st_value(m.group(2))
+                    if st is not None:
+                        pairs.append((lane, st))
+                        continue
+            if lane is None:
                 continue
-            v = parse_st_value(m.group(2))
-            if v is not None and lane not in st_map:
-                st_map[lane] = v
+            for look in segment_lines[idx + 1: idx + 4]:
+                st = parse_st_value(look)
+                if st is not None:
+                    pairs.append((lane, st))
+                    break
 
-    return {"st_map": st_map}
+    order = []
+    st_map = {}
+    seen = set()
+    for lane, st in pairs:
+        if lane in seen:
+            continue
+        seen.add(lane)
+        order.append(lane)
+        st_map[lane] = st
+        if len(order) >= 6:
+            break
+
+    course_map = {lane: idx + 1 for idx, lane in enumerate(order)} if order else {}
+    entry_change = bool(order and order != [1, 2, 3, 4, 5, 6])
+    pre_move_lanes = sorted([lane for lane, course in course_map.items() if course < lane])
+    pulled_back_lanes = sorted([lane for lane, course in course_map.items() if course > lane])
+
+    entry_severity = 0.0
+    if entry_change:
+        entry_severity += 0.16
+    if course_map.get(1, 1) > 1:
+        entry_severity += 0.11 * min(3, course_map.get(1, 1) - 1)
+    for lane in pre_move_lanes:
+        gain = max(1, lane - course_map.get(lane, lane))
+        entry_severity += 0.05 * min(3, gain)
+        if lane >= 4 and course_map.get(lane, lane) <= 3:
+            entry_severity += 0.06
+        elif lane >= 5 and course_map.get(lane, lane) <= 4:
+            entry_severity += 0.03
+    if len(pre_move_lanes) >= 2:
+        entry_severity += 0.05
+    entry_severity = round(clamp(entry_severity, 0.0, 0.68), 2)
+
+    entry_text = "-".join([str(x) for x in order]) if order else ""
+    reason_parts = []
+    if entry_change and entry_text:
+        reason_parts.append(f"進入:{entry_text}")
+    if course_map.get(1, 1) > 1:
+        reason_parts.append("1がイン外し")
+    for lane in pre_move_lanes[:2]:
+        if lane != 1:
+            reason_parts.append(f"{lane}前づけ")
+
+    return {
+        "course_order": order,
+        "course_map": course_map,
+        "st_map": st_map,
+        "entry_change": entry_change,
+        "entry_text": entry_text,
+        "pre_move_lanes": pre_move_lanes,
+        "pulled_back_lanes": pulled_back_lanes,
+        "entry_severity": entry_severity,
+        "entry_reason_text": " / ".join(reason_parts[:3]),
+    }
+
+
+def parse_start_info_from_lines(lines):
+    start_display = parse_start_display_from_lines(lines)
+    st_map = dict(start_display.get("st_map") or {})
+
+    if len(st_map) < 4:
+        lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
+        for idx, lane in lane_positions:
+            seg = lines[idx: idx + 12]
+            for txt in seg:
+                v = parse_st_value(txt)
+                if v is not None:
+                    st_map[lane] = v
+                    break
+
+        if len(st_map) < 6:
+            joined = " ".join(lines)
+            pattern = re.compile(r"([1-6])\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
+            for m in pattern.finditer(joined):
+                try:
+                    lane = int(m.group(1))
+                except Exception:
+                    continue
+                v = parse_st_value(m.group(2))
+                if v is not None and lane not in st_map:
+                    st_map[lane] = v
+
+    return {
+        "st_map": st_map,
+        "course_order": start_display.get("course_order", []),
+        "course_map": start_display.get("course_map", {}),
+        "entry_change": bool(start_display.get("entry_change")),
+        "entry_text": str(start_display.get("entry_text") or ""),
+        "pre_move_lanes": list(start_display.get("pre_move_lanes", [])),
+        "pulled_back_lanes": list(start_display.get("pulled_back_lanes", [])),
+        "entry_severity": float(start_display.get("entry_severity", 0) or 0),
+        "entry_reason_text": str(start_display.get("entry_reason_text") or ""),
+    }
 
 
 def build_foot_material(exhibition_info, start_info, weather_info=None):
@@ -529,6 +661,13 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     times = exhibition_info.get("times", []) if exhibition_info else []
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = start_info.get("st_map", {}) if start_info else {}
+    course_order = list(start_info.get("course_order", []) or []) if start_info else []
+    course_map = dict(start_info.get("course_map", {}) or {}) if start_info else {}
+    entry_change = bool(start_info.get("entry_change")) if start_info else False
+    pre_move_lanes = list(start_info.get("pre_move_lanes", []) or []) if start_info else []
+    pulled_back_lanes = list(start_info.get("pulled_back_lanes", []) or []) if start_info else []
+    entry_severity = float(start_info.get("entry_severity", 0) or 0) if start_info else 0.0
+    entry_reason_text = str(start_info.get("entry_reason_text") or "").strip() if start_info else ""
 
     lane_scores = {lane: 0.0 for lane in range(1, 7)}
     reasons = []
@@ -602,6 +741,33 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
             elif rank == 6:
                 lane_scores[lane] -= 0.06
 
+    if entry_change and course_map:
+        reasons.append("足:進入変化")
+        lane1_course = course_map.get(1, 1)
+        if lane1_course == 2:
+            lane_scores[1] -= 0.18
+        elif lane1_course >= 3:
+            lane_scores[1] -= 0.28
+
+        course1_lane = course_order[0] if course_order else None
+        if course1_lane and course1_lane != 1:
+            lane_scores[course1_lane] += 0.12
+
+        for lane in pre_move_lanes:
+            course = course_map.get(lane, lane)
+            gain = max(1, lane - course)
+            bonus = min(0.08 + 0.05 * gain, 0.22)
+            lane_scores[lane] += bonus
+            if lane >= 4 and course <= 3:
+                lane_scores[lane] += 0.05
+            if lane != 1 and f"足:{lane}前づけ注意" not in top_lane_reasons:
+                top_lane_reasons.append(f"足:{lane}前づけ注意")
+
+        for lane in pulled_back_lanes:
+            course = course_map.get(lane, lane)
+            loss = max(1, course - lane)
+            lane_scores[lane] -= min(0.06 + 0.03 * loss, 0.16)
+
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score < 0:
         if 1 in lane_scores:
@@ -633,48 +799,30 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         elif spread >= 0.08:
             foot_bonus += 0.05
 
+    if entry_change:
+        foot_bonus += min(0.10, entry_severity * 0.18)
+
     foot_bonus = round(foot_bonus, 2)
-    reason_text = " / ".join((reasons + top_lane_reasons)[:3])
+    merged_reasons = reasons[:]
+    if entry_reason_text:
+        merged_reasons.append(entry_reason_text)
+    merged_reasons.extend(top_lane_reasons)
+    reason_text = " / ".join(dict.fromkeys([x for x in merged_reasons if x])[:4])
 
     return {
         "lane_scores": lane_scores,
         "foot_bonus": foot_bonus,
         "reason_text": reason_text,
         "st_map": st_map,
+        "course_order": course_order,
+        "course_map": course_map,
+        "entry_change": entry_change,
+        "entry_text": str(start_info.get("entry_text") or "") if start_info else "",
+        "pre_move_lanes": pre_move_lanes,
+        "pulled_back_lanes": pulled_back_lanes,
+        "entry_severity": entry_severity,
+        "entry_reason_text": entry_reason_text,
     }
-
-
-def parse_beforeinfo_for_key(jcd, race_no):
-    race_no = normalize_race_no_value(race_no)
-    beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-    empty = {
-        "exhibition": {"times": [], "ranks": {}},
-        "weather": {},
-        "start_info": {"st_map": {}},
-    }
-    try:
-        html = fetch_html(beforeinfo_url)
-    except Exception as e:
-        log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
-        return (jcd, race_no), empty
-
-    soup = BeautifulSoup(html, "html.parser")
-    lines = normalize_lines(html)
-    times = extract_exhibition_times_from_table(soup)
-    if len(times) != 6:
-        times = extract_exhibition_times_from_lines(lines)
-    ranks = build_exhibition_ranks_from_times(times)
-    weather = parse_weather_info_from_lines(lines)
-    start_info = parse_start_info_from_lines(lines)
-
-    return (
-        (jcd, race_no),
-        {
-            "exhibition": {"times": times, "ranks": ranks},
-            "weather": weather,
-            "start_info": start_info,
-        },
-    )
 
 
 def fetch_beforeinfo_parallel(keys):
@@ -845,6 +993,10 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     st_map = foot_material.get("st_map", {}) or {}
+    entry_change = bool(foot_material.get("entry_change"))
+    entry_text = str(foot_material.get("entry_text") or "")
+    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
+    course_map = foot_material.get("course_map", {}) or {}
 
     exp_spread = 0.0
     exp_gap12 = 0.0
@@ -920,10 +1072,19 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
     elif rank1 in {2, 5}:
         signal_strength += 0.02
 
-    signal_strength = round(clamp(signal_strength, 0.0, 0.95), 2)
+    if entry_change:
+        signal_strength += min(0.42, entry_severity * 0.82)
+        if course_map.get(1, 1) > 1:
+            signal_strength += 0.06
+
+    signal_strength = round(clamp(signal_strength, 0.0, 0.98), 2)
     latest_push = round(clamp(0.30 + signal_strength * 0.78, 0.28, 1.0), 2)
 
-    if signal_strength >= 0.62:
+    if entry_change and signal_strength >= 0.62:
+        signal_text = "進入変化ありで直前重視"
+    elif entry_change and signal_strength >= 0.34:
+        signal_text = "進入変化ありで少し動かす"
+    elif signal_strength >= 0.62:
         signal_text = "直前差大で直前重視"
     elif signal_strength >= 0.34:
         signal_text = "直前差中で少し動かす"
@@ -937,6 +1098,9 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
         "st_spread": st_spread,
         "st_gap12": st_gap12,
         "lane1_st": lane1_st,
+        "entry_change": entry_change,
+        "entry_text": entry_text,
+        "entry_severity": entry_severity,
         "signal_strength": signal_strength,
         "latest_push": latest_push,
         "signal_text": signal_text,
@@ -953,6 +1117,10 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     latest_push = float(signal_metrics.get("latest_push", 0.5) or 0.5)
+    course_map = foot_material.get("course_map", {}) or {}
+    entry_change = bool(foot_material.get("entry_change"))
+    entry_text = str(foot_material.get("entry_text") or "")
+    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
 
     if ranks:
         if 1 in ranks:
@@ -985,6 +1153,19 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
                 score += 0.12 * latest_push
                 reasons.append("展示差ややあり")
 
+    if entry_change:
+        reasons.append(f"進入:{entry_text}") if entry_text else reasons.append("進入変化あり")
+        lane1_course = course_map.get(1, 1)
+        if lane1_course == 2:
+            score -= 0.12 * (0.70 + latest_push * 0.40)
+            reasons.append("1がイン外し")
+        elif lane1_course >= 3:
+            score -= 0.22 * (0.72 + latest_push * 0.42)
+            reasons.append("1が大きくイン外し")
+        if len(pre_move_lanes) >= 2 or any(lane >= 5 for lane in pre_move_lanes):
+            score -= 0.05 * latest_push
+            reasons.append("前づけで波乱含み")
+
     wind = weather_info.get("wind_speed")
     wave = weather_info.get("wave_height")
     water_state_score = float(weather_info.get("water_state_score") or 0)
@@ -1012,7 +1193,7 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
         "raw_final_ai_score": round(score, 2),
         "final_ai_score": round(score, 2),
         "final_ai_rating": score_to_ai_rating(score),
-        "latest_reason_text": " / ".join(reasons[:8]),
+        "latest_reason_text": " / ".join(dict.fromkeys(reasons[:10])),
     }
 
 
@@ -1129,6 +1310,40 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
         head_score[lane] += float(venue_bias["head"].get(lane, 0) or 0)
         second_score[lane] += float(venue_bias["second"].get(lane, 0) or 0)
         third_score[lane] += float(venue_bias["third"].get(lane, 0) or 0)
+
+    course_order = (foot_material or {}).get("course_order", []) or []
+    course_map = (foot_material or {}).get("course_map", {}) or {}
+    pre_move_lanes = (foot_material or {}).get("pre_move_lanes", []) or []
+    pulled_back_lanes = (foot_material or {}).get("pulled_back_lanes", []) or []
+    if course_map:
+        course1_lane = course_order[0] if course_order else None
+        if course1_lane and course1_lane != 1:
+            head_score[course1_lane] += 0.18
+            second_score[course1_lane] += 0.08
+            third_score[course1_lane] += 0.03
+
+        if course_map.get(1, 1) > 1:
+            lane1_course = course_map.get(1, 1)
+            head_score[1] -= 0.16 if lane1_course == 2 else 0.28
+            second_score[1] -= 0.06 if lane1_course == 2 else 0.12
+            third_score[1] += 0.02
+
+        for lane in pre_move_lanes:
+            course = course_map.get(lane, lane)
+            gain = max(1, lane - course)
+            if lane != 1:
+                head_score[lane] += min(0.10 + 0.05 * gain, 0.24)
+                second_score[lane] += min(0.08 + 0.04 * gain, 0.18)
+                third_score[lane] += min(0.04 + 0.03 * gain, 0.12)
+            if lane >= 4 and course <= 3:
+                head_score[lane] += 0.06
+                second_score[lane] += 0.04
+
+        for lane in pulled_back_lanes:
+            course = course_map.get(lane, lane)
+            loss = max(1, course - lane)
+            head_score[lane] -= min(0.06 + 0.04 * loss, 0.18)
+            second_score[lane] -= min(0.03 + 0.03 * loss, 0.10)
 
     if ranks:
         for lane in range(1, 7):
@@ -1305,6 +1520,12 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = foot_material.get("st_map", {}) or {}
+    course_order = foot_material.get("course_order", []) or []
+    course_map = foot_material.get("course_map", {}) or {}
+    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
+    entry_change = bool(foot_material.get("entry_change"))
+    entry_text = str(foot_material.get("entry_text") or "")
+    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
 
     scenarios = []
     head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
@@ -1339,6 +1560,10 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             weight_1 -= 0.10
     if weather_info.get("water_state_score", 0) > 0:
         weight_1 += 0.04
+    if course_map.get(1, 1) == 2:
+        weight_1 -= 0.24
+    elif course_map.get(1, 1) >= 3:
+        weight_1 -= 0.38
     if "大村イン寄り" in venue_notes:
         weight_1 += 0.06
     if "江戸川外警戒" in venue_notes:
@@ -1388,6 +1613,10 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
     elif rank2 == 2:
         weight_2 += 0.10
     if rank1 is not None and rank1 >= 4:
+        weight_2 += 0.08
+    if course_order and course_order[0] == 2:
+        weight_2 += 0.16
+    elif 2 in pre_move_lanes:
         weight_2 += 0.08
     if isinstance(st2, (int, float)):
         if st2 <= 0.11:
@@ -1446,6 +1675,8 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             weight_center += 0.12
         elif st_center >= 0.19:
             weight_center -= 0.08
+    if center_lane in pre_move_lanes:
+        weight_center += 0.12
     if "若松やや波乱" in venue_notes:
         weight_center += 0.04
     if "江戸川外警戒" in venue_notes:
@@ -1500,6 +1731,8 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             weight_outer += 0.14
         elif st_outer >= 0.18:
             weight_outer -= 0.08
+    if outer_lane in pre_move_lanes:
+        weight_outer += 0.14
     if "江戸川外警戒" in venue_notes:
         weight_outer += 0.12
     if "若松やや波乱" in venue_notes:
@@ -1536,8 +1769,40 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             ),
         })
 
+    if course_order:
+        course1_lane = course_order[0]
+        if course1_lane != 1:
+            front_weight = clamp(0.22 + entry_severity * 0.55, 0.0, 0.46)
+            if course1_lane == 2:
+                second_pref = [1, 3, 4, 5, 6]
+                third_pref = [1, 3, 4, 5, 6]
+            elif course1_lane == 3:
+                second_pref = [1, 2, 4, 5, 6]
+                third_pref = [1, 2, 4, 5, 6]
+            elif course1_lane == 4:
+                second_pref = [1, 2, 3, 5, 6]
+                third_pref = [1, 2, 3, 5, 6]
+            elif course1_lane == 5:
+                second_pref = [1, 2, 3, 4, 6]
+                third_pref = [1, 2, 3, 4, 6]
+            else:
+                second_pref = [1, 2, 3, 4, 5]
+                third_pref = [1, 2, 3, 4, 5]
+
+            scenarios.append({
+                "name": f"{course1_lane}前づけ注意",
+                "head_lane": course1_lane,
+                "weight": front_weight,
+                "head_bonus": build_pref_bonus_map([course1_lane, 1, 2, 3], [0.24, 0.04, 0.03, 0.02]),
+                "second_bonus": build_pref_bonus_map(second_pref[:5], [0.13, 0.11, 0.08, 0.05, 0.03]),
+                "third_bonus": build_pref_bonus_map(third_pref[:5], [0.10, 0.09, 0.08, 0.05, 0.03]),
+            })
+
     scenarios = sorted(scenarios, key=lambda x: x["weight"], reverse=True)[:4]
-    scenario_text = " / ".join([f"{s['name']}" for s in scenarios[:2]])
+    scenario_names = [f"{s['name']}" for s in scenarios[:2]]
+    if entry_change and entry_text:
+        scenario_names.append(f"進入:{entry_text}")
+    scenario_text = " / ".join(scenario_names[:3])
 
     return {
         "scenarios": scenarios,
@@ -1937,7 +2202,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_5_dynamic_push_star4")
+    log("[collector_version] collector_latest_weather_v10_6_entry_shift_star4")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
