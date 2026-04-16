@@ -405,8 +405,7 @@ def parse_weather_info_from_lines(lines):
         "water_state_score": 0.0,
     }
 
-    weather_words = ["晴", "曇", "雨", "雪"]
-    for word in weather_words:
+    for word in ["晴", "曇", "雨", "雪"]:
         if word in joined:
             weather["weather"] = word
             break
@@ -464,8 +463,7 @@ def parse_st_value(text):
     if not s:
         return None
 
-    s = s.replace("ＳＴ", "").replace("ST", "").strip()
-    s = s.replace(" ", "")
+    s = s.replace("ＳＴ", "").replace("ST", "").strip().replace(" ", "")
 
     m = re.search(r"[FL]?\s*(\d?\.\d{2})", s)
     if m:
@@ -484,7 +482,6 @@ def parse_st_value(text):
                 return v
         except Exception:
             pass
-
     return None
 
 
@@ -625,7 +622,6 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
             foot_bonus += 0.05
 
     foot_bonus = round(foot_bonus, 2)
-
     reason_text = " / ".join((reasons + top_lane_reasons)[:3])
 
     return {
@@ -840,9 +836,7 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
             elif r1 >= 5:
                 score -= 0.6
                 reasons.append("1号艇の展示順位が下位")
-
-        top3 = sorted(ranks.items(), key=lambda x: x[1])[:3]
-        if top3:
+        if sorted(ranks.items(), key=lambda x: x[1])[:3]:
             reasons.append("展示上位を反映")
 
     if times:
@@ -866,10 +860,7 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score != 0:
         score += water_state_score
-        if water_state_score > 0:
-            reasons.append("気象安定")
-        else:
-            reasons.append("気象荒れ気味")
+        reasons.append("気象安定" if water_state_score > 0 else "気象荒れ気味")
     if weather_info.get("wind_type") == "向い風":
         reasons.append("向い風")
     elif weather_info.get("wind_type") == "追い風":
@@ -921,23 +912,18 @@ def build_role_score_maps(exhibition_info, weather_info=None, foot_material=None
     head_score[1] += 0.18
     second_score[1] += 0.06
     third_score[1] -= 0.02
-
     head_score[2] += 0.06
     second_score[2] += 0.12
     third_score[2] += 0.03
-
     head_score[3] += 0.10
     second_score[3] += 0.08
     third_score[3] += 0.06
-
     head_score[4] += 0.00
     second_score[4] += 0.02
     third_score[4] += 0.06
-
     head_score[5] -= 0.04
     second_score[5] -= 0.02
     third_score[5] += 0.06
-
     head_score[6] -= 0.06
     second_score[6] -= 0.02
     third_score[6] += 0.08
@@ -983,7 +969,6 @@ def build_role_score_maps(exhibition_info, weather_info=None, foot_material=None
         for lane, v in float_times:
             diff_min = v - min_time
             diff_avg = v - avg_time
-
             if diff_min <= 0.00:
                 head_score[lane] += 0.16
                 second_score[lane] += 0.08
@@ -1042,12 +1027,163 @@ def build_role_score_maps(exhibition_info, weather_info=None, foot_material=None
     }
 
 
-def generate_top_triplets(base_selection, exhibition_info, weather_info=None, foot_material=None):
+def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None):
+    lane_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    st_map = (foot_material or {}).get("st_map", {}) or {}
+    material = {
+        "lead": {lane: 0.0 for lane in range(1, 7)},
+        "type": {},
+        "followers": {},
+    }
+
+    for lane in range(1, 7):
+        material["lead"][lane] += float(lane_map.get(lane, 0) or 0) * 0.75
+
+    # 基本シナリオ
+    material["lead"][1] += 0.28
+    material["type"][1] = "逃げ"
+    material["followers"][1] = [2, 3, 4, 5]
+
+    material["lead"][2] += 0.10
+    material["type"][2] = "差し"
+    material["followers"][2] = [1, 3, 5, 4]
+
+    material["lead"][3] += 0.08
+    material["type"][3] = "まくり差し"
+    material["followers"][3] = [1, 2, 5, 4]
+
+    material["lead"][4] += 0.03
+    material["type"][4] = "まくり差し"
+    material["followers"][4] = [1, 2, 5, 6]
+
+    material["lead"][5] += 0.00
+    material["type"][5] = "攻め"
+    material["followers"][5] = [6, 1, 2, 3]
+
+    material["lead"][6] -= 0.03
+    material["type"][6] = "連動"
+    material["followers"][6] = [1, 2, 5, 3]
+
+    # 展示順位/STで先頭可能性を調整
+    for lane in range(1, 7):
+        rank = ranks.get(lane)
+        if rank == 1:
+            material["lead"][lane] += 0.18
+        elif rank == 2:
+            material["lead"][lane] += 0.10
+        elif rank == 5:
+            material["lead"][lane] -= 0.08
+        elif rank == 6:
+            material["lead"][lane] -= 0.14
+
+        st = st_map.get(lane)
+        if isinstance(st, (int, float)):
+            if st <= 0.10:
+                material["lead"][lane] += 0.14
+            elif st <= 0.12:
+                material["lead"][lane] += 0.08
+            elif st >= 0.20:
+                material["lead"][lane] -= 0.08
+
+    # 外攻め特有補正
+    if float(lane_map.get(5, 0) or 0) >= 0.18:
+        material["lead"][5] += 0.18
+    if float(lane_map.get(4, 0) or 0) >= 0.16:
+        material["lead"][4] += 0.10
+    if float(lane_map.get(3, 0) or 0) >= 0.16:
+        material["lead"][3] += 0.12
+    if float(lane_map.get(6, 0) or 0) >= 0.20:
+        material["lead"][6] += 0.08
+
+    # 5が攻める時は6・1・2残りを強化
+    if material["lead"][5] >= material["lead"][1] - 0.02:
+        material["followers"][5] = [6, 1, 2, 3]
+
+    # 会場の荒れ傾向を軽く反映
+    if venue in ["江戸川", "大村", "若松"]:
+        for lane in [4, 5, 6]:
+            material["lead"][lane] += 0.03
+
+    ranked = sorted(material["lead"].items(), key=lambda x: x[1], reverse=True)
+    material["top_lanes"] = [lane for lane, _ in ranked[:3]]
+    return material
+
+
+def scenario_bonus_for_triplet(a, b, c, scenario_material):
+    lead = scenario_material.get("lead", {})
+    followers = scenario_material.get("followers", {})
+    top_lanes = scenario_material.get("top_lanes", [])
+
+    bonus = 0.0
+
+    # 頭シナリオ
+    bonus += float(lead.get(a, 0) or 0) * 0.26
+
+    # 有力先頭候補なら加点
+    if a in top_lanes[:1]:
+        bonus += 0.10
+    elif a in top_lanes[:2]:
+        bonus += 0.05
+
+    # 先頭に合う残り目
+    follow_list = followers.get(a, [])
+    if b in follow_list[:1]:
+        bonus += 0.16
+    elif b in follow_list[:2]:
+        bonus += 0.10
+    elif b in follow_list[:3]:
+        bonus += 0.05
+
+    if c in follow_list[:1]:
+        bonus += 0.06
+    elif c in follow_list[:2]:
+        bonus += 0.05
+    elif c in follow_list[:3]:
+        bonus += 0.04
+    elif c in follow_list[:4]:
+        bonus += 0.02
+
+    # 5先頭特有
+    if a == 5:
+        if b == 6:
+            bonus += 0.14
+        if b in [1, 2]:
+            bonus += 0.08
+        if c in [1, 2, 6]:
+            bonus += 0.05
+        if c == 3:
+            bonus += 0.02
+
+    # 2差し先頭
+    if a == 2:
+        if b == 1:
+            bonus += 0.08
+        if c == 1:
+            bonus += 0.05
+
+    # 1逃げ先頭
+    if a == 1:
+        if b in [2, 3]:
+            bonus += 0.05
+        if c in [2, 3, 4]:
+            bonus += 0.03
+
+    # 6頭はかなり有力時だけ
+    if a == 6 and float(lead.get(6, 0) or 0) < float(lead.get(1, 0) or 0):
+        bonus -= 0.10
+
+    return bonus
+
+
+def generate_top_triplets(venue, base_selection, exhibition_info, weather_info=None, foot_material=None):
     role_maps = build_role_score_maps(exhibition_info, weather_info, foot_material)
     lane_score_map = role_maps["lane"]
     head_score = role_maps["head"]
     second_score = role_maps["second"]
     third_score = role_maps["third"]
+
+    scenario_material = build_turn_scenario_material(venue, exhibition_info, weather_info, foot_material)
 
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
@@ -1086,6 +1222,7 @@ def generate_top_triplets(base_selection, exhibition_info, weather_info=None, fo
                 elif a == lane_ranked[1]:
                     score += 0.03
 
+                score += scenario_bonus_for_triplet(a, b, c, scenario_material)
                 scored.append((tri, round(score, 4)))
 
     scored.sort(key=lambda x: (x[1], x[0]), reverse=True)
@@ -1111,12 +1248,12 @@ def generate_top_triplets(base_selection, exhibition_info, weather_info=None, fo
         if len(dedup) >= 6:
             break
 
-    log(f"[selection_regen_v7] base={base_triplets[:3]} final={dedup}")
+    log(f"[selection_regen_v8] venue={venue} base={base_triplets[:3]} final={dedup}")
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v7_balance")
+    log("[collector_version] collector_latest_weather_v8_turn_scenarios")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1204,13 +1341,13 @@ def build_candidates():
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
         final_ai_selection = generate_top_triplets(
+            venue,
             base_ai_selection,
             exhibition_info,
             weather_info,
             foot_material,
         )
         final_ai_score = analyzed["final_ai_score"]
-
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
         candidate = {
