@@ -836,13 +836,13 @@ def fetch_beforeinfo_parallel(keys):
 
 
 def score_to_ai_rating(score):
-    if score >= 2.0:
+    if score >= 2.4:
         return "AI★★★★★"
-    if score >= 1.2:
+    if score >= 1.55:
         return "AI★★★★☆"
-    if score >= 0.5:
+    if score >= 0.75:
         return "AI★★★☆☆"
-    if score >= -0.2:
+    if score >= 0.10:
         return "AI★★☆☆☆"
     return "AI★☆☆☆☆"
 
@@ -2202,7 +2202,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_6_entry_shift_star4")
+    log("[collector_version] collector_latest_weather_v10_7_entry_shift_star4_tight_rating")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
