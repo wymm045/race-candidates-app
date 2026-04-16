@@ -544,6 +544,81 @@ def fetch_base_map_today():
     raise last_err
 
 
+
+def build_lane_score_text(exhibition_info, weather_info=None):
+    weather_info = weather_info or {}
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+
+    lane_scores = {lane: 0.0 for lane in range(1, 7)}
+
+    if ranks:
+        for lane in range(1, 7):
+            rank = ranks.get(lane)
+            if rank is None:
+                continue
+            if rank == 1:
+                lane_scores[lane] += 0.40
+            elif rank == 2:
+                lane_scores[lane] += 0.22
+            elif rank == 3:
+                lane_scores[lane] += 0.08
+            elif rank == 4:
+                lane_scores[lane] -= 0.04
+            elif rank == 5:
+                lane_scores[lane] -= 0.14
+            elif rank == 6:
+                lane_scores[lane] -= 0.24
+
+        r1 = ranks.get(1)
+        if r1 == 1:
+            lane_scores[1] += 0.20
+        elif r1 is not None and r1 >= 5:
+            lane_scores[1] -= 0.20
+
+    float_times = []
+    for lane, t in enumerate(times, start=1):
+        try:
+            float_times.append((lane, float(t)))
+        except Exception:
+            pass
+
+    if len(float_times) == 6:
+        min_time = min(v for _, v in float_times)
+        avg_time = sum(v for _, v in float_times) / 6.0
+        for lane, v in float_times:
+            diff_from_min = v - min_time
+            diff_from_avg = v - avg_time
+            if diff_from_min <= 0.00:
+                lane_scores[lane] += 0.26
+            elif diff_from_min <= 0.03:
+                lane_scores[lane] += 0.12
+            elif diff_from_min >= 0.10:
+                lane_scores[lane] -= 0.22
+            elif diff_from_min >= 0.06:
+                lane_scores[lane] -= 0.10
+
+            if diff_from_avg <= -0.05:
+                lane_scores[lane] += 0.08
+            elif diff_from_avg >= 0.05:
+                lane_scores[lane] -= 0.08
+
+        spread = max(v for _, v in float_times) - min_time
+        if spread >= 0.12:
+            fastest_lane = min(float_times, key=lambda x: x[1])[0]
+            lane_scores[fastest_lane] += 0.06
+
+    water_state_score = float(weather_info.get("water_state_score") or 0)
+    if water_state_score != 0:
+        lane_scores[1] += water_state_score * 0.8
+        for lane in [4, 5, 6]:
+            lane_scores[lane] -= water_state_score * 0.25
+
+    parts = []
+    for lane in range(1, 7):
+        parts.append(f"{lane}:{lane_scores[lane]:.2f}")
+    return " / ".join(parts)
+
 def analyze_latest(base_ai_score, exhibition_info, weather_info=None):
     score = float(base_ai_score or 0)
     reasons = []
@@ -647,7 +722,7 @@ def rebuild_final_selection(base_selection, exhibition_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v2")
+    log("[collector_version] collector_latest_weather_v3_lane_scores")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -735,6 +810,8 @@ def build_candidates():
         final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info)
         final_ai_score = analyzed["final_ai_score"]
 
+        ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info)
+
         candidate = {
             "race_date": today_text(),
             "venue": venue,
@@ -742,6 +819,7 @@ def build_candidates():
             "time": deadline,
             "exhibition": exhibition_info.get("times", []),
             "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
+            "ai_lane_score_text": ai_lane_score_text,
             "final_ai_score": final_ai_score,
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
