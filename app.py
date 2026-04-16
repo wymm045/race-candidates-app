@@ -122,7 +122,6 @@ def safe_float(value, default=0.0):
         return float(default)
 
 
-
 def normalize_ai_detail(raw_detail, exhibition_list):
     detail = (raw_detail or "").strip()
     has_exhibition = bool(exhibition_list)
@@ -133,136 +132,6 @@ def normalize_ai_detail(raw_detail, exhibition_list):
     if detail in ["モーター反映", "展示反映"]:
         return "展示補正なし"
     return detail
-
-
-REASON_TAG_DEFS = [
-    ("前づけ警戒", lambda r, joined: "前づけ" in joined),
-    ("チルト警戒", lambda r, joined: "チルト" in joined),
-    ("まくり警戒", lambda r, joined: "まくり" in joined),
-    ("展示反映", lambda r, joined: bool(parse_json_array_text(r.get("exhibition", "[]"))) or "展示" in joined),
-    ("外攻め警戒", lambda r, joined: "外攻め" in joined),
-    ("イン強め", lambda r, joined: "イン強め" in joined),
-    ("差し警戒", lambda r, joined: "差し警戒" in joined),
-    ("攻め注意", lambda r, joined: "まくり差し注意" in joined or "攻め" in joined),
-]
-
-
-def get_reason_tag_items(race):
-    texts = [
-        str(race.get("base_reason_text") or "").strip(),
-        str(race.get("latest_reason_text") or "").strip(),
-        str(race.get("ai_detail") or "").strip(),
-    ]
-    joined = " / ".join([x for x in texts if x])
-    tags = []
-    for label, checker in REASON_TAG_DEFS:
-        try:
-            if checker(race, joined):
-                tags.append(label)
-        except Exception:
-            continue
-
-    final_rank = str(race.get("final_rank") or "").strip()
-    if final_rank == "買い強め":
-        tags.append("強気判定")
-    elif final_rank == "様子見":
-        tags.append("様子見判定")
-    elif final_rank == "見送り寄り":
-        tags.append("見送り寄り")
-
-    return unique_preserve(tags)
-
-
-def reason_tag_class(tag):
-    if tag in {"前づけ警戒", "外攻め警戒", "見送り寄り"}:
-        return "reason-tag-chip reason-tag-warn"
-    if tag in {"チルト警戒", "まくり警戒", "展示反映", "差し警戒", "攻め注意"}:
-        return "reason-tag-chip reason-tag-info"
-    if tag in {"イン強め", "強気判定"}:
-        return "reason-tag-chip reason-tag-good"
-    if tag == "様子見判定":
-        return "reason-tag-chip reason-tag-neutral"
-    return "reason-tag-chip"
-
-
-def render_reason_tag_chips(race):
-    tags = get_reason_tag_items(race)
-    if not tags:
-        return '<div class="detail-chip-empty">タグなし</div>'
-    chips = "".join([f'<div class="{reason_tag_class(tag)}">{tag}</div>' for tag in tags])
-    return f'<div class="detail-chip-wrap">{chips}</div>'
-
-
-def summarize_races(rows):
-    total_rows = len(rows)
-    total_bets = 0
-    total_points = 0
-    total_hits = 0
-    total_investment = 0
-    total_payout = 0
-
-    for row in rows:
-        selected_count = get_selected_count_from_text(row.get("purchased_selection_text", ""))
-        if selected_count <= 0:
-            continue
-        total_bets += 1
-        total_points += selected_count
-        total_hits += 1 if int(row.get("hit") or 0) == 1 else 0
-        total_investment += int(row.get("amount") or 0) * selected_count
-        total_payout += int(row.get("payout") or 0)
-
-    total_profit = total_payout - total_investment
-    hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
-    roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
-    return {
-        "total_rows": total_rows,
-        "total_bets": total_bets,
-        "total_points": total_points,
-        "total_hits": total_hits,
-        "total_investment": total_investment,
-        "total_payout": total_payout,
-        "total_profit": total_profit,
-        "hit_rate": hit_rate,
-        "roi": roi,
-    }
-
-
-def get_reason_tag_summary(rows):
-    summary_map = {}
-    for row in rows:
-        for tag in get_reason_tag_items(row):
-            summary_map.setdefault(tag, []).append(row)
-
-    results = []
-    for tag, tag_rows in summary_map.items():
-        stats = summarize_races(tag_rows)
-        results.append(
-            {
-                "group_name": tag,
-                "total_bets": stats["total_bets"],
-                "total_hits": stats["total_hits"],
-                "total_points": stats["total_points"],
-                "total_investment": stats["total_investment"],
-                "total_payout": stats["total_payout"],
-                "total_profit": stats["total_profit"],
-                "hit_rate": stats["hit_rate"],
-                "roi": stats["roi"],
-            }
-        )
-    results.sort(key=lambda x: (-x["total_bets"], x["group_name"]))
-    return results
-
-
-def build_tag_overview_html(rows):
-    tag_rows = get_reason_tag_summary(rows)
-    if not tag_rows:
-        return '<div class="detail-chip-empty">タグなし</div>'
-    chips = []
-    for item in tag_rows[:10]:
-        chips.append(
-            f'<div class="overview-chip"><span class="overview-chip-name">{item["group_name"]}</span><span class="overview-chip-count">{item["total_bets"]}件</span></div>'
-        )
-    return f'<div class="overview-chip-wrap">{"".join(chips)}</div>'
 
 
 def yen(n):
@@ -960,10 +829,9 @@ def get_summary_by_date(race_date):
     }
 
 
-
 def get_group_summary(race_date, group_key):
     ensure_db_initialized()
-    if group_key not in {"rating", "venue", "ai_rating", "base_ai_rating", "final_rank"}:
+    if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
         return []
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1108,7 +976,6 @@ def build_card_html(r, is_history=False, race_date=""):
     player_rank_summary_html = render_player_rank_summary_html(r.get("player_names_text", ""), r.get("class_history_text", ""))
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
-    reason_tag_html = render_reason_tag_chips(r)
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
@@ -1176,7 +1043,6 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
-        <div class="row"><span class="label">補正タグ</span><span class="value">{reason_tag_html}</span></div>
         <div class="row"><span class="label">詳細材料</span><span class="value">{detail_material_html}</span></div>
         {ai_reason_html}
       </div>
@@ -1279,8 +1145,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     return render_layout("今日の買い候補", content)
 
 
-
-def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_base_ai_rating, by_final_rank, by_reason_tags, tag_overview_html=""):
+def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
     def make_table(rows):
         if not rows:
             return '<div class="empty">データがありません</div>'
@@ -1322,19 +1187,13 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         </div>
       </div>
 
-      <div class="header">
-        <div class="section-title">補正タグの出現状況</div>
-        <div class="sub">当日の理由文から自動でタグ化しています</div>
-        {tag_overview_html}
-      </div>
-
       <div class="stats-grid">
         <div>
-          <div class="header"><div class="section-title">ベースAI星別集計</div></div>
-          {make_table(by_base_ai_rating)}
+          <div class="header"><div class="section-title">公式星別集計</div></div>
+          {make_table(by_rating)}
         </div>
         <div>
-          <div class="header"><div class="section-title">最終AI星別集計</div></div>
+          <div class="header"><div class="section-title">AI補正星別集計</div></div>
           {make_table(by_ai_rating)}
         </div>
       </div>
@@ -1343,17 +1202,6 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
         <div>
           <div class="header"><div class="section-title">最終判定別集計</div></div>
           {make_table(by_final_rank)}
-        </div>
-        <div>
-          <div class="header"><div class="section-title">補正タグ別集計</div></div>
-          {make_table(by_reason_tags)}
-        </div>
-      </div>
-
-      <div class="stats-grid">
-        <div>
-          <div class="header"><div class="section-title">公式星別集計</div></div>
-          {make_table(by_rating)}
         </div>
         <div>
           <div class="header"><div class="section-title">会場別集計</div></div>
@@ -1421,8 +1269,6 @@ def render_history_detail_page(
             jump_items.append(f'<a class="jump-chip" href="#race-card-{r["id"]}">{race_no}</a>')
     jump_html = "".join(jump_items) if jump_items else '<span class="jump-empty">ジャンプ候補なし</span>'
 
-    tag_overview_html = build_tag_overview_html(filtered_races)
-
     if not filtered_races:
         body = '<div class="empty">条件に合うデータがありません</div>'
     else:
@@ -1441,10 +1287,6 @@ def render_history_detail_page(
             </div>
           </form>
           <div class="history-filter-meta"><div class="history-filter-count">表示中 {len(filtered_races)} / 全{len(races)}件</div><div class="jump-wrap">{jump_html}</div></div>
-        </div>
-        <div class="header">
-          <div class="section-title">この条件の補正タグ</div>
-          {tag_overview_html}
         </div>
         <div class="bulk-toolbar"><div class="bulk-toolbar-left"><button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button><button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button></div><div class="bulk-toolbar-right"><span class="bulk-count" id="bulk-delete-count">0件選択中</span><button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button></div></div>
         {cards_html}
@@ -1686,17 +1528,6 @@ def render_layout(title, body_html):
       .jump-empty{color:#98a2b3;font-size:13px}
       .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
       .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
-
-.reason-tag-chip{padding:6px 10px;border-radius:999px;border:1px solid #d0d5dd;background:#fff;font-weight:700;font-size:12px}
-.reason-tag-good{background:#ecfdf3;color:#067647;border-color:#a6f4c5}
-.reason-tag-info{background:#eef4ff;color:#175cd3;border-color:#cdddff}
-.reason-tag-warn{background:#fff4e5;color:#b54708;border-color:#f7d79b}
-.reason-tag-neutral{background:#f2f4f7;color:#475467;border-color:#d0d5dd}
-.overview-chip-wrap{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.overview-chip{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:#f8fafc;border:1px solid #eaecf0}
-.overview-chip-name{font-weight:800;color:#344054}
-.overview-chip-count{font-size:12px;color:#667085}
-
       .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));z-index:50}
       .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
       .bottom-nav-item.active{color:#175cd3;font-weight:800}
@@ -2166,6 +1997,7 @@ def upsert_latest_candidates(cleaned):
                 END,
                 exhibition = %s,
                 exhibition_rank = %s,
+                ai_lane_score_text = %s,
                 final_ai_score = %s,
                 final_ai_rating = %s,
                 final_ai_selection = %s,
@@ -2180,6 +2012,7 @@ def upsert_latest_candidates(cleaned):
                 str(r.get('time') or '').strip(),
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
                 str(r.get('exhibition_rank') or '').strip(),
+                str(r.get('ai_lane_score_text') or '').strip(),
                 safe_float(r.get('final_ai_score', 0), 0),
                 str(r.get('final_ai_rating') or '').strip(),
                 str(r.get('final_ai_selection') or '').strip(),
@@ -2306,21 +2139,16 @@ def delete_records_bulk():
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote(f"{deleted}件削除しました"))
 
 
-
 @app.route("/stats")
 def stats():
     race_date = today_text()
-    rows = get_races_by_date(race_date)
     return render_stats_page(
         race_date,
         get_summary_by_date(race_date),
         get_group_summary(race_date, "rating"),
         get_group_summary(race_date, "venue"),
         get_group_summary(race_date, "ai_rating"),
-        get_group_summary(race_date, "base_ai_rating"),
         get_group_summary(race_date, "final_rank"),
-        get_reason_tag_summary(rows),
-        build_tag_overview_html(rows),
     )
 
 
@@ -2500,6 +2328,7 @@ def import_latest_candidates():
                 "time": str(r.get("time") or "").strip(),
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
+                "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
                 "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
                 "final_ai_rating": str(r.get("final_ai_rating") or "").strip(),
                 "final_ai_selection": str(r.get("final_ai_selection") or "").strip(),
