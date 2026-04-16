@@ -40,8 +40,8 @@ POST_TIMEOUT = 35
 MAX_RETRIES = 2
 RETRY_SLEEP_SEC = 0.8
 
-OFFICIAL_MAX_WORKERS = 4
-BEFOREINFO_MAX_WORKERS = 6
+OFFICIAL_MAX_WORKERS = 3
+BEFOREINFO_MAX_WORKERS = 4
 
 ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
@@ -129,6 +129,10 @@ def fetch_soup(url):
 
 def normalize_lines(html):
     soup = BeautifulSoup(html, "html.parser")
+    return normalize_lines_from_soup(soup)
+
+
+def normalize_lines_from_soup(soup):
     text = soup.get_text("\n")
     lines = [line.strip() for line in text.splitlines()]
     return [line for line in lines if line]
@@ -407,6 +411,22 @@ def build_exhibition_ranks_from_times(times):
     return ranks
 
 
+def extract_wind_direction_from_text(text):
+    s = str(text or "")
+    if not s:
+        return ""
+
+    directions = [
+        "北北西", "北西", "西北西", "西", "西南西", "南西", "南南西", "南",
+        "南南東", "南東", "東南東", "東", "東北東", "北東", "北北東", "北",
+        "無風",
+    ]
+    for direction in directions:
+        if direction in s:
+            return direction
+    return ""
+
+
 def parse_weather_info_from_lines(lines):
     joined = " ".join(lines)
     weather = {
@@ -414,6 +434,7 @@ def parse_weather_info_from_lines(lines):
         "wind_speed": None,
         "wave_height": None,
         "wind_type": "",
+        "wind_dir": "",
         "water_state_score": 0.0,
     }
 
@@ -422,7 +443,11 @@ def parse_weather_info_from_lines(lines):
             weather["weather"] = word
             break
 
+    weather["wind_dir"] = extract_wind_direction_from_text(joined)
+
     m_wind = re.search(r"風速\s*([0-9]+(?:\.[0-9]+)?)", joined)
+    if not m_wind:
+        m_wind = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*m(?:\s|$)", joined)
     if m_wind:
         try:
             weather["wind_speed"] = float(m_wind.group(1))
@@ -430,6 +455,8 @@ def parse_weather_info_from_lines(lines):
             pass
 
     m_wave = re.search(r"波高\s*([0-9]+(?:\.[0-9]+)?)", joined)
+    if not m_wave:
+        m_wave = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*cm(?:\s|$)", joined)
     if m_wave:
         try:
             weather["wave_height"] = float(m_wave.group(1))
@@ -451,19 +478,31 @@ def parse_weather_info_from_lines(lines):
             score -= 0.18
         elif wind >= 5:
             score -= 0.10
+        elif wind <= 1:
+            score += 0.05
         elif wind <= 2:
             score += 0.04
+
     if isinstance(wave, (int, float)):
         if wave >= 7:
             score -= 0.18
         elif wave >= 5:
             score -= 0.10
+        elif wave <= 1:
+            score += 0.05
         elif wave <= 2:
             score += 0.04
+
     if weather["wind_type"] == "向い風":
         score -= 0.04
     elif weather["wind_type"] == "追い風":
         score += 0.03
+    elif weather["wind_type"] == "横風":
+        score -= 0.03
+
+    if weather["wind_dir"] == "無風":
+        score += 0.03
+
     weather["water_state_score"] = round(score, 2)
     return weather
 
@@ -825,6 +864,58 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     }
 
 
+def parse_beforeinfo_for_key(jcd, race_no):
+    race_no = normalize_race_no_value(race_no)
+    beforeinfo_url = build_beforeinfo_url(jcd, race_no)
+    empty_info = {
+        "exhibition": {"times": [], "ranks": {}},
+        "weather": {
+            "weather": "",
+            "wind_speed": None,
+            "wave_height": None,
+            "wind_type": "",
+            "wind_dir": "",
+            "water_state_score": 0.0,
+        },
+        "start_info": {
+            "st_map": {},
+            "course_order": [],
+            "course_map": {},
+            "entry_change": False,
+            "entry_text": "",
+            "pre_move_lanes": [],
+            "pulled_back_lanes": [],
+            "entry_severity": 0.0,
+            "entry_reason_text": "",
+        },
+    }
+    try:
+        html = fetch_html(beforeinfo_url)
+    except Exception as e:
+        log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
+        return (jcd, race_no), empty_info
+
+    soup = BeautifulSoup(html, "html.parser")
+    lines = normalize_lines_from_soup(soup)
+
+    exhibition_times = extract_exhibition_times_from_table(soup)
+    if len(exhibition_times) != 6:
+        exhibition_times = extract_exhibition_times_from_lines(lines)
+    exhibition_ranks = build_exhibition_ranks_from_times(exhibition_times) if exhibition_times else {}
+
+    weather_info = parse_weather_info_from_lines(lines)
+    start_info = parse_start_info_from_lines(lines)
+
+    return (jcd, race_no), {
+        "exhibition": {
+            "times": exhibition_times,
+            "ranks": exhibition_ranks,
+        },
+        "weather": weather_info,
+        "start_info": start_info,
+    }
+
+
 def fetch_beforeinfo_parallel(keys):
     results = {}
     with ThreadPoolExecutor(max_workers=BEFOREINFO_MAX_WORKERS) as ex:
@@ -836,13 +927,13 @@ def fetch_beforeinfo_parallel(keys):
 
 
 def score_to_ai_rating(score):
-    if score >= 2.4:
+    if score >= 2.0:
         return "AI★★★★★"
-    if score >= 1.55:
+    if score >= 1.2:
         return "AI★★★★☆"
-    if score >= 0.75:
+    if score >= 0.5:
         return "AI★★★☆☆"
-    if score >= 0.10:
+    if score >= -0.2:
         return "AI★★☆☆☆"
     return "AI★☆☆☆☆"
 
@@ -1168,6 +1259,7 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
 
     wind = weather_info.get("wind_speed")
     wave = weather_info.get("wave_height")
+    wind_dir = str(weather_info.get("wind_dir") or "")
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score != 0:
         score += water_state_score * (0.62 + latest_push * 0.28)
@@ -1176,6 +1268,10 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
         reasons.append("向い風")
     elif weather_info.get("wind_type") == "追い風":
         reasons.append("追い風")
+    elif weather_info.get("wind_type") == "横風":
+        reasons.append("横風")
+    if wind_dir:
+        reasons.append(f"風向{wind_dir}")
     if isinstance(wind, (int, float)) and wind >= 7:
         reasons.append(f"風速{wind:g}m")
     if isinstance(wave, (int, float)) and wave >= 5:
@@ -2202,7 +2298,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_7_entry_shift_star4_tight_rating")
+    log("[collector_version] collector_latest_weather_v10_6_entry_shift_star4")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
