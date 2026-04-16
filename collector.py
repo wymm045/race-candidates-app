@@ -840,26 +840,131 @@ def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None
     return " / ".join([f"{lane}:{lane_scores[lane]:.2f}" for lane in range(1, 7)])
 
 
-def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_material=None):
+def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
+    foot_material = foot_material or {}
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    st_map = foot_material.get("st_map", {}) or {}
+
+    exp_spread = 0.0
+    exp_gap12 = 0.0
+    lane1_time_gap = 0.0
+    st_spread = 0.0
+    st_gap12 = 0.0
+    lane1_st = None
+
+    float_times = []
+    for lane, t in enumerate(times, start=1):
+        try:
+            v = float(t)
+        except Exception:
+            continue
+        if is_exhibition_time_value(v):
+            float_times.append((lane, v))
+
+    if len(float_times) == 6:
+        sorted_times = sorted(float_times, key=lambda x: x[1])
+        exp_spread = round(sorted_times[-1][1] - sorted_times[0][1], 3)
+        exp_gap12 = round(sorted_times[1][1] - sorted_times[0][1], 3)
+        lane1_time = next((v for lane, v in float_times if lane == 1), None)
+        if lane1_time is not None:
+            lane1_time_gap = round(lane1_time - sorted_times[0][1], 3)
+
+    valid_st = sorted(
+        [(lane, float(v)) for lane, v in st_map.items() if isinstance(v, (int, float))],
+        key=lambda x: x[1],
+    )
+    if len(valid_st) >= 4:
+        st_spread = round(valid_st[-1][1] - valid_st[0][1], 3)
+        if len(valid_st) >= 2:
+            st_gap12 = round(valid_st[1][1] - valid_st[0][1], 3)
+        lane1_st = st_map.get(1)
+
+    signal_strength = 0.0
+    if exp_spread >= 0.18:
+        signal_strength += 0.34
+    elif exp_spread >= 0.14:
+        signal_strength += 0.26
+    elif exp_spread >= 0.10:
+        signal_strength += 0.18
+    elif exp_spread >= 0.07:
+        signal_strength += 0.08
+
+    if exp_gap12 >= 0.05:
+        signal_strength += 0.10
+    elif exp_gap12 >= 0.03:
+        signal_strength += 0.05
+
+    if lane1_time_gap >= 0.10:
+        signal_strength += 0.09
+    elif lane1_time_gap >= 0.07:
+        signal_strength += 0.05
+
+    if st_spread >= 0.12:
+        signal_strength += 0.30
+    elif st_spread >= 0.09:
+        signal_strength += 0.22
+    elif st_spread >= 0.06:
+        signal_strength += 0.12
+    elif st_spread >= 0.04:
+        signal_strength += 0.06
+
+    if st_gap12 >= 0.04:
+        signal_strength += 0.08
+    elif st_gap12 >= 0.02:
+        signal_strength += 0.04
+
+    rank1 = ranks.get(1)
+    if rank1 in {1, 6}:
+        signal_strength += 0.05
+    elif rank1 in {2, 5}:
+        signal_strength += 0.02
+
+    signal_strength = round(clamp(signal_strength, 0.0, 0.95), 2)
+    latest_push = round(clamp(0.30 + signal_strength * 0.78, 0.28, 1.0), 2)
+
+    if signal_strength >= 0.62:
+        signal_text = "直前差大で直前重視"
+    elif signal_strength >= 0.34:
+        signal_text = "直前差中で少し動かす"
+    else:
+        signal_text = "直前差小で朝寄り"
+
+    return {
+        "exp_spread": exp_spread,
+        "exp_gap12": exp_gap12,
+        "lane1_time_gap": lane1_time_gap,
+        "st_spread": st_spread,
+        "st_gap12": st_gap12,
+        "lane1_st": lane1_st,
+        "signal_strength": signal_strength,
+        "latest_push": latest_push,
+        "signal_text": signal_text,
+    }
+
+
+def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_material=None, signal_metrics=None):
     score = float(base_ai_score or 0)
     reasons = []
     weather_info = weather_info or {}
     foot_material = foot_material or {}
+    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
+    latest_push = float(signal_metrics.get("latest_push", 0.5) or 0.5)
 
     if ranks:
         if 1 in ranks:
             r1 = ranks[1]
             if r1 == 1:
-                score += 0.8
+                score += 0.8 * latest_push
                 reasons.append("1号艇の展示順位が1位")
             elif r1 <= 2:
-                score += 0.4
+                score += 0.4 * latest_push
                 reasons.append("1号艇の展示順位が上位")
             elif r1 >= 5:
-                score -= 0.6
+                score -= 0.6 * latest_push
                 reasons.append("1号艇の展示順位が下位")
         if sorted(ranks.items(), key=lambda x: x[1])[:3]:
             reasons.append("展示上位を反映")
@@ -874,17 +979,17 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
         if len(float_times) == 6:
             spread = max(float_times) - min(float_times)
             if spread >= 0.18:
-                score += 0.25
+                score += 0.25 * latest_push
                 reasons.append("展示差あり")
             elif spread >= 0.12:
-                score += 0.12
+                score += 0.12 * latest_push
                 reasons.append("展示差ややあり")
 
     wind = weather_info.get("wind_speed")
     wave = weather_info.get("wave_height")
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score != 0:
-        score += water_state_score
+        score += water_state_score * (0.62 + latest_push * 0.28)
         reasons.append("気象安定" if water_state_score > 0 else "気象荒れ気味")
     if weather_info.get("wind_type") == "向い風":
         reasons.append("向い風")
@@ -897,13 +1002,14 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
 
     foot_bonus = float(foot_material.get("foot_bonus", 0) or 0)
     if foot_bonus != 0:
-        score += foot_bonus
+        score += foot_bonus * (0.58 + latest_push * 0.42)
 
     foot_reason_text = str(foot_material.get("reason_text") or "").strip()
     if foot_reason_text:
         reasons.extend([x.strip() for x in foot_reason_text.split(" / ") if x.strip()])
 
     return {
+        "raw_final_ai_score": round(score, 2),
         "final_ai_score": round(score, 2),
         "final_ai_rating": score_to_ai_rating(score),
         "latest_reason_text": " / ".join(reasons[:8]),
@@ -965,7 +1071,7 @@ def calc_base_hold_strength(base_info):
     return round(clamp(strength, 0.0, 0.52), 2)
 
 
-def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor):
+def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor, signal_metrics=None):
     try:
         base_ai_score = float(base_ai_score or 0)
     except Exception:
@@ -975,13 +1081,14 @@ def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_streng
     except Exception:
         raw_final_ai_score = base_ai_score
 
+    signal_strength = float((signal_metrics or {}).get("signal_strength", 0) or 0)
     delta = raw_final_ai_score - base_ai_score
-    reflect_factor = 0.62 + (float(scenario_factor or 1.0) - 0.45) * 0.38 - float(base_hold_strength or 0) * 0.28
-    reflect_factor = clamp(reflect_factor, 0.48, 0.86)
+    reflect_factor = 0.36 + signal_strength * 0.46 + (float(scenario_factor or 1.0) - 0.45) * 0.16 - float(base_hold_strength or 0) * 0.26
+    reflect_factor = clamp(reflect_factor, 0.26, 0.84)
 
-    up_cap = 1.00 - float(base_hold_strength or 0) * 0.22 + max(0.0, float(scenario_factor or 1.0) - 0.70) * 0.20
-    down_cap = -1.02 + float(base_hold_strength or 0) * 0.26 - max(0.0, 0.75 - float(scenario_factor or 1.0)) * 0.18
-    delta = clamp(delta * reflect_factor, down_cap, up_cap)
+    up_cap = 0.48 + signal_strength * 0.82 - float(base_hold_strength or 0) * 0.12 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.12
+    down_cap_mag = 0.52 + signal_strength * 0.86 - float(base_hold_strength or 0) * 0.10 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.10
+    delta = clamp(delta * reflect_factor, -down_cap_mag, up_cap)
     return round(base_ai_score + delta, 2)
 
 
@@ -1442,11 +1549,12 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
     }
 
 
-def scenario_strength_factor(exhibition_info, foot_material=None):
+def scenario_strength_factor(exhibition_info, foot_material=None, signal_metrics=None):
     foot_material = foot_material or {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = foot_material.get("st_map", {}) or {}
+    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
 
     factor = 1.0
 
@@ -1461,6 +1569,10 @@ def scenario_strength_factor(exhibition_info, foot_material=None):
 
     if not has_st:
         factor *= 0.90
+
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+    dynamic_factor = 0.78 + signal_strength * 0.34
+    factor *= dynamic_factor
 
     return round(clamp(factor, 0.45, 1.0), 2)
 
@@ -1713,6 +1825,7 @@ def generate_top_triplets(
     role_maps=None,
     scenario_material=None,
     base_hold_strength=0.0,
+    signal_metrics=None,
 ):
     role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
     scenario_material = scenario_material or build_turn_scenario_material(
@@ -1724,14 +1837,16 @@ def generate_top_triplets(
     second_score = role_maps["second"]
     third_score = role_maps["third"]
 
-    scenario_factor = scenario_strength_factor(exhibition_info, foot_material)
+    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+    scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
 
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
     lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
 
-    base_weight_multiplier = 0.30 + float(base_hold_strength or 0) * 0.24
-    scenario_bonus_multiplier = clamp(0.92 - float(base_hold_strength or 0) * 0.18, 0.76, 0.92)
+    base_weight_multiplier = clamp(0.52 - signal_strength * 0.20 + float(base_hold_strength or 0) * 0.20, 0.30, 0.62)
+    scenario_bonus_multiplier = clamp(0.68 + signal_strength * 0.28 - float(base_hold_strength or 0) * 0.08, 0.64, 0.94)
 
     scored = []
     for a in range(1, 7):
@@ -1787,7 +1902,7 @@ def generate_top_triplets(
 
     head_set = {int(t.split("-")[0]) for t in top if "-" in t}
     scenarios = scenario_material.get("scenarios", [])
-    if len(head_set) == 1 and len(scenarios) >= 2:
+    if signal_strength >= 0.30 and len(head_set) == 1 and len(scenarios) >= 2:
         alt_head = scenarios[1].get("head_lane")
         alt_weight = float(scenarios[1].get("weight", 0) or 0)
         if alt_head and alt_weight * scenario_factor >= 0.24:
@@ -1795,13 +1910,14 @@ def generate_top_triplets(
             if alt_tri and alt_tri not in top:
                 top = top[:5] + [alt_tri]
 
-    top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
+    if signal_strength >= 0.30:
+        top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
     top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
 
     min_base_keep = 1
-    if float(base_hold_strength or 0) >= 0.18:
+    if float(base_hold_strength or 0) >= 0.18 or signal_strength <= 0.28:
         min_base_keep = 2
-    if float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80:
+    if (float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80) or signal_strength <= 0.18:
         min_base_keep = 3
     top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
@@ -1813,7 +1929,7 @@ def generate_top_triplets(
             break
 
     log(
-        f"[selection_regen_v10_4] venue={venue} "
+        f"[selection_regen_v10_5] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base={base_triplets[:3]} final={dedup}"
     )
@@ -1821,7 +1937,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_4_base_hold_star4")
+    log("[collector_version] collector_latest_weather_v10_5_dynamic_push_star4")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1900,8 +2016,9 @@ def build_candidates():
         start_info = beforeinfo.get("start_info", {"st_map": {}})
 
         foot_material = build_foot_material(exhibition_info, start_info, weather_info)
-        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material)
-        scenario_factor = scenario_strength_factor(exhibition_info, foot_material)
+        signal_metrics = calculate_latest_signal_metrics(exhibition_info, foot_material)
+        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material, signal_metrics=signal_metrics)
+        scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
 
         role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
         scenario_material = build_turn_scenario_material(
@@ -1917,7 +2034,9 @@ def build_candidates():
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
-        if base_hold_strength >= 0.18:
+        if signal_metrics.get("signal_text"):
+            latest_reason_parts.append(signal_metrics["signal_text"])
+        if base_hold_strength >= 0.18 and float(signal_metrics.get("signal_strength", 0) or 0) < 0.35:
             latest_reason_parts.append("朝評価をやや優先")
         if scenario_material.get("scenario_text"):
             latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
@@ -1931,12 +2050,14 @@ def build_candidates():
             role_maps=role_maps,
             scenario_material=scenario_material,
             base_hold_strength=base_hold_strength,
+            signal_metrics=signal_metrics,
         )
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
             analyzed["raw_final_ai_score"],
             base_hold_strength,
             scenario_factor,
+            signal_metrics=signal_metrics,
         )
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
