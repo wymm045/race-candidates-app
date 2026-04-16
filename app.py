@@ -486,35 +486,60 @@ def parse_lane_chip_text_map(raw_text):
     return result
 
 
+def parse_signed_chip_items(raw_items):
+    parsed = []
+    for raw in raw_items or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        tone = "neutral"
+        if text[:1] in {"+", "＋"}:
+            tone = "plus"
+            text = text[1:].strip()
+        elif text[:1] in {"-", "－", "▲"}:
+            tone = "minus"
+            text = text[1:].strip()
+        if text:
+            parsed.append((tone, text))
+    return parsed
+
 
 def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_list, lane_score_map, latest_reason_text=""):
     items = []
 
-    if exhibition_list or exhibition_rank_map:
-        items.append(("metric", "展示"))
+    rank = exhibition_rank_map.get(lane)
+    if rank == 1:
+        items.append(("plus", "展示1位"))
+    elif rank == 2:
+        items.append(("plus", "展示上位"))
+    elif rank is not None and rank >= 5:
+        items.append(("minus", "展示下位"))
 
     lane_score = lane_score_map.get(lane)
     if lane_score is not None:
-        items.append(("metric-soft", "補正"))
+        if lane_score >= 0.25:
+            items.append(("plus", "補正"))
+        elif lane_score <= -0.15:
+            items.append(("minus", "補正"))
 
     latest_text = str(latest_reason_text or "")
-    if "進入:" in latest_text or "前づけ" in latest_text or "イン外し" in latest_text:
-        items.append(("reason", "進入"))
+    if lane == 1 and ("イン外し" in latest_text):
+        items.append(("minus", "進入"))
+    elif "前づけ" in latest_text and lane in {3, 4, 5, 6}:
+        items.append(("plus", "進入"))
 
     return items
 
 
-
-def render_player_evidence_chips(stat_items, reason_items, default_items):
+def render_player_evidence_chips(reason_items, default_items):
     chips = []
+    seen = set()
 
-    for item in stat_items:
-        chips.append(f'<span class="player-evidence-chip player-evidence-chip-stat">{item}</span>')
-
-    for item in reason_items:
-        chips.append(f'<span class="player-evidence-chip player-evidence-chip-reason">{item}</span>')
-
-    for tone, item in default_items:
+    for tone, item in list(reason_items) + list(default_items):
+        key = (tone, item)
+        if not item or key in seen:
+            continue
+        seen.add(key)
         chips.append(f'<span class="player-evidence-chip player-evidence-chip-{tone}">{item}</span>')
 
     if not chips:
@@ -556,7 +581,8 @@ def render_player_rank_summary_html(
     for lane in range(1, 7):
         name = player_map.get(lane, "未取得")
         stat_items = player_stat_map.get(lane, [])
-        reason_items = player_reason_map.get(lane, [])
+        reason_items = parse_signed_chip_items(player_reason_map.get(lane, []))
+        reason_items.extend(parse_signed_chip_items(stat_items))
         default_items = build_default_player_evidence_items(
             lane,
             exhibition_rank_map,
@@ -564,7 +590,7 @@ def render_player_rank_summary_html(
             lane_score_map,
             latest_reason_text=latest_reason_text,
         )
-        evidence_html = render_player_evidence_chips(stat_items, reason_items, default_items)
+        evidence_html = render_player_evidence_chips(reason_items, default_items)
 
         rows_html += f"""
         <div class="player-rank-row">
@@ -1780,6 +1806,12 @@ def render_layout(title, body_html):
       .player-rank-main{display:flex;align-items:center;gap:10px;min-width:0}
       .player-rank-lane{flex:0 0 auto}
       .player-rank-name{min-width:0;font-weight:800;color:#172033;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+      .player-rank-evidence{min-width:0}
+      .player-evidence-wrap{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start}
+      .player-evidence-chip{display:inline-flex;align-items:center;padding:5px 9px;border-radius:999px;border:1px solid;font-size:12px;font-weight:700;line-height:1.2;white-space:nowrap}
+      .player-evidence-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
+      .player-evidence-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
+      .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
       .player-rank-sub{display:flex;flex-wrap:wrap;gap:6px;padding-left:34px}
       .player-info-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;background:#f2f4f7;border:1px solid #d0d5dd;color:#475467;font-size:12px;font-weight:700;line-height:1.25}
       .player-info-chip-good{background:#ecfdf3;border-color:#b7e6c2;color:#067647}
@@ -1893,6 +1925,9 @@ def render_layout(title, body_html):
         .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:8px 0}
         .player-rank-main{gap:8px}
         .player-rank-name{font-size:14px;line-height:1.4}
+        .player-rank-evidence{width:100%}
+        .player-evidence-wrap{gap:5px}
+        .player-evidence-chip{font-size:11px;padding:5px 8px}
         .player-rank-sub{padding-left:32px;gap:5px}
         .player-info-chip{font-size:11px;padding:4px 7px}
         .player-reason-mini-wrap{padding-left:32px;gap:5px}
