@@ -1350,7 +1350,30 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
     }
 
 
-def scenario_bonus_for_triplet(tri, scenario_material):
+def scenario_strength_factor(exhibition_info, foot_material=None):
+    foot_material = foot_material or {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    st_map = foot_material.get("st_map", {}) or {}
+
+    factor = 1.0
+
+    has_times = len(times) == 6
+    has_ranks = len(ranks) == 6
+    has_st = len(st_map) >= 4
+
+    if not has_times and not has_ranks:
+        factor *= 0.55
+    elif not has_times or not has_ranks:
+        factor *= 0.72
+
+    if not has_st:
+        factor *= 0.90
+
+    return round(clamp(factor, 0.45, 1.0), 2)
+
+
+def scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=1.0):
     if not tri or not scenario_material:
         return 0.0
 
@@ -1380,6 +1403,7 @@ def scenario_bonus_for_triplet(tri, scenario_material):
         if a == sc.get("head_lane") and b in second_bonus and c in third_bonus:
             total += 0.03 * w
 
+    total *= float(scenario_factor or 1.0)
     return round(total, 4)
 
 
@@ -1391,6 +1415,50 @@ def pick_best_triplet_for_head(scored_rows, head_lane, exclude_triplets=None):
         if tri.startswith(f"{head_lane}-"):
             return tri
     return ""
+
+
+def enforce_head_diversity(top, scored_rows, scenario_material, scenario_factor):
+    if not top:
+        return top
+
+    head_counts = {}
+    for tri in top:
+        head = int(tri.split("-")[0])
+        head_counts[head] = head_counts.get(head, 0) + 1
+
+    dominant_head, dominant_count = sorted(head_counts.items(), key=lambda x: (x[1], x[0]), reverse=True)[0]
+    scenarios = scenario_material.get("scenarios", [])
+
+    if dominant_count <= 4:
+        return top
+
+    candidate_heads = []
+    for sc in scenarios:
+        lane = sc.get("head_lane")
+        if lane and lane != dominant_head:
+            candidate_heads.append((lane, float(sc.get("weight", 0) or 0)))
+
+    candidate_heads = [lane for lane, w in candidate_heads if w * scenario_factor >= 0.20]
+
+    replaced = top[:]
+    for alt_head in candidate_heads[:2]:
+        alt_tri = pick_best_triplet_for_head(scored_rows, alt_head, exclude_triplets=replaced)
+        if alt_tri:
+            replace_idx = -1
+            for idx in range(len(replaced) - 1, -1, -1):
+                if replaced[idx].startswith(f"{dominant_head}-"):
+                    replace_idx = idx
+                    break
+            if replace_idx >= 0:
+                replaced[replace_idx] = alt_tri
+
+    dedup = []
+    for tri in replaced:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return dedup
 
 
 def generate_top_triplets(
@@ -1411,6 +1479,8 @@ def generate_top_triplets(
     head_score = role_maps["head"]
     second_score = role_maps["second"]
     third_score = role_maps["third"]
+
+    scenario_factor = scenario_strength_factor(exhibition_info, foot_material)
 
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
@@ -1440,7 +1510,7 @@ def generate_top_triplets(
                     score += 0.04
 
                 score += base_weight_map.get(tri, 0) * 0.32
-                score += scenario_bonus_for_triplet(tri, scenario_material)
+                score += scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=scenario_factor)
 
                 if head_score.get(a, 0) < -0.18:
                     score -= 0.18
@@ -1473,10 +1543,12 @@ def generate_top_triplets(
     if len(head_set) == 1 and len(scenarios) >= 2:
         alt_head = scenarios[1].get("head_lane")
         alt_weight = float(scenarios[1].get("weight", 0) or 0)
-        if alt_head and alt_weight >= 0.35:
+        if alt_head and alt_weight * scenario_factor >= 0.24:
             alt_tri = pick_best_triplet_for_head(scored, alt_head, exclude_triplets=top)
             if alt_tri and alt_tri not in top:
                 top = top[:5] + [alt_tri]
+
+    top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
 
     dedup = []
     for tri in top:
@@ -1486,15 +1558,15 @@ def generate_top_triplets(
             break
 
     log(
-        f"[selection_regen_v10] venue={venue} "
-        f"scenario={scenario_material.get('scenario_text','')} "
+        f"[selection_regen_v10_1] venue={venue} "
+        f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} "
         f"base={base_triplets[:3]} final={dedup}"
     )
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_turn_scenario")
+    log("[collector_version] collector_latest_weather_v10_1_turn_scenario_soft")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
