@@ -457,10 +457,193 @@ def parse_weather_info_from_lines(lines):
     return weather
 
 
+def parse_st_value(text):
+    if text is None:
+        return None
+    s = str(text).strip().upper()
+    if not s:
+        return None
+
+    s = s.replace("ＳＴ", "").replace("ST", "").strip()
+    s = s.replace(" ", "")
+
+    m = re.search(r"[FL]?\s*(\d?\.\d{2})", s)
+    if m:
+        try:
+            v = float(m.group(1))
+            if 0.0 <= v <= 1.0:
+                return v
+        except Exception:
+            pass
+
+    m = re.search(r"[FL]?\.(\d{2})", s)
+    if m:
+        try:
+            v = float(f"0.{m.group(1)}")
+            if 0.0 <= v <= 1.0:
+                return v
+        except Exception:
+            pass
+
+    return None
+
+
+def parse_start_info_from_lines(lines):
+    st_map = {}
+
+    lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
+    for idx, lane in lane_positions:
+        seg = lines[idx: idx + 12]
+        for txt in seg:
+            v = parse_st_value(txt)
+            if v is not None:
+                st_map[lane] = v
+                break
+
+    if len(st_map) < 6:
+        joined = " ".join(lines)
+        pattern = re.compile(r"([1-6])\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
+        for m in pattern.finditer(joined):
+            try:
+                lane = int(m.group(1))
+            except Exception:
+                continue
+            v = parse_st_value(m.group(2))
+            if v is not None and lane not in st_map:
+                st_map[lane] = v
+
+    return {"st_map": st_map}
+
+
+def build_foot_material(exhibition_info, start_info, weather_info=None):
+    weather_info = weather_info or {}
+    times = exhibition_info.get("times", []) if exhibition_info else []
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    st_map = start_info.get("st_map", {}) if start_info else {}
+
+    lane_scores = {lane: 0.0 for lane in range(1, 7)}
+    reasons = []
+    top_lane_reasons = []
+
+    float_times = []
+    for lane, t in enumerate(times, start=1):
+        try:
+            v = float(t)
+            if is_exhibition_time_value(v):
+                float_times.append((lane, v))
+        except Exception:
+            pass
+
+    if len(float_times) == 6:
+        sorted_times = sorted(float_times, key=lambda x: x[1])
+        fastest_lane, fastest_time = sorted_times[0]
+        second_lane, second_time = sorted_times[1]
+        slowest_lane, slowest_time = sorted_times[-1]
+        spread = slowest_time - fastest_time
+        gap12 = second_time - fastest_time
+
+        if spread >= 0.18:
+            reasons.append("足:足差あり")
+            lane_scores[fastest_lane] += 0.34
+            lane_scores[second_lane] += 0.12
+            lane_scores[slowest_lane] -= 0.20
+        elif spread >= 0.12:
+            reasons.append("足:足差ややあり")
+            lane_scores[fastest_lane] += 0.24
+            lane_scores[second_lane] += 0.08
+            lane_scores[slowest_lane] -= 0.14
+        elif spread >= 0.08:
+            lane_scores[fastest_lane] += 0.14
+            lane_scores[slowest_lane] -= 0.08
+
+        if gap12 >= 0.05:
+            lane_scores[fastest_lane] += 0.08
+
+        if ranks.get(fastest_lane) == 1:
+            lane_scores[fastest_lane] += 0.10
+
+    if len(st_map) >= 4:
+        sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
+        if len(sorted_st) >= 2:
+            best_lane, best_st = sorted_st[0]
+            second_lane, second_st = sorted_st[1]
+            worst_lane, worst_st = sorted_st[-1]
+            st_spread = worst_st - best_st
+
+            if best_st <= 0.10:
+                lane_scores[best_lane] += 0.18
+                top_lane_reasons.append(f"足:{best_lane}号艇足色良さげ")
+            elif best_st <= 0.12:
+                lane_scores[best_lane] += 0.12
+
+            if st_spread >= 0.10:
+                reasons.append("足:ST気配あり")
+                lane_scores[best_lane] += 0.10
+                lane_scores[second_lane] += 0.05
+                lane_scores[worst_lane] -= 0.12
+            elif st_spread >= 0.06:
+                lane_scores[best_lane] += 0.06
+                lane_scores[worst_lane] -= 0.06
+
+    if ranks:
+        for lane in range(1, 7):
+            rank = ranks.get(lane)
+            if rank == 1:
+                lane_scores[lane] += 0.08
+            elif rank == 6:
+                lane_scores[lane] -= 0.06
+
+    water_state_score = float(weather_info.get("water_state_score") or 0)
+    if water_state_score < 0:
+        if 1 in lane_scores:
+            lane_scores[1] += abs(water_state_score) * 0.25
+        for lane in [5, 6]:
+            lane_scores[lane] -= abs(water_state_score) * 0.18
+
+    sorted_lane_scores = sorted(lane_scores.items(), key=lambda x: x[1], reverse=True)
+    best_lane, best_score = sorted_lane_scores[0]
+    second_score = sorted_lane_scores[1][1] if len(sorted_lane_scores) >= 2 else 0.0
+
+    if best_score >= 0.22 and (best_score - second_score) >= 0.08:
+        if f"足:{best_lane}号艇足色良さげ" not in top_lane_reasons:
+            top_lane_reasons.append(f"足:{best_lane}号艇足色良さげ")
+
+    positive_scores = [v for v in lane_scores.values() if v > 0]
+    negative_scores = [v for v in lane_scores.values() if v < 0]
+
+    foot_bonus = 0.0
+    if positive_scores:
+        foot_bonus += min(max(positive_scores), 0.40) * 0.65
+    if negative_scores:
+        foot_bonus += max(min(negative_scores), -0.20) * 0.25
+
+    if len(float_times) == 6:
+        spread = max(v for _, v in float_times) - min(v for _, v in float_times)
+        if spread >= 0.12:
+            foot_bonus += 0.10
+        elif spread >= 0.08:
+            foot_bonus += 0.05
+
+    foot_bonus = round(foot_bonus, 2)
+
+    reason_text = " / ".join((reasons + top_lane_reasons)[:3])
+
+    return {
+        "lane_scores": lane_scores,
+        "foot_bonus": foot_bonus,
+        "reason_text": reason_text,
+        "st_map": st_map,
+    }
+
+
 def parse_beforeinfo_for_key(jcd, race_no):
     race_no = normalize_race_no_value(race_no)
     beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-    empty = {"exhibition": {"times": [], "ranks": {}}, "weather": {}}
+    empty = {
+        "exhibition": {"times": [], "ranks": {}},
+        "weather": {},
+        "start_info": {"st_map": {}},
+    }
     try:
         html = fetch_html(beforeinfo_url)
     except Exception as e:
@@ -474,7 +657,16 @@ def parse_beforeinfo_for_key(jcd, race_no):
         times = extract_exhibition_times_from_lines(lines)
     ranks = build_exhibition_ranks_from_times(times)
     weather = parse_weather_info_from_lines(lines)
-    return (jcd, race_no), {"exhibition": {"times": times, "ranks": ranks}, "weather": weather}
+    start_info = parse_start_info_from_lines(lines)
+
+    return (
+        (jcd, race_no),
+        {
+            "exhibition": {"times": times, "ranks": ranks},
+            "weather": weather,
+            "start_info": start_info,
+        },
+    )
 
 
 def fetch_beforeinfo_parallel(keys):
@@ -544,9 +736,9 @@ def fetch_base_map_today():
     raise last_err
 
 
-
-def build_lane_score_text(exhibition_info, weather_info=None):
+def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
     weather_info = weather_info or {}
+    foot_material = foot_material or {}
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
 
@@ -614,15 +806,22 @@ def build_lane_score_text(exhibition_info, weather_info=None):
         for lane in [4, 5, 6]:
             lane_scores[lane] -= water_state_score * 0.25
 
+    foot_lane_scores = foot_material.get("lane_scores", {})
+    if foot_lane_scores:
+        for lane in range(1, 7):
+            lane_scores[lane] += float(foot_lane_scores.get(lane, 0) or 0) * 0.90
+
     parts = []
     for lane in range(1, 7):
         parts.append(f"{lane}:{lane_scores[lane]:.2f}")
     return " / ".join(parts)
 
-def analyze_latest(base_ai_score, exhibition_info, weather_info=None):
+
+def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_material=None):
     score = float(base_ai_score or 0)
     reasons = []
     weather_info = weather_info or {}
+    foot_material = foot_material or {}
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
@@ -660,7 +859,6 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None):
                 score += 0.12
                 reasons.append("展示差ややあり")
 
-
     wind = weather_info.get("wind_speed")
     wave = weather_info.get("wave_height")
     water_state_score = float(weather_info.get("water_state_score") or 0)
@@ -679,10 +877,18 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None):
     if isinstance(wave, (int, float)) and wave >= 5:
         reasons.append(f"波高{wave:g}cm")
 
+    foot_bonus = float(foot_material.get("foot_bonus", 0) or 0)
+    if foot_bonus != 0:
+        score += foot_bonus
+
+    foot_reason_text = str(foot_material.get("reason_text") or "").strip()
+    if foot_reason_text:
+        reasons.extend([x.strip() for x in foot_reason_text.split(" / ") if x.strip()])
+
     return {
         "final_ai_score": round(score, 2),
         "final_ai_rating": score_to_ai_rating(score),
-        "latest_reason_text": " / ".join(reasons[:6]),
+        "latest_reason_text": " / ".join(reasons[:8]),
     }
 
 
@@ -692,13 +898,16 @@ def selection_triplets(selection):
     return [x.strip() for x in str(selection).split(" / ") if x.strip()]
 
 
-def rebuild_final_selection(base_selection, exhibition_info):
+def rebuild_final_selection(base_selection, exhibition_info, foot_material=None):
     triplets = selection_triplets(base_selection)
     if not triplets:
         return ""
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    if not ranks:
+    foot_material = foot_material or {}
+    foot_lane_scores = foot_material.get("lane_scores", {}) or {}
+
+    if not ranks and not foot_lane_scores:
         return " / ".join(triplets[:6])
 
     def triplet_score(tri):
@@ -709,7 +918,17 @@ def rebuild_final_selection(base_selection, exhibition_info):
             a, b, c = map(int, parts)
         except Exception:
             return -999
-        return -(ranks.get(a, 9) * 1.3 + ranks.get(b, 9) * 0.9 + ranks.get(c, 9) * 0.6)
+
+        rank_score = (
+            -(ranks.get(a, 9) * 1.3 + ranks.get(b, 9) * 0.9 + ranks.get(c, 9) * 0.6)
+            if ranks else 0
+        )
+        foot_score = (
+            float(foot_lane_scores.get(a, 0) or 0) * 1.2
+            + float(foot_lane_scores.get(b, 0) or 0) * 0.8
+            + float(foot_lane_scores.get(c, 0) or 0) * 0.5
+        )
+        return rank_score + foot_score
 
     triplets = sorted(triplets, key=lambda tri: (triplet_score(tri), tri), reverse=True)
     dedup = []
@@ -722,7 +941,7 @@ def rebuild_final_selection(base_selection, exhibition_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v3_lane_scores")
+    log("[collector_version] collector_latest_weather_v4_foot_scores")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -798,8 +1017,10 @@ def build_candidates():
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         weather_info = beforeinfo.get("weather", {})
+        start_info = beforeinfo.get("start_info", {"st_map": {}})
 
-        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info)
+        foot_material = build_foot_material(exhibition_info, start_info, weather_info)
+        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material)
 
         latest_reason_parts = []
         if base_reason_text:
@@ -807,10 +1028,10 @@ def build_candidates():
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
-        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info)
+        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info, foot_material)
         final_ai_score = analyzed["final_ai_score"]
 
-        ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info)
+        ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
         candidate = {
             "race_date": today_text(),
@@ -824,7 +1045,7 @@ def build_candidates():
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
             "final_rank": score_to_final_rank(final_ai_score),
-            "latest_reason_text": " / ".join(latest_reason_parts[:8]),
+            "latest_reason_text": " / ".join(latest_reason_parts[:10]),
             "latest_updated_at": jst_now_str(),
         }
         results.append(candidate)
