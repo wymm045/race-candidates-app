@@ -100,6 +100,10 @@ def is_target_deadline(hhmm):
         return False
 
 
+def clamp(v, low, high):
+    return max(low, min(high, v))
+
+
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
     last_err = None
     for attempt in range(1, max_retries + 1):
@@ -1087,8 +1091,322 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     }
 
 
-def generate_top_triplets(venue, base_selection, exhibition_info, weather_info=None, foot_material=None):
-    role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+def build_pref_bonus_map(lanes, values):
+    out = {}
+    for lane, val in zip(lanes, values):
+        if lane is None:
+            continue
+        out[int(lane)] = float(val)
+    return out
+
+
+def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None, role_maps=None):
+    weather_info = weather_info or {}
+    foot_material = foot_material or {}
+    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+
+    head_score = role_maps["head"]
+    second_score = role_maps["second"]
+    third_score = role_maps["third"]
+    lane_score_map = role_maps["lane"]
+    venue_notes = role_maps.get("venue_notes", [])
+
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    st_map = foot_material.get("st_map", {}) or {}
+
+    scenarios = []
+    head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
+    second_ranked = [lane for lane, _ in sorted(second_score.items(), key=lambda x: x[1], reverse=True)]
+    lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
+
+    best_head = head_ranked[0]
+    second_head = head_ranked[1]
+    head_gap = head_score[best_head] - head_score[second_head]
+
+    rank1 = ranks.get(1)
+    st1 = st_map.get(1)
+    weight_1 = 0.0
+    if head_score.get(1, 0) >= 0.10:
+        weight_1 += 0.30
+    if best_head == 1:
+        weight_1 += 0.20
+    if rank1 == 1:
+        weight_1 += 0.24
+    elif rank1 == 2:
+        weight_1 += 0.14
+    elif rank1 is not None and rank1 >= 5:
+        weight_1 -= 0.18
+    if isinstance(st1, (int, float)):
+        if st1 <= 0.11:
+            weight_1 += 0.12
+        elif st1 >= 0.19:
+            weight_1 -= 0.10
+    if weather_info.get("water_state_score", 0) > 0:
+        weight_1 += 0.04
+    if "大村イン寄り" in venue_notes:
+        weight_1 += 0.06
+    if "江戸川外警戒" in venue_notes:
+        weight_1 -= 0.08
+    if head_gap >= 0.16 and best_head == 1:
+        weight_1 += 0.06
+    weight_1 = clamp(weight_1, 0.0, 1.0)
+
+    if weight_1 >= 0.22:
+        scenarios.append({
+            "name": "1逃げ本線",
+            "head_lane": 1,
+            "weight": weight_1,
+            "head_bonus": {
+                1: 0.24,
+                2: 0.03,
+                3: 0.02,
+            },
+            "second_bonus": {
+                2: 0.15,
+                3: 0.10,
+                4: 0.05,
+                5: 0.01,
+                1: -0.05,
+            },
+            "third_bonus": {
+                2: 0.05,
+                3: 0.10,
+                4: 0.10,
+                5: 0.06,
+                6: 0.03,
+                1: -0.04,
+            },
+        })
+
+    rank2 = ranks.get(2)
+    st2 = st_map.get(2)
+    weight_2 = 0.0
+    if head_score.get(2, 0) >= 0.10:
+        weight_2 += 0.24
+    if best_head == 2:
+        weight_2 += 0.18
+    if second_score.get(1, 0) >= 0.06:
+        weight_2 += 0.10
+    if rank2 == 1:
+        weight_2 += 0.18
+    elif rank2 == 2:
+        weight_2 += 0.10
+    if rank1 is not None and rank1 >= 4:
+        weight_2 += 0.08
+    if isinstance(st2, (int, float)):
+        if st2 <= 0.11:
+            weight_2 += 0.12
+        elif st2 >= 0.18:
+            weight_2 -= 0.08
+    if "大村イン寄り" in venue_notes:
+        weight_2 -= 0.05
+    weight_2 = clamp(weight_2, 0.0, 1.0)
+
+    if weight_2 >= 0.22:
+        scenarios.append({
+            "name": "2差し注意",
+            "head_lane": 2,
+            "weight": weight_2,
+            "head_bonus": {
+                2: 0.23,
+                3: 0.05,
+                1: 0.02,
+            },
+            "second_bonus": {
+                1: 0.15,
+                3: 0.12,
+                4: 0.05,
+                5: 0.02,
+            },
+            "third_bonus": {
+                1: 0.08,
+                3: 0.11,
+                4: 0.09,
+                5: 0.05,
+                6: 0.03,
+            },
+        })
+
+    center_candidates = [3, 4]
+    center_lane = max(center_candidates, key=lambda lane: head_score.get(lane, -999))
+    rank_center = ranks.get(center_lane)
+    st_center = st_map.get(center_lane)
+    weight_center = 0.0
+    if head_score.get(center_lane, 0) >= 0.12:
+        weight_center += 0.24
+    if best_head == center_lane:
+        weight_center += 0.18
+    if lane_score_map.get(center_lane, 0) >= 0.12:
+        weight_center += 0.10
+    if rank_center == 1:
+        weight_center += 0.18
+    elif rank_center == 2:
+        weight_center += 0.10
+    if isinstance(st_center, (int, float)):
+        if st_center <= 0.11:
+            weight_center += 0.12
+        elif st_center >= 0.19:
+            weight_center -= 0.08
+    if "若松やや波乱" in venue_notes:
+        weight_center += 0.04
+    if "江戸川外警戒" in venue_notes:
+        weight_center += 0.05
+    weight_center = clamp(weight_center, 0.0, 1.0)
+
+    if weight_center >= 0.24:
+        if center_lane == 3:
+            second_pref = [1, 2, 4, 5, 6]
+            third_pref = [2, 1, 4, 5, 6]
+            name = "3攻め注意"
+        else:
+            second_pref = [2, 3, 1, 5, 6]
+            third_pref = [3, 2, 1, 5, 6]
+            name = "4攻め注意"
+
+        scenarios.append({
+            "name": name,
+            "head_lane": center_lane,
+            "weight": weight_center,
+            "head_bonus": build_pref_bonus_map(
+                [center_lane, 2, 1, 5],
+                [0.25, 0.03, 0.02, 0.02],
+            ),
+            "second_bonus": build_pref_bonus_map(
+                second_pref[:5],
+                [0.13, 0.11, 0.07, 0.04, 0.02],
+            ),
+            "third_bonus": build_pref_bonus_map(
+                third_pref[:5],
+                [0.10, 0.09, 0.08, 0.05, 0.03],
+            ),
+        })
+
+    outer_candidates = [5, 6]
+    outer_lane = max(outer_candidates, key=lambda lane: head_score.get(lane, -999))
+    rank_outer = ranks.get(outer_lane)
+    st_outer = st_map.get(outer_lane)
+    weight_outer = 0.0
+    if head_score.get(outer_lane, 0) >= 0.12:
+        weight_outer += 0.20
+    if best_head == outer_lane:
+        weight_outer += 0.20
+    if lane_score_map.get(outer_lane, 0) >= 0.16:
+        weight_outer += 0.14
+    if rank_outer == 1:
+        weight_outer += 0.18
+    elif rank_outer == 2:
+        weight_outer += 0.10
+    if isinstance(st_outer, (int, float)):
+        if st_outer <= 0.10:
+            weight_outer += 0.14
+        elif st_outer >= 0.18:
+            weight_outer -= 0.08
+    if "江戸川外警戒" in venue_notes:
+        weight_outer += 0.12
+    if "若松やや波乱" in venue_notes:
+        weight_outer += 0.06
+    if "大村イン寄り" in venue_notes:
+        weight_outer -= 0.08
+    weight_outer = clamp(weight_outer, 0.0, 1.0)
+
+    if weight_outer >= 0.24:
+        if outer_lane == 5:
+            second_pref = [6, 1, 2, 4, 3]
+            third_pref = [1, 6, 2, 3, 4]
+            name = "5一撃注意"
+        else:
+            second_pref = [5, 1, 2, 3, 4]
+            third_pref = [1, 5, 2, 3, 4]
+            name = "6一撃注意"
+
+        scenarios.append({
+            "name": name,
+            "head_lane": outer_lane,
+            "weight": weight_outer,
+            "head_bonus": build_pref_bonus_map(
+                [outer_lane, 5 if outer_lane == 6 else 6, 1],
+                [0.24, 0.04, 0.02],
+            ),
+            "second_bonus": build_pref_bonus_map(
+                second_pref[:5],
+                [0.14, 0.12, 0.09, 0.06, 0.03],
+            ),
+            "third_bonus": build_pref_bonus_map(
+                third_pref[:5],
+                [0.11, 0.10, 0.08, 0.05, 0.03],
+            ),
+        })
+
+    scenarios = sorted(scenarios, key=lambda x: x["weight"], reverse=True)[:4]
+    scenario_text = " / ".join([f"{s['name']}" for s in scenarios[:2]])
+
+    return {
+        "scenarios": scenarios,
+        "scenario_text": scenario_text,
+        "best_head_lane": best_head,
+        "head_ranked": head_ranked,
+        "second_ranked": second_ranked,
+        "lane_ranked": lane_ranked,
+    }
+
+
+def scenario_bonus_for_triplet(tri, scenario_material):
+    if not tri or not scenario_material:
+        return 0.0
+
+    try:
+        a, b, c = [int(x) for x in tri.split("-")]
+    except Exception:
+        return 0.0
+
+    total = 0.0
+    scenarios = scenario_material.get("scenarios", [])
+
+    for sc in scenarios:
+        w = float(sc.get("weight", 0) or 0)
+        if w <= 0:
+            continue
+
+        head_bonus = sc.get("head_bonus", {})
+        second_bonus = sc.get("second_bonus", {})
+        third_bonus = sc.get("third_bonus", {})
+
+        total += float(head_bonus.get(a, -0.03 if a != sc.get("head_lane") else 0) or 0) * w
+        total += float(second_bonus.get(b, 0) or 0) * w
+        total += float(third_bonus.get(c, 0) or 0) * w
+
+        if a == sc.get("head_lane") and b == a:
+            total -= 0.10 * w
+        if a == sc.get("head_lane") and b in second_bonus and c in third_bonus:
+            total += 0.03 * w
+
+    return round(total, 4)
+
+
+def pick_best_triplet_for_head(scored_rows, head_lane, exclude_triplets=None):
+    exclude_triplets = set(exclude_triplets or [])
+    for tri, _score in scored_rows:
+        if tri in exclude_triplets:
+            continue
+        if tri.startswith(f"{head_lane}-"):
+            return tri
+    return ""
+
+
+def generate_top_triplets(
+    venue,
+    base_selection,
+    exhibition_info,
+    weather_info=None,
+    foot_material=None,
+    role_maps=None,
+    scenario_material=None,
+):
+    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+    scenario_material = scenario_material or build_turn_scenario_material(
+        venue, exhibition_info, weather_info, foot_material, role_maps
+    )
+
     lane_score_map = role_maps["lane"]
     head_score = role_maps["head"]
     second_score = role_maps["second"]
@@ -1122,6 +1440,7 @@ def generate_top_triplets(venue, base_selection, exhibition_info, weather_info=N
                     score += 0.04
 
                 score += base_weight_map.get(tri, 0) * 0.32
+                score += scenario_bonus_for_triplet(tri, scenario_material)
 
                 if head_score.get(a, 0) < -0.18:
                     score -= 0.18
@@ -1149,6 +1468,16 @@ def generate_top_triplets(venue, base_selection, exhibition_info, weather_info=N
             if best_base not in top:
                 top = top[:5] + [best_base]
 
+    head_set = {int(t.split("-")[0]) for t in top if "-" in t}
+    scenarios = scenario_material.get("scenarios", [])
+    if len(head_set) == 1 and len(scenarios) >= 2:
+        alt_head = scenarios[1].get("head_lane")
+        alt_weight = float(scenarios[1].get("weight", 0) or 0)
+        if alt_head and alt_weight >= 0.35:
+            alt_tri = pick_best_triplet_for_head(scored, alt_head, exclude_triplets=top)
+            if alt_tri and alt_tri not in top:
+                top = top[:5] + [alt_tri]
+
     dedup = []
     for tri in top:
         if tri not in dedup:
@@ -1156,12 +1485,16 @@ def generate_top_triplets(venue, base_selection, exhibition_info, weather_info=N
         if len(dedup) >= 6:
             break
 
-    log(f"[selection_regen_v9] venue={venue} base={base_triplets[:3]} final={dedup}")
+    log(
+        f"[selection_regen_v10] venue={venue} "
+        f"scenario={scenario_material.get('scenario_text','')} "
+        f"base={base_triplets[:3]} final={dedup}"
+    )
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v9_venue_bias")
+    log("[collector_version] collector_latest_weather_v10_turn_scenario")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1241,11 +1574,22 @@ def build_candidates():
         foot_material = build_foot_material(exhibition_info, start_info, weather_info)
         analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material)
 
+        role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+        scenario_material = build_turn_scenario_material(
+            venue,
+            exhibition_info,
+            weather_info,
+            foot_material,
+            role_maps,
+        )
+
         latest_reason_parts = []
         if base_reason_text:
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
+        if scenario_material.get("scenario_text"):
+            latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
 
         final_ai_selection = generate_top_triplets(
             venue,
@@ -1253,6 +1597,8 @@ def build_candidates():
             exhibition_info,
             weather_info,
             foot_material,
+            role_maps=role_maps,
+            scenario_material=scenario_material,
         )
         final_ai_score = analyzed["final_ai_score"]
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
