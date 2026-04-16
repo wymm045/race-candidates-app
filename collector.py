@@ -736,7 +736,7 @@ def fetch_base_map_today():
     raise last_err
 
 
-def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
+def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=None):
     weather_info = weather_info or {}
     foot_material = foot_material or {}
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
@@ -811,10 +811,100 @@ def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None
         for lane in range(1, 7):
             lane_scores[lane] += float(foot_lane_scores.get(lane, 0) or 0) * 0.90
 
-    parts = []
-    for lane in range(1, 7):
-        parts.append(f"{lane}:{lane_scores[lane]:.2f}")
-    return " / ".join(parts)
+    return lane_scores
+
+
+def build_generated_triplets_from_lane_scores(lane_score_map):
+    sorted_lanes = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
+    if len(sorted_lanes) < 4:
+        return []
+
+    a, b, c, d = sorted_lanes[:4]
+
+    candidates = [
+        normalize_triplet(a, b, c),
+        normalize_triplet(a, b, d),
+        normalize_triplet(a, c, b),
+        normalize_triplet(a, c, d),
+        normalize_triplet(b, a, c),
+        normalize_triplet(b, a, d),
+        normalize_triplet(a, d, b),
+        normalize_triplet(c, a, b),
+    ]
+
+    out = []
+    for tri in candidates:
+        if tri and tri not in out:
+            out.append(tri)
+    return out
+
+
+def inject_promoted_triplets(triplets, lane_score_map):
+    if not lane_score_map or len(lane_score_map) < 3:
+        return triplets[:6]
+
+    ranked = sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)
+    top_lane, top_score = ranked[0]
+    second_lane, second_score = ranked[1]
+
+    include_count = 0
+    head_count = 0
+    for tri in triplets:
+        parts = tri.split("-")
+        if len(parts) != 3:
+            continue
+        try:
+            a, b, c = map(int, parts)
+        except Exception:
+            continue
+        if top_lane in (a, b, c):
+            include_count += 1
+        if a == top_lane:
+            head_count += 1
+
+    if top_score < 0.55:
+        return triplets[:6]
+
+    if (top_score - second_score) < 0.18:
+        return triplets[:6]
+
+    generated = build_generated_triplets_from_lane_scores(lane_score_map)
+
+    promoted = []
+    for tri in generated:
+        parts = tri.split("-")
+        if len(parts) != 3:
+            continue
+        try:
+            a, b, c = map(int, parts)
+        except Exception:
+            continue
+        if a == top_lane or b == top_lane:
+            promoted.append(tri)
+
+    new_list = list(triplets)
+
+    if include_count == 0:
+        for tri in promoted[:2]:
+            if tri not in new_list:
+                new_list.insert(0, tri)
+    elif head_count == 0:
+        for tri in promoted[:1]:
+            if tri not in new_list:
+                new_list.insert(0, tri)
+
+    dedup = []
+    for tri in new_list:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return dedup
+
+
+def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
+    lane_scores = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
+    return " / ".join([f"{lane}:{lane_scores[lane]:.2f}" for lane in range(1, 7)])
 
 
 def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_material=None):
@@ -898,7 +988,7 @@ def selection_triplets(selection):
     return [x.strip() for x in str(selection).split(" / ") if x.strip()]
 
 
-def rebuild_final_selection(base_selection, exhibition_info, foot_material=None):
+def rebuild_final_selection(base_selection, exhibition_info, weather_info=None, foot_material=None):
     triplets = selection_triplets(base_selection)
     if not triplets:
         return ""
@@ -906,6 +996,9 @@ def rebuild_final_selection(base_selection, exhibition_info, foot_material=None)
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     foot_material = foot_material or {}
     foot_lane_scores = foot_material.get("lane_scores", {}) or {}
+
+    lane_score_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
+    triplets = inject_promoted_triplets(triplets, lane_score_map)
 
     if not ranks and not foot_lane_scores:
         return " / ".join(triplets[:6])
@@ -928,9 +1021,15 @@ def rebuild_final_selection(base_selection, exhibition_info, foot_material=None)
             + float(foot_lane_scores.get(b, 0) or 0) * 0.8
             + float(foot_lane_scores.get(c, 0) or 0) * 0.5
         )
-        return rank_score + foot_score
+        lane_total_score = (
+            float(lane_score_map.get(a, 0) or 0) * 1.0
+            + float(lane_score_map.get(b, 0) or 0) * 0.7
+            + float(lane_score_map.get(c, 0) or 0) * 0.45
+        )
+        return rank_score + foot_score + lane_total_score
 
     triplets = sorted(triplets, key=lambda tri: (triplet_score(tri), tri), reverse=True)
+
     dedup = []
     for tri in triplets:
         if tri not in dedup:
@@ -941,7 +1040,7 @@ def rebuild_final_selection(base_selection, exhibition_info, foot_material=None)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v4_foot_scores")
+    log("[collector_version] collector_latest_weather_v5_promote_top_lane")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1028,7 +1127,12 @@ def build_candidates():
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
 
-        final_ai_selection = rebuild_final_selection(base_ai_selection, exhibition_info, foot_material)
+        final_ai_selection = rebuild_final_selection(
+            base_ai_selection,
+            exhibition_info,
+            weather_info,
+            foot_material,
+        )
         final_ai_score = analyzed["final_ai_score"]
 
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
