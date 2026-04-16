@@ -48,6 +48,8 @@ CARD_SELECT_COLUMNS = '''
     ai_lane_score_text,
     class_history_text,
     player_names_text,
+    player_stat_text,
+    player_reason_text,
     ai_score,
     ai_rating,
     ai_selection,
@@ -461,57 +463,70 @@ def build_exhibition_time_rank_map(exhibition_list):
 
 
 
-def build_player_reason_groups(lane, classes, exhibition_rank_map, exhibition_list, lane_score_map):
-    plus_items = []
-    minus_items = []
+def parse_lane_chip_text_map(raw_text):
+    result = {}
+    s = str(raw_text or "").strip()
+    if not s:
+        return result
+    for part in [x.strip() for x in s.split('/') if x.strip()]:
+        if ':' not in part:
+            continue
+        lane_part, body = part.split(':', 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        items = []
+        for token in re.split(r'[|｜]', body):
+            chip = str(token).strip()
+            if chip:
+                items.append(chip)
+        if items:
+            result[lane] = items
+    return result
 
-    current_class = str(classes[0] or "").strip().upper() if classes else ""
-    if current_class == "A1":
-        plus_items.append("現A1")
-    elif current_class == "A2":
-        plus_items.append("現A2")
-    elif current_class == "B2":
-        minus_items.append("現B2")
+
+
+def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_list, lane_score_map):
+    items = []
+
+    exhibition_time = exhibition_list[lane - 1] if lane - 1 < len(exhibition_list or []) else ""
+    if exhibition_time:
+        items.append(("metric", f"展示 {exhibition_time}"))
 
     exhibition_rank = exhibition_rank_map.get(lane)
     if exhibition_rank is not None:
-        if exhibition_rank <= 2:
-            plus_items.append(f"展示順位{exhibition_rank}位")
-        elif exhibition_rank >= 5:
-            minus_items.append(f"展示順位{exhibition_rank}位")
+        items.append(("metric", f"展示順位 {exhibition_rank}位"))
 
     time_rank_map = build_exhibition_time_rank_map(exhibition_list)
     time_rank = time_rank_map.get(lane)
     if time_rank is not None:
-        if time_rank <= 2:
-            plus_items.append(f"展示タイム上位{time_rank}")
-        elif time_rank >= 5:
-            minus_items.append(f"展示タイム下位{time_rank}")
+        items.append(("metric-soft", f"展示タイム {time_rank}位"))
 
     lane_score = lane_score_map.get(lane)
     if lane_score is not None:
-        if lane_score >= 0.15:
-            plus_items.append(f"補正{lane_score:+.2f}")
-        elif lane_score <= -0.15:
-            minus_items.append(f"補正{lane_score:+.2f}")
+        items.append(("metric-soft", f"補正 {lane_score:+.2f}"))
 
-    return plus_items[:3], minus_items[:3]
+    return items
 
 
 
-def render_reason_group_html(title, items, tone):
-    if not items:
-        return ""
-    chips = "".join([
-        f'<span class="player-reason-mini-chip player-reason-mini-chip-{tone}">{item}</span>'
-        for item in items
-    ])
-    return f"""
-    <div class="player-reason-mini-row player-reason-mini-row-{tone}">
-      <span class="player-reason-mini-label">{title}</span>
-      <div class="player-reason-mini-chips">{chips}</div>
-    </div>
-    """
+def render_player_evidence_chips(stat_items, reason_items, default_items):
+    chips = []
+
+    for item in stat_items:
+        chips.append(f'<span class="player-evidence-chip player-evidence-chip-stat">{item}</span>')
+
+    for item in reason_items:
+        chips.append(f'<span class="player-evidence-chip player-evidence-chip-reason">{item}</span>')
+
+    for tone, item in default_items:
+        chips.append(f'<span class="player-evidence-chip player-evidence-chip-{tone}">{item}</span>')
+
+    if not chips:
+        return '<div class="player-rank-empty">未取得</div>'
+
+    return f'<div class="player-evidence-wrap">{"".join(chips)}</div>'
 
 
 
@@ -521,67 +536,39 @@ def render_player_rank_summary_html(
     lane_score_text="",
     exhibition_rank_text="",
     exhibition_list=None,
-    reason_items=None,
+    player_stat_text="",
+    player_reason_text="",
 ):
     player_map = parse_player_names_map(player_names_text)
-    class_rows = parse_class_history_rows(class_history_text)
-    class_map = {}
-    for row in class_rows:
-        lane = row.get("lane")
-        if lane is None:
-            continue
-        class_map[lane] = row.get("classes", [])
-
     lane_score_map = {lane: score for lane, score in parse_lane_score_items(lane_score_text)}
     exhibition_rank_map = parse_exhibition_rank_map(exhibition_rank_text)
     exhibition_list = exhibition_list or []
+    player_stat_map = parse_lane_chip_text_map(player_stat_text)
+    player_reason_map = parse_lane_chip_text_map(player_reason_text)
 
-    has_any = bool(player_map) or bool(class_map) or bool(lane_score_map) or bool(exhibition_rank_map)
+    has_any = (
+        bool(player_map)
+        or bool(player_stat_map)
+        or bool(player_reason_map)
+        or bool(lane_score_map)
+        or bool(exhibition_rank_map)
+        or bool(exhibition_list)
+    )
     if not has_any:
         return '<div class="player-rank-empty">未取得</div>'
 
     rows_html = ""
     for lane in range(1, 7):
         name = player_map.get(lane, "未取得")
-        classes = class_map.get(lane, [])
-        chips = ""
-        if classes:
-            for idx, cls in enumerate(classes):
-                cls_safe = (cls or "").lower()
-                sub = "現" if idx == 0 else f"-{idx}"
-                current_cls = " current-class-chip" if idx == 0 else ""
-                chips += f'<div class="class-chip class-chip-{cls_safe}{current_cls}"><span class="class-chip-sub">{sub}</span><span class="class-chip-main">{cls}</span></div>'
-        else:
-            chips = '<div class="class-history-empty">未取得</div>'
-
-        sub_chips = []
-        exhibition_time = exhibition_list[lane - 1] if lane - 1 < len(exhibition_list) else ""
-        if exhibition_time:
-            sub_chips.append(f'<span class="player-info-chip">展示 {exhibition_time}</span>')
-
-        exhibition_rank = exhibition_rank_map.get(lane)
-        if exhibition_rank is not None:
-            sub_chips.append(f'<span class="player-info-chip">展示順位 {exhibition_rank}位</span>')
-
-        lane_score = lane_score_map.get(lane)
-        if lane_score is not None:
-            lane_score_label = f'{lane_score:+.2f}'
-            sub_chips.append(f'<span class="{lane_score_tone_class(lane_score)}">補正 {lane_score_label}</span>')
-
-        plus_items, minus_items = build_player_reason_groups(
+        stat_items = player_stat_map.get(lane, [])
+        reason_items = player_reason_map.get(lane, [])
+        default_items = build_default_player_evidence_items(
             lane,
-            classes,
             exhibition_rank_map,
             exhibition_list,
             lane_score_map,
         )
-        reason_groups_html = (
-            render_reason_group_html("プラス", plus_items, "plus")
-            + render_reason_group_html("マイナス", minus_items, "minus")
-        )
-
-        sub_info_html = f'<div class="player-rank-sub">{"".join(sub_chips)}</div>' if sub_chips else ''
-        player_reason_html = f'<div class="player-reason-mini-wrap">{reason_groups_html}</div>' if reason_groups_html else ''
+        evidence_html = render_player_evidence_chips(stat_items, reason_items, default_items)
 
         rows_html += f"""
         <div class="player-rank-row">
@@ -590,10 +577,8 @@ def render_player_rank_summary_html(
               <span class="player-rank-lane">{render_lane_badge(lane)}</span>
               <span class="player-rank-name">{name}</span>
             </div>
-            {sub_info_html}
-            {player_reason_html}
           </div>
-          <div class="player-rank-chips">{chips}</div>
+          <div class="player-rank-evidence">{evidence_html}</div>
         </div>
         """
 
@@ -1251,14 +1236,14 @@ def build_card_html(r, is_history=False, race_date=""):
     ai_detail_text = display_ai_detail_text or normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
     ai_confidence_value = ""
-    player_reason_items = ai_reasons if ai_reasons else parse_detail_material_list(ai_detail_text)
     player_rank_summary_html = render_player_rank_summary_html(
         r.get("player_names_text", ""),
         r.get("class_history_text", ""),
         r.get("ai_lane_score_text", ""),
         r.get("exhibition_rank", ""),
         exhibition,
-        player_reason_items,
+        r.get("player_stat_text", ""),
+        r.get("player_reason_text", ""),
     )
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
@@ -1328,11 +1313,10 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
-        <div class="row row-player-rank"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row row-player-rank"><span class="label">選手情報</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
-        <div class="row"><span class="label">詳細材料</span><span class="value">{detail_material_html}</span></div>
         {ai_reason_html}
       </div>
 
@@ -2132,6 +2116,8 @@ def init_db():
             ai_lane_score_text TEXT NOT NULL DEFAULT '',
             class_history_text TEXT NOT NULL DEFAULT '',
             player_names_text TEXT NOT NULL DEFAULT '',
+            player_stat_text TEXT NOT NULL DEFAULT '',
+            player_reason_text TEXT NOT NULL DEFAULT '',
 
             base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
             base_ai_rating TEXT NOT NULL DEFAULT '',
@@ -2180,6 +2166,8 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_stat_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_reason_text TEXT NOT NULL DEFAULT ''",
 
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
@@ -2260,6 +2248,14 @@ def upsert_base_candidates(cleaned):
                     amount = %s,
                     player_names_text = %s,
                     class_history_text = %s,
+                    player_stat_text = CASE
+                        WHEN COALESCE(%s, '') <> '' THEN %s
+                        ELSE player_stat_text
+                    END,
+                    player_reason_text = CASE
+                        WHEN COALESCE(%s, '') <> '' THEN %s
+                        ELSE player_reason_text
+                    END,
                     base_ai_score = %s,
                     base_ai_rating = %s,
                     base_ai_selection = %s,
@@ -2278,6 +2274,10 @@ def upsert_base_candidates(cleaned):
                     int(r.get('amount') or 100),
                     str(r.get('player_names_text') or '').strip(),
                     str(r.get('class_history_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
                     safe_float(r.get('base_ai_score', 0), 0),
                     str(r.get('base_ai_rating') or '').strip(),
                     str(r.get('base_ai_selection') or '').strip(),
@@ -2294,14 +2294,14 @@ def upsert_base_candidates(cleaned):
                 INSERT INTO races (
                     race_date, time, venue, race_no, race_no_num,
                     rating, bet_type, selection, amount,
-                    player_names_text, class_history_text,
+                    player_names_text, class_history_text, player_stat_text, player_reason_text,
                     base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
                 )
@@ -2318,6 +2318,8 @@ def upsert_base_candidates(cleaned):
                     int(r.get('amount') or 100),
                     str(r.get('player_names_text') or '').strip(),
                     str(r.get('class_history_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
                     safe_float(r.get('base_ai_score', 0), 0),
                     str(r.get('base_ai_rating') or '').strip(),
                     str(r.get('base_ai_selection') or '').strip(),
@@ -2375,6 +2377,14 @@ def upsert_latest_candidates(cleaned):
                 exhibition = %s,
                 exhibition_rank = %s,
                 ai_lane_score_text = %s,
+                player_stat_text = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE player_stat_text
+                END,
+                player_reason_text = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE player_reason_text
+                END,
                 final_ai_score = %s,
                 final_ai_rating = %s,
                 final_ai_selection = %s,
@@ -2390,6 +2400,10 @@ def upsert_latest_candidates(cleaned):
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
                 str(r.get('exhibition_rank') or '').strip(),
                 str(r.get('ai_lane_score_text') or '').strip(),
+                str(r.get('player_stat_text') or '').strip(),
+                str(r.get('player_stat_text') or '').strip(),
+                str(r.get('player_reason_text') or '').strip(),
+                str(r.get('player_reason_text') or '').strip(),
                 safe_float(r.get('final_ai_score', 0), 0),
                 str(r.get('final_ai_rating') or '').strip(),
                 str(r.get('final_ai_selection') or '').strip(),
@@ -2604,6 +2618,8 @@ def import_base_candidates():
                 "amount": int(r.get("amount") or 100),
                 "player_names_text": str(r.get("player_names_text") or "").strip(),
                 "class_history_text": str(r.get("class_history_text") or "").strip(),
+                "player_stat_text": str(r.get("player_stat_text") or "").strip(),
+                "player_reason_text": str(r.get("player_reason_text") or "").strip(),
                 "base_ai_score": safe_float(r.get("base_ai_score", 0), 0),
                 "base_ai_rating": str(r.get("base_ai_rating") or "").strip(),
                 "base_ai_selection": str(r.get("base_ai_selection") or "").strip(),
@@ -2719,6 +2735,8 @@ def import_latest_candidates():
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
+                "player_stat_text": str(r.get("player_stat_text") or "").strip(),
+                "player_reason_text": str(r.get("player_reason_text") or "").strip(),
                 "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
                 "final_ai_rating": str(r.get("final_ai_rating") or "").strip(),
                 "final_ai_selection": str(r.get("final_ai_selection") or "").strip(),
