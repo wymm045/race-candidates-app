@@ -846,7 +846,7 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     if entry_reason_text:
         merged_reasons.append(entry_reason_text)
     merged_reasons.extend(top_lane_reasons)
-    reason_text = " / ".join(dict.fromkeys([x for x in merged_reasons if x])[:4])
+    reason_text = " / ".join(list(dict.fromkeys([x for x in merged_reasons if x]))[:4])
 
     return {
         "lane_scores": lane_scores,
