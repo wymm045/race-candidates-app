@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import os
+import re
 import json
 from urllib.parse import quote
 
@@ -1086,6 +1087,27 @@ def build_card_html(r, is_history=False, race_date=""):
     '''
 
 
+
+def build_safe_card_html(r, is_history=False, race_date=""):
+    try:
+        return build_card_html(r, is_history=is_history, race_date=race_date)
+    except Exception as e:
+        log(
+            "[card_render_error] "
+            f"id={r.get('id')} "
+            f"venue={r.get('venue')} "
+            f"race_no={r.get('race_no')} "
+            f"time={r.get('time')} "
+            f"err={e}"
+        )
+        return f'''
+        <div class="card">
+          <div class="message message-error">
+            表示エラー: {r.get("venue", "")} {r.get("race_no", "")}
+          </div>
+        </div>
+        '''
+
 def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
@@ -1095,7 +1117,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
-    cards_html = ''.join([build_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
+    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
@@ -1282,7 +1304,7 @@ def render_history_detail_page(
     if not filtered_races:
         body = '<div class="empty">条件に合うデータがありません</div>'
     else:
-        cards_html = ''.join([build_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
+        cards_html = ''.join([build_safe_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
         body = f'''
         <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();"><input type="hidden" name="redirect_to" value="/history/{race_date}"></form>
         <div class="header history-filter-box">
