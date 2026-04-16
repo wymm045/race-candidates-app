@@ -195,7 +195,17 @@ def normalize_pick_text(value):
 
 
 def selection_items(selection_text):
-    return [normalize_pick_text(x) for x in str(selection_text or "").split(" / ") if normalize_pick_text(x)]
+    s = str(selection_text or "").strip()
+    if not s:
+        return []
+
+    parts = [x for x in re.split(r"\s*/\s*", s) if x.strip()]
+    items = []
+    for part in parts:
+        item = normalize_pick_text(part)
+        if item:
+            items.append(item)
+    return items
 
 
 def unique_preserve(seq):
@@ -2058,12 +2068,19 @@ def index():
 
 
 def parse_selected_from_request():
-    selected_text = normalize_pick_text(request.form.get("selected_text", ""))
-    if selected_text:
-        return " / ".join(unique_preserve(selection_items(selected_text)))
+    raw_selected_text = request.form.get("selected_text", "")
+    selected_items = [normalize_pick_text(x) for x in selection_items(raw_selected_text)]
+    selected_items = [x for x in selected_items if x]
+
+    if selected_items:
+        return " / ".join(unique_preserve(selected_items))
 
     official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
     ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
+
+    official = [x for x in official if x]
+    ai = [x for x in ai if x]
+
     return " / ".join(merge_selected_items(official, ai))
 
 
