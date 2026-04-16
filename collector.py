@@ -566,8 +566,8 @@ def parse_start_display_from_lines(lines):
     segment_lines = lines[start_idx:end_idx]
     segment = " ".join(segment_lines)
 
-    pairs = []
-    pattern = re.compile(r"([1-6])\s*(?:Image)?\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
+        pairs = []
+    pattern = re.compile(r"\b([1-6])\b\s*(?:Image)?\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
     for m in pattern.finditer(segment):
         try:
             lane = int(m.group(1))
@@ -841,12 +841,13 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     if entry_change:
         foot_bonus += min(0.10, entry_severity * 0.18)
 
-    foot_bonus = round(foot_bonus, 2)
+        foot_bonus = round(foot_bonus, 2)
     merged_reasons = reasons[:]
     if entry_reason_text:
         merged_reasons.append(entry_reason_text)
     merged_reasons.extend(top_lane_reasons)
-    reason_text = " / ".join(list(dict.fromkeys([x for x in merged_reasons if x]))[:4])
+    unique_reasons = list(dict.fromkeys([x for x in merged_reasons if x]))
+    reason_text = " / ".join(unique_reasons[:4])
 
     return {
         "lane_scores": lane_scores,
