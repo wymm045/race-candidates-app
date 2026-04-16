@@ -25,6 +25,12 @@ AI_RATING_OPTIONS = [
     "AI★☆☆☆☆",
 ]
 
+OFFICIAL_RATING_FILTER_OPTIONS = [
+    ("pickup", "公式★5+★4"),
+    ("★★★★★", "公式★5のみ"),
+    ("★★★★☆", "公式★4のみ"),
+]
+
 CARD_SELECT_COLUMNS = '''
     id,
     race_date,
@@ -63,6 +69,15 @@ CARD_SELECT_COLUMNS = '''
     hit,
     payout,
     memo,
+    result_trifecta_text,
+    result_trifecta_payout,
+    result_exacta_text,
+    result_exacta_payout,
+    result_trio_text,
+    result_trio_payout,
+    settled_flag,
+    settled_at,
+    result_source_url,
     imported_at
 '''
 
@@ -552,6 +567,15 @@ def render_ai_rating_filter_options(current_value):
     return html
 
 
+def render_official_rating_filter_options(current_value):
+    current = current_value or "pickup"
+    html = ""
+    for value, label in OFFICIAL_RATING_FILTER_OPTIONS:
+        selected = "selected" if value == current else ""
+        html += f'<option value="{value}" {selected}>{label}</option>'
+    return html
+
+
 def safe_redirect_path(path, default="/"):
     s = str(path or "").strip()
     if not s.startswith("/") or s.startswith("//"):
@@ -719,15 +743,25 @@ def get_race_by_id(race_id):
 
 
 
-def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
     ensure_db_initialized()
+
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
+    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+        official_rating_filter = "pickup"
 
     where_clauses = [
         "race_date = %s",
         "venue <> 'テスト会場'",
-        "rating = %s",
     ]
-    params = [today_text(), "★★★★★"]
+    params = [today_text()]
+
+    if official_rating_filter == "pickup":
+        where_clauses.append("rating IN (%s, %s)")
+        params.extend(["★★★★★", "★★★★☆"])
+    else:
+        where_clauses.append("rating = %s")
+        params.append(official_rating_filter)
 
     if ai_rating_filter:
         where_clauses.append(
@@ -754,6 +788,7 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter=""):
     cur.close()
     conn.close()
     return rows
+
 
 
 
@@ -1018,11 +1053,21 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
 
 
 def build_card_html(r, is_history=False, race_date=""):
-    checked_hit = "checked" if int(r.get("hit") or 0) == 1 else ""
-    payout_value = r["payout"] if r["payout"] else ""
-    memo_value = r["memo"] if r["memo"] else ""
     selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
     selected_total_amount = get_selected_total_amount(r)
+
+    result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
+    result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+    auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
+    auto_payout = result_trifecta_payout if auto_hit else 0
+    display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
+    display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
+    checked_hit = "checked" if display_hit_value == 1 else ""
+    payout_value = display_payout_value if display_payout_value else ""
+    memo_value = r["memo"] if r["memo"] else ""
+    auto_profit_value = display_payout_value - selected_total_amount if selected_count > 0 else 0
+    settled_flag_value = int(r.get("settled_flag") or 0)
+    settled_at_text = str(r.get("settled_at") or "").strip()
 
     card_class = "card history-edit-card" if is_history else "card"
     if int(r.get("hit") or 0) == 1:
@@ -1033,8 +1078,10 @@ def build_card_html(r, is_history=False, race_date=""):
     status_parts = []
     if selected_count > 0:
         status_parts.append(f'<span class="status-badge status-badge-saved">購入済み {selected_count}点</span>')
-    if int(r.get("hit") or 0) == 1:
+    if display_hit_value == 1:
         status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+    if result_trifecta_text or settled_flag_value == 1:
+        status_parts.append('<span class="status-badge countdown-normal">結果反映済み</span>')
     status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>' if status_parts else ""
 
     ai_reasons = parse_json_array_text(r.get("ai_reasons", "[]"))
@@ -1130,6 +1177,10 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+        <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
+        <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
+        <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
+        <div class="row"><span class="label">結果反映時刻</span><span class="value">{display_text(settled_at_text, '未反映')}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
         <div class="row"><span class="label">選手・ランク</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
@@ -1189,7 +1240,7 @@ def build_safe_card_html(r, is_history=False, race_date=""):
         </div>
         '''
 
-def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter=""):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
@@ -1198,10 +1249,18 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
-    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★★★★★候補はありません</div>'
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
+    official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
+    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★4以上候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
+    official_label_map = {
+        "pickup": "公式★5+★4",
+        "★★★★★": "公式★5のみ",
+        "★★★★☆": "公式★4のみ",
+    }
+    filter_official_text = official_label_map.get(official_rating_filter, "公式★5+★4")
     content = f'''
     <div class="app-shell">
       <div class="topbar">
@@ -1218,8 +1277,8 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
       </div>
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
-        <div class="sub">評価：★★★★★のみ / 券種：3連単 / 締切予定時刻が早い順</div>
-        <div class="sub">現在の絞り込み: {filter_status_text} / AI評価 {filter_ai_text}</div>
+        <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
         <form method="get" action="/" class="filter-box">
@@ -1229,6 +1288,10 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
                 <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
                 締切後も表示する
               </label>
+            </div>
+            <div class="filter-item">
+              <label for="official_rating">公式評価で絞る</label>
+              <select name="official_rating" id="official_rating">{official_rating_options_html}</select>
             </div>
             <div class="filter-item">
               <label for="ai_rating">AI評価で絞る</label>
@@ -1256,6 +1319,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     </div>
     '''
     return render_layout("今日の買い候補", content)
+
 
 
 def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
@@ -1478,7 +1542,7 @@ def render_layout(title, body_html):
       .profit-minus{color:#175cd3}
       .profit-zero{color:#344054}
       .filter-box,.info-box{margin-top:10px}
-      .filter-grid{display:grid;grid-template-columns:1.5fr 1fr auto;gap:10px;align-items:end}
+      .filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:10px;align-items:end}
       .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
       .filter-check{display:flex;align-items:center;gap:8px}
       select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
@@ -1915,6 +1979,15 @@ def init_db():
             hit INTEGER NOT NULL DEFAULT 0,
             payout INTEGER NOT NULL DEFAULT 0,
             memo TEXT NOT NULL DEFAULT '',
+            result_trifecta_text TEXT NOT NULL DEFAULT '',
+            result_trifecta_payout INTEGER NOT NULL DEFAULT 0,
+            result_exacta_text TEXT NOT NULL DEFAULT '',
+            result_exacta_payout INTEGER NOT NULL DEFAULT 0,
+            result_trio_text TEXT NOT NULL DEFAULT '',
+            result_trio_payout INTEGER NOT NULL DEFAULT 0,
+            settled_flag INTEGER NOT NULL DEFAULT 0,
+            settled_at TEXT NOT NULL DEFAULT '',
+            result_source_url TEXT NOT NULL DEFAULT '',
             imported_at TEXT NOT NULL DEFAULT ''
         )
         '''
@@ -1954,6 +2027,15 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS payout INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS memo TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trifecta_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trifecta_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_exacta_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_exacta_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trio_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trio_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS settled_flag INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS settled_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_source_url TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT NOT NULL DEFAULT ''",
     ]
     for sql in alter_sqls:
@@ -2167,9 +2249,16 @@ def healthz():
 def index():
     show_closed = request.args.get("show_closed", "").strip() == "1"
     ai_rating_filter = request.args.get("ai_rating", "").strip()
+    official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
     if ai_rating_filter not in AI_RATING_OPTIONS:
         ai_rating_filter = ""
-    races = get_filtered_today_races(show_closed=show_closed, ai_rating_filter=ai_rating_filter)
+    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+        official_rating_filter = "pickup"
+    races = get_filtered_today_races(
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
+        official_rating_filter=official_rating_filter,
+    )
     summary = get_summary_by_date(today_text())
     return render_home(
         races,
@@ -2178,6 +2267,7 @@ def index():
         request.args.get("msg", "").strip(),
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
+        official_rating_filter=official_rating_filter,
     )
 
 
