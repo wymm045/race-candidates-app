@@ -560,6 +560,17 @@ def render_player_rank_summary_html(
     latest_reason_text="",
 ):
     player_map = parse_player_names_map(player_names_text)
+    class_rows = parse_class_history_rows(class_history_text)
+    class_map = {}
+    for row in class_rows:
+        lane = row.get("lane")
+        if lane is None:
+            continue
+        values = list(row.get("classes", []) or [])[:4]
+        while len(values) < 4:
+            values.append("")
+        class_map[lane] = values
+
     lane_score_map = {lane: score for lane, score in parse_lane_score_items(lane_score_text)}
     exhibition_rank_map = parse_exhibition_rank_map(exhibition_rank_text)
     exhibition_list = exhibition_list or []
@@ -568,6 +579,7 @@ def render_player_rank_summary_html(
 
     has_any = (
         bool(player_map)
+        or bool(class_map)
         or bool(player_stat_map)
         or bool(player_reason_map)
         or bool(lane_score_map)
@@ -580,6 +592,16 @@ def render_player_rank_summary_html(
     rows_html = ""
     for lane in range(1, 7):
         name = player_map.get(lane, "未取得")
+        class_values = class_map.get(lane, ["", "", "", ""])
+        class_labels = ["現", "-1", "-2", "-3"]
+        class_chips = ""
+        for idx, cls in enumerate(class_values):
+            cls_text = cls or "-"
+            cls_safe = (cls or "blank").lower()
+            current_cls = " current-class-chip" if idx == 0 else ""
+            blank_cls = " class-chip-blank" if cls_text == "-" else ""
+            class_chips += f'<div class="class-chip class-chip-{cls_safe}{current_cls}{blank_cls}"><span class="class-chip-sub">{class_labels[idx]}</span><span class="class-chip-main">{cls_text}</span></div>'
+
         stat_items = player_stat_map.get(lane, [])
         reason_items = parse_signed_chip_items(player_reason_map.get(lane, []))
         reason_items.extend(parse_signed_chip_items(stat_items))
@@ -599,6 +621,7 @@ def render_player_rank_summary_html(
               <span class="player-rank-lane">{render_lane_badge(lane)}</span>
               <span class="player-rank-name">{name}</span>
             </div>
+            <div class="player-rank-class-row">{class_chips}</div>
           </div>
           <div class="player-rank-evidence">{evidence_html}</div>
         </div>
@@ -1803,6 +1826,7 @@ def render_layout(title, body_html):
       .player-rank-row{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
       .player-rank-row:first-of-type{border-top:none}
       .player-rank-main-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
+      .player-rank-class-row{display:flex;flex-wrap:wrap;gap:6px;padding-left:34px}
       .player-rank-main{display:flex;align-items:center;gap:10px;min-width:0}
       .player-rank-lane{flex:0 0 auto}
       .player-rank-name{min-width:0;font-weight:800;color:#172033;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
