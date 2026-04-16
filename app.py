@@ -600,6 +600,7 @@ def build_selection_compare_data(official_text, ai_text):
     }
 
 
+
 def render_selection_column(
     own_items,
     overlap_items,
@@ -615,19 +616,26 @@ def render_selection_column(
     selected_items = {normalize_pick_text(x) for x in (selected_items or set())}
     overlap_set = set(overlap_items)
 
-    input_name = "selected_official" if source == "official" else "selected_ai"
-    prefix = "cmp-off" if source == "official" else "cmp-ai"
-
     chips = ""
     for idx, item in enumerate(own_items):
         item_clean = normalize_pick_text(item)
-        checked = "checked" if item_clean in selected_items else ""
-        item_id = f"{prefix}-{race_id_key}-{idx}"
 
         if item_clean in overlap_set:
             chip_kind = "overlap"
         else:
             chip_kind = source
+
+        if source == "official":
+            selected_class = " is-selected-view" if item_clean in selected_items else ""
+            chips += f'''
+            <div class="selection-view-chip selection-view-chip-{chip_kind}{selected_class}">
+              <span class="selection-choice-body selection-choice-body-{chip_kind} selection-choice-body-view">{render_colored_pick_html(item_clean)}</span>
+            </div>
+            '''
+            continue
+
+        checked = "checked" if item_clean in selected_items else ""
+        item_id = f"cmp-ai-{race_id_key}-{idx}"
 
         chips += f'''
         <label class="selection-choice-chip selection-choice-chip-{chip_kind}" for="{item_id}">
@@ -635,7 +643,7 @@ def render_selection_column(
             class="selection-choice-input"
             type="checkbox"
             id="{item_id}"
-            name="{input_name}"
+            name="selected_ai"
             value="{item_clean}"
             data-pick-value="{item_clean}"
             data-race-group="{race_id_key}"
@@ -648,6 +656,7 @@ def render_selection_column(
         '''
 
     return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
+
 
 
 def render_selection_compare_html(r, race_id_key):
@@ -684,7 +693,7 @@ def render_selection_compare_html(r, race_id_key):
         {ai_html}
       </div>
       <div class="selection-compare-col selection-compare-col-official">
-        <div class="selection-col-title selection-col-title-official">参考: 公式買い目</div>
+        <div class="selection-col-title selection-col-title-official">参考: 公式買い目（見るだけ）</div>
         {official_html}
       </div>
     </div>
@@ -795,37 +804,52 @@ def delete_races_bulk(race_ids):
     return deleted
 
 
+
 def get_summary_by_date(race_date):
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        '''
-        SELECT
-            COUNT(*) AS total_rows,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 ELSE 0 END), 0) AS total_bets,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            COALESCE(MAX(imported_at), '') AS last_imported_at
+        """
+        SELECT *
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
-        ''',
+        """,
         (race_date,),
     )
-    row = cur.fetchone()
+    rows = cur.fetchall()
     cur.close()
     conn.close()
-    total_rows = row["total_rows"] or 0
-    total_bets = row["total_bets"] or 0
-    total_points = row["total_points"] or 0
-    total_investment = row["total_investment"] or 0
-    total_payout = row["total_payout"] or 0
-    total_hits = row["total_hits"] or 0
+
+    total_rows = len(rows)
+    total_bets = 0
+    total_points = 0
+    total_investment = 0
+    total_payout = 0
+    total_hits = 0
+    imported_candidates = []
+
+    for row in rows:
+        purchased_text = str(row.get("purchased_selection_text") or "").strip()
+        selected_count = get_selected_count_from_text(purchased_text)
+
+        if selected_count > 0:
+            total_bets += 1
+            total_points += selected_count
+            total_investment += int(row.get("amount") or 0) * selected_count
+            total_payout += int(row.get("payout") or 0)
+            if int(row.get("hit") or 0) == 1:
+                total_hits += 1
+
+        imported_at = str(row.get("imported_at") or "").strip()
+        if imported_at:
+            imported_candidates.append(imported_at)
+
     total_profit = total_payout - total_investment
     hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
     roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+    last_imported_at = max(imported_candidates) if imported_candidates else ""
+
     return {
         "total_rows": total_rows,
         "total_bets": total_bets,
@@ -836,48 +860,71 @@ def get_summary_by_date(race_date):
         "total_hits": total_hits,
         "hit_rate": hit_rate,
         "roi": roi,
-        "last_imported_at": row["last_imported_at"] or "",
+        "last_imported_at": last_imported_at,
     }
+
+
 
 
 def get_group_summary(race_date, group_key):
     ensure_db_initialized()
     if group_key not in {"rating", "venue", "ai_rating", "final_rank"}:
         return []
+
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
-        SELECT
-            {group_key} AS group_name,
-            COUNT(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN 1 END) AS total_bets,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' AND hit = 1 THEN 1 ELSE 0 END), 0) AS total_hits,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_points,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN amount * COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0) ELSE 0 END), 0) AS total_investment,
-            COALESCE(SUM(CASE WHEN COALESCE(purchased_selection_text, '') <> '' THEN payout ELSE 0 END), 0) AS total_payout
+        f"""
+        SELECT *
         FROM races
         WHERE race_date = %s AND venue <> 'テスト会場'
-        GROUP BY {group_key}
-        ORDER BY {group_key} ASC
-        ''',
+        ORDER BY {group_key} ASC, id ASC
+        """,
         (race_date,),
     )
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    results = []
+
+    grouped = {}
     for row in rows:
-        total_bets = row["total_bets"] or 0
-        total_hits = row["total_hits"] or 0
-        total_points = row["total_points"] or 0
-        total_investment = row["total_investment"] or 0
-        total_payout = row["total_payout"] or 0
+        group_name = str(row.get(group_key) or "").strip() or "(空白)"
+        if group_name not in grouped:
+            grouped[group_name] = {
+                "group_name": group_name,
+                "total_bets": 0,
+                "total_hits": 0,
+                "total_points": 0,
+                "total_investment": 0,
+                "total_payout": 0,
+            }
+
+        item = grouped[group_name]
+        purchased_text = str(row.get("purchased_selection_text") or "").strip()
+        selected_count = get_selected_count_from_text(purchased_text)
+
+        if selected_count > 0:
+            item["total_bets"] += 1
+            item["total_points"] += selected_count
+            item["total_investment"] += int(row.get("amount") or 0) * selected_count
+            item["total_payout"] += int(row.get("payout") or 0)
+            if int(row.get("hit") or 0) == 1:
+                item["total_hits"] += 1
+
+    results = []
+    for group_name in sorted(grouped.keys()):
+        row = grouped[group_name]
+        total_bets = row["total_bets"]
+        total_hits = row["total_hits"]
+        total_points = row["total_points"]
+        total_investment = row["total_investment"]
+        total_payout = row["total_payout"]
         total_profit = total_payout - total_investment
         hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
         roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
         results.append(
             {
-                "group_name": row["group_name"] or "(空白)",
+                "group_name": group_name,
                 "total_bets": total_bets,
                 "total_hits": total_hits,
                 "total_points": total_points,
@@ -889,6 +936,7 @@ def get_group_summary(race_date, group_key):
             }
         )
     return results
+
 
 
 def get_history_dates():
@@ -1448,6 +1496,10 @@ def render_layout(title, body_html):
         user-select:none;
         -webkit-tap-highlight-color:transparent;
       }
+      .selection-view-chip{display:inline-block}
+      .selection-choice-body-view{cursor:default}
+      .selection-view-chip .selection-choice-body{border-style:solid}
+      .selection-view-chip.is-selected-view .selection-choice-body{box-shadow:0 0 0 2px rgba(5,96,58,.08) inset}
       .selection-choice-input{
         position:absolute;
         opacity:0;
@@ -2089,6 +2141,7 @@ def index():
     )
 
 
+
 def parse_selected_from_request():
     raw_selected_text = request.form.get("selected_text", "")
     selected_items = [normalize_pick_text(x) for x in selection_items(raw_selected_text)]
@@ -2097,13 +2150,10 @@ def parse_selected_from_request():
     if selected_items:
         return " / ".join(unique_preserve(selected_items))
 
-    official = [normalize_pick_text(x) for x in request.form.getlist("selected_official")]
     ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
-
-    official = [x for x in official if x]
     ai = [x for x in ai if x]
 
-    return " / ".join(merge_selected_items(official, ai))
+    return " / ".join(unique_preserve(ai))
 
 
 @app.route("/save", methods=["POST"])
