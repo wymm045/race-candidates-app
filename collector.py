@@ -54,7 +54,7 @@ JCD_NAME_MAP = {
     "23": "唐津", "24": "大村",
 }
 NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
-RATING_PAGE_MAP = {"★★★★★": "s5"}
+RATING_PAGE_MAP = {"★★★★★": "s5", "★★★★☆": "s4"}
 
 
 def log(msg):
@@ -233,9 +233,17 @@ def parse_rating_page_dom(rating_text):
 
 
 def parse_rating_page():
-    rows = parse_rating_page_dom("★★★★★")
-    log(f"[rating_page_summary] count={len(rows)}")
-    return rows
+    rows = []
+    for rating_text in ["★★★★★", "★★★★☆"]:
+        rows.extend(parse_rating_page_dom(rating_text))
+    dedup = {}
+    for r in rows:
+        key = (r["venue"], r["race_no"])
+        if key not in dedup:
+            dedup[key] = r
+    merged = list(dedup.values())
+    log(f"[rating_page_summary] count={len(merged)}")
+    return merged
 
 
 def parse_official_deadlines_from_html(html):
@@ -914,6 +922,67 @@ def parse_selection_weight_map(base_selection):
     for idx, tri in enumerate(triplets):
         weight_map[tri] = max(0.35, 1.0 - idx * 0.09)
     return weight_map
+
+
+def calc_base_hold_strength(base_info):
+    base_info = base_info or {}
+    strength = 0.0
+    try:
+        base_score = float(base_info.get("base_ai_score", 0) or 0)
+    except Exception:
+        base_score = 0.0
+
+    rating = str(base_info.get("rating") or "").strip()
+    reason_text = str(base_info.get("base_reason_text") or "").strip()
+
+    if base_score >= 2.8:
+        strength += 0.24
+    elif base_score >= 2.4:
+        strength += 0.18
+    elif base_score >= 2.0:
+        strength += 0.12
+    elif base_score >= 1.6:
+        strength += 0.06
+
+    if rating == "★★★★★":
+        strength += 0.08
+    elif rating == "★★★★☆":
+        strength += 0.04
+
+    reason_bonus = 0.0
+    for word, bonus in [
+        ("B2でも地力上位", 0.10),
+        ("地力上位", 0.08),
+        ("当地巧者", 0.07),
+        ("地元水面", 0.05),
+        ("選手力上位", 0.04),
+        ("級別傾向強い", 0.03),
+    ]:
+        if word in reason_text:
+            reason_bonus += bonus
+    strength += min(0.20, reason_bonus)
+
+    return round(clamp(strength, 0.0, 0.52), 2)
+
+
+def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor):
+    try:
+        base_ai_score = float(base_ai_score or 0)
+    except Exception:
+        base_ai_score = 0.0
+    try:
+        raw_final_ai_score = float(raw_final_ai_score or 0)
+    except Exception:
+        raw_final_ai_score = base_ai_score
+
+    delta = raw_final_ai_score - base_ai_score
+    reflect_factor = 0.62 + (float(scenario_factor or 1.0) - 0.45) * 0.38 - float(base_hold_strength or 0) * 0.28
+    reflect_factor = clamp(reflect_factor, 0.48, 0.86)
+
+    up_cap = 1.00 - float(base_hold_strength or 0) * 0.22 + max(0.0, float(scenario_factor or 1.0) - 0.70) * 0.20
+    down_cap = -1.02 + float(base_hold_strength or 0) * 0.26 - max(0.0, 0.75 - float(scenario_factor or 1.0)) * 0.18
+    delta = clamp(delta * reflect_factor, down_cap, up_cap)
+    return round(base_ai_score + delta, 2)
 
 
 def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None):
@@ -1599,6 +1668,42 @@ def add_basic_form_triplets(
     return dedup
 
 
+def ensure_base_triplets_present(top, scored_rows, base_triplets, min_keep=1):
+    if not top or not base_triplets or min_keep <= 0:
+        return top
+
+    selected = top[:]
+    existing = [tri for tri in selected if tri in base_triplets]
+    if len(existing) >= min_keep:
+        return selected
+
+    needed = min_keep - len(existing)
+    candidate_base = []
+    score_map = {tri: score for tri, score in scored_rows}
+    for tri in base_triplets:
+        if tri not in selected and tri in score_map:
+            candidate_base.append((tri, score_map[tri]))
+    candidate_base.sort(key=lambda x: (x[1], x[0]), reverse=True)
+
+    for tri, _score in candidate_base[:needed]:
+        replace_idx = None
+        for idx in range(len(selected) - 1, -1, -1):
+            if selected[idx] not in base_triplets:
+                replace_idx = idx
+                break
+        if replace_idx is None:
+            break
+        selected[replace_idx] = tri
+
+    dedup = []
+    for tri in selected:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return dedup
+
+
 def generate_top_triplets(
     venue,
     base_selection,
@@ -1607,6 +1712,7 @@ def generate_top_triplets(
     foot_material=None,
     role_maps=None,
     scenario_material=None,
+    base_hold_strength=0.0,
 ):
     role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
     scenario_material = scenario_material or build_turn_scenario_material(
@@ -1623,6 +1729,9 @@ def generate_top_triplets(
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
     lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
+
+    base_weight_multiplier = 0.30 + float(base_hold_strength or 0) * 0.24
+    scenario_bonus_multiplier = clamp(0.92 - float(base_hold_strength or 0) * 0.18, 0.76, 0.92)
 
     scored = []
     for a in range(1, 7):
@@ -1647,8 +1756,8 @@ def generate_top_triplets(
                 elif third_score.get(c, 0) > 0.18:
                     score += 0.04
 
-                score += base_weight_map.get(tri, 0) * 0.32
-                score += scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=scenario_factor)
+                score += base_weight_map.get(tri, 0) * base_weight_multiplier
+                score += scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=scenario_factor) * scenario_bonus_multiplier
 
                 if head_score.get(a, 0) < -0.18:
                     score -= 0.18
@@ -1689,6 +1798,13 @@ def generate_top_triplets(
     top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
     top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
 
+    min_base_keep = 1
+    if float(base_hold_strength or 0) >= 0.18:
+        min_base_keep = 2
+    if float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80:
+        min_base_keep = 3
+    top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
+
     dedup = []
     for tri in top:
         if tri not in dedup:
@@ -1697,15 +1813,15 @@ def generate_top_triplets(
             break
 
     log(
-        f"[selection_regen_v10_2] venue={venue} "
-        f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} "
+        f"[selection_regen_v10_4] venue={venue} "
+        f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base={base_triplets[:3]} final={dedup}"
     )
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_3_no_latest_venue_bias")
+    log("[collector_version] collector_latest_weather_v10_4_base_hold_star4")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -1776,6 +1892,7 @@ def build_candidates():
         base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
         base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
         base_reason_text = str(base_info.get("base_reason_text") or "").strip()
+        base_hold_strength = calc_base_hold_strength(base_info)
 
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
@@ -1784,6 +1901,7 @@ def build_candidates():
 
         foot_material = build_foot_material(exhibition_info, start_info, weather_info)
         analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material)
+        scenario_factor = scenario_strength_factor(exhibition_info, foot_material)
 
         role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
         scenario_material = build_turn_scenario_material(
@@ -1799,6 +1917,8 @@ def build_candidates():
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
+        if base_hold_strength >= 0.18:
+            latest_reason_parts.append("朝評価をやや優先")
         if scenario_material.get("scenario_text"):
             latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
 
@@ -1810,8 +1930,14 @@ def build_candidates():
             foot_material,
             role_maps=role_maps,
             scenario_material=scenario_material,
+            base_hold_strength=base_hold_strength,
         )
-        final_ai_score = analyzed["final_ai_score"]
+        final_ai_score = stabilize_final_ai_score(
+            base_ai_score,
+            analyzed["raw_final_ai_score"],
+            base_hold_strength,
+            scenario_factor,
+        )
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
         candidate = {
@@ -1822,6 +1948,7 @@ def build_candidates():
             "exhibition": exhibition_info.get("times", []),
             "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
             "ai_lane_score_text": ai_lane_score_text,
+            "rating": str(base_info.get("rating") or row.get("rating") or ""),
             "final_ai_score": final_ai_score,
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
