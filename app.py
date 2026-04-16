@@ -487,25 +487,19 @@ def parse_lane_chip_text_map(raw_text):
 
 
 
-def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_list, lane_score_map):
+def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_list, lane_score_map, latest_reason_text=""):
     items = []
 
-    exhibition_time = exhibition_list[lane - 1] if lane - 1 < len(exhibition_list or []) else ""
-    if exhibition_time:
-        items.append(("metric", f"展示 {exhibition_time}"))
-
-    exhibition_rank = exhibition_rank_map.get(lane)
-    if exhibition_rank is not None:
-        items.append(("metric", f"展示順位 {exhibition_rank}位"))
-
-    time_rank_map = build_exhibition_time_rank_map(exhibition_list)
-    time_rank = time_rank_map.get(lane)
-    if time_rank is not None:
-        items.append(("metric-soft", f"展示タイム {time_rank}位"))
+    if exhibition_list or exhibition_rank_map:
+        items.append(("metric", "展示"))
 
     lane_score = lane_score_map.get(lane)
     if lane_score is not None:
-        items.append(("metric-soft", f"補正 {lane_score:+.2f}"))
+        items.append(("metric-soft", "補正"))
+
+    latest_text = str(latest_reason_text or "")
+    if "進入:" in latest_text or "前づけ" in latest_text or "イン外し" in latest_text:
+        items.append(("reason", "進入"))
 
     return items
 
@@ -538,6 +532,7 @@ def render_player_rank_summary_html(
     exhibition_list=None,
     player_stat_text="",
     player_reason_text="",
+    latest_reason_text="",
 ):
     player_map = parse_player_names_map(player_names_text)
     lane_score_map = {lane: score for lane, score in parse_lane_score_items(lane_score_text)}
@@ -567,6 +562,7 @@ def render_player_rank_summary_html(
             exhibition_rank_map,
             exhibition_list,
             lane_score_map,
+            latest_reason_text=latest_reason_text,
         )
         evidence_html = render_player_evidence_chips(stat_items, reason_items, default_items)
 
@@ -1244,6 +1240,7 @@ def build_card_html(r, is_history=False, race_date=""):
         exhibition,
         r.get("player_stat_text", ""),
         r.get("player_reason_text", ""),
+        r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
     lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
     detail_material_html = render_detail_material_chips(ai_detail_text)
@@ -1313,7 +1310,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
-        <div class="row row-player-rank"><span class="label">選手情報</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
