@@ -439,6 +439,82 @@ def lane_score_tone_class(score):
 
 
 
+def parse_exhibition_time_float(value):
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+
+def build_exhibition_time_rank_map(exhibition_list):
+    valid = []
+    for lane, value in enumerate(exhibition_list or [], start=1):
+        t = parse_exhibition_time_float(value)
+        if t is not None:
+            valid.append((lane, t))
+    valid.sort(key=lambda x: (x[1], x[0]))
+    return {lane: idx for idx, (lane, _t) in enumerate(valid, start=1)}
+
+
+
+def build_player_reason_groups(lane, classes, exhibition_rank_map, exhibition_list, lane_score_map):
+    plus_items = []
+    minus_items = []
+
+    current_class = str(classes[0] or "").strip().upper() if classes else ""
+    if current_class == "A1":
+        plus_items.append("現A1")
+    elif current_class == "A2":
+        plus_items.append("現A2")
+    elif current_class == "B2":
+        minus_items.append("現B2")
+
+    exhibition_rank = exhibition_rank_map.get(lane)
+    if exhibition_rank is not None:
+        if exhibition_rank <= 2:
+            plus_items.append(f"展示順位{exhibition_rank}位")
+        elif exhibition_rank >= 5:
+            minus_items.append(f"展示順位{exhibition_rank}位")
+
+    time_rank_map = build_exhibition_time_rank_map(exhibition_list)
+    time_rank = time_rank_map.get(lane)
+    if time_rank is not None:
+        if time_rank <= 2:
+            plus_items.append(f"展示タイム上位{time_rank}")
+        elif time_rank >= 5:
+            minus_items.append(f"展示タイム下位{time_rank}")
+
+    lane_score = lane_score_map.get(lane)
+    if lane_score is not None:
+        if lane_score >= 0.15:
+            plus_items.append(f"補正{lane_score:+.2f}")
+        elif lane_score <= -0.15:
+            minus_items.append(f"補正{lane_score:+.2f}")
+
+    return plus_items[:3], minus_items[:3]
+
+
+
+def render_reason_group_html(title, items, tone):
+    if not items:
+        return ""
+    chips = "".join([
+        f'<span class="player-reason-mini-chip player-reason-mini-chip-{tone}">{item}</span>'
+        for item in items
+    ])
+    return f"""
+    <div class="player-reason-mini-row player-reason-mini-row-{tone}">
+      <span class="player-reason-mini-label">{title}</span>
+      <div class="player-reason-mini-chips">{chips}</div>
+    </div>
+    """
+
+
+
 def render_player_rank_summary_html(
     player_names_text,
     class_history_text,
@@ -460,27 +536,9 @@ def render_player_rank_summary_html(
     exhibition_rank_map = parse_exhibition_rank_map(exhibition_rank_text)
     exhibition_list = exhibition_list or []
 
-    normalized_reasons = []
-    for item in reason_items or []:
-        s = str(item or "").strip()
-        if s and s not in normalized_reasons:
-            normalized_reasons.append(s)
-
-    has_any = bool(player_map) or bool(class_map) or bool(lane_score_map) or bool(exhibition_rank_map) or bool(normalized_reasons)
+    has_any = bool(player_map) or bool(class_map) or bool(lane_score_map) or bool(exhibition_rank_map)
     if not has_any:
         return '<div class="player-rank-empty">未取得</div>'
-
-    reason_html = ""
-    if normalized_reasons:
-        reason_chips = "".join([
-            f'<span class="player-reason-chip">{reason}</span>' for reason in normalized_reasons[:6]
-        ])
-        reason_html = f'''
-        <div class="player-rank-reason-box">
-          <div class="player-rank-reason-label">補正理由</div>
-          <div class="player-rank-reason-chips">{reason_chips}</div>
-        </div>
-        '''
 
     rows_html = ""
     for lane in range(1, 7):
@@ -510,9 +568,22 @@ def render_player_rank_summary_html(
             lane_score_label = f'{lane_score:+.2f}'
             sub_chips.append(f'<span class="{lane_score_tone_class(lane_score)}">補正 {lane_score_label}</span>')
 
-        sub_info_html = f'<div class="player-rank-sub">{"".join(sub_chips)}</div>' if sub_chips else ''
+        plus_items, minus_items = build_player_reason_groups(
+            lane,
+            classes,
+            exhibition_rank_map,
+            exhibition_list,
+            lane_score_map,
+        )
+        reason_groups_html = (
+            render_reason_group_html("プラス", plus_items, "plus")
+            + render_reason_group_html("マイナス", minus_items, "minus")
+        )
 
-        rows_html += f'''
+        sub_info_html = f'<div class="player-rank-sub">{"".join(sub_chips)}</div>' if sub_chips else ''
+        player_reason_html = f'<div class="player-reason-mini-wrap">{reason_groups_html}</div>' if reason_groups_html else ''
+
+        rows_html += f"""
         <div class="player-rank-row">
           <div class="player-rank-main-wrap">
             <div class="player-rank-main">
@@ -520,12 +591,13 @@ def render_player_rank_summary_html(
               <span class="player-rank-name">{name}</span>
             </div>
             {sub_info_html}
+            {player_reason_html}
           </div>
           <div class="player-rank-chips">{chips}</div>
         </div>
-        '''
+        """
 
-    return f'<div class="player-rank-wrap">{reason_html}{rows_html}</div>'
+    return f'<div class="player-rank-wrap">{rows_html}</div>'
 
 
 def parse_class_history_rows(class_history_text):
@@ -1721,10 +1793,6 @@ def render_layout(title, body_html):
       .row-player-rank .label,.row-exhibition-rank .label{padding-top:4px}
       .row-player-rank .value{width:100%}
       .player-rank-wrap{display:flex;flex-direction:column;gap:10px;padding:4px 0}
-      .player-rank-reason-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px 12px;margin-bottom:4px}
-      .player-rank-reason-label{font-size:12px;font-weight:800;color:#667085;margin-bottom:8px}
-      .player-rank-reason-chips{display:flex;flex-wrap:wrap;gap:6px}
-      .player-reason-chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#eef4ff;border:1px solid #cdddff;color:#175cd3;font-size:12px;font-weight:700;line-height:1.3}
       .player-rank-row{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
       .player-rank-row:first-of-type{border-top:none}
       .player-rank-main-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -1735,6 +1803,15 @@ def render_layout(title, body_html):
       .player-info-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;background:#f2f4f7;border:1px solid #d0d5dd;color:#475467;font-size:12px;font-weight:700;line-height:1.25}
       .player-info-chip-good{background:#ecfdf3;border-color:#b7e6c2;color:#067647}
       .player-info-chip-bad{background:#fef3f2;border-color:#f3c0bb;color:#b42318}
+      .player-reason-mini-wrap{display:flex;flex-direction:column;gap:6px;padding-left:34px}
+      .player-reason-mini-row{display:grid;grid-template-columns:58px 1fr;gap:8px;align-items:start}
+      .player-reason-mini-label{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;line-height:1.2}
+      .player-reason-mini-row-plus .player-reason-mini-label{background:#ecfdf3;color:#027a48}
+      .player-reason-mini-row-minus .player-reason-mini-label{background:#fef3f2;color:#b42318}
+      .player-reason-mini-chips{display:flex;flex-wrap:wrap;gap:6px}
+      .player-reason-mini-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;border:1px solid;font-size:12px;font-weight:700;line-height:1.2}
+      .player-reason-mini-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
+      .player-reason-mini-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
       .player-rank-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start}
       .player-rank-chips .class-chip{min-width:56px;padding:5px 8px;border-radius:8px}
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
@@ -1832,14 +1909,16 @@ def render_layout(title, body_html):
         .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
         .player-chip{align-items:flex-start}
         .player-chip-name{font-size:14px;line-height:1.45}
-        .player-rank-reason-box{padding:10px}
-        .player-rank-reason-chips{gap:5px}
-        .player-reason-chip{font-size:11px;padding:5px 8px}
         .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:8px 0}
         .player-rank-main{gap:8px}
         .player-rank-name{font-size:14px;line-height:1.4}
         .player-rank-sub{padding-left:32px;gap:5px}
         .player-info-chip{font-size:11px;padding:4px 7px}
+        .player-reason-mini-wrap{padding-left:32px;gap:5px}
+        .player-reason-mini-row{grid-template-columns:52px 1fr;gap:6px}
+        .player-reason-mini-label{min-height:26px;font-size:10px;padding:4px 7px}
+        .player-reason-mini-chips{gap:5px}
+        .player-reason-mini-chip{font-size:11px;padding:5px 7px}
         .player-rank-chips{gap:5px;flex-wrap:wrap}
         .player-rank-chips .class-chip{min-width:0;padding:5px 7px}
         .class-chip-main{font-size:12px}
