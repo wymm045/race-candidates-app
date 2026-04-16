@@ -965,12 +965,15 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.90 for lane in range(1, 7)}
     third_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.78 for lane in range(1, 7)}
 
-    head_score[1] += 0.18
-    second_score[1] += 0.06
-    third_score[1] -= 0.02
-    head_score[2] += 0.06
-    second_score[2] += 0.12
-    third_score[2] += 0.03
+    # v10.2: 1号艇頭残し / 2号艇2着残しを少し戻す
+    head_score[1] += 0.24
+    second_score[1] += 0.07
+    third_score[1] -= 0.01
+
+    head_score[2] += 0.07
+    second_score[2] += 0.16
+    third_score[2] += 0.04
+
     head_score[3] += 0.10
     second_score[3] += 0.08
     third_score[3] += 0.06
@@ -978,10 +981,10 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     second_score[4] += 0.02
     third_score[4] += 0.06
     head_score[5] -= 0.04
-    second_score[5] -= 0.02
+    second_score[5] -= 0.01
     third_score[5] += 0.06
     head_score[6] -= 0.06
-    second_score[6] -= 0.02
+    second_score[6] -= 0.01
     third_score[6] += 0.08
 
     venue_bias = build_venue_bias_map(venue)
@@ -1015,6 +1018,23 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                 head_score[lane] -= 0.18
                 second_score[lane] -= 0.08
                 third_score[lane] -= 0.03
+
+        # v10.2: 1が完全に死んでない時は少し残す
+        rank1 = ranks.get(1)
+        if rank1 is not None:
+            if rank1 <= 3:
+                head_score[1] += 0.08
+                second_score[1] += 0.03
+            elif rank1 == 4:
+                head_score[1] += 0.02
+
+        # v10.2: 2号艇は2着の基本形を少し戻す
+        rank2 = ranks.get(2)
+        if rank2 is not None:
+            if rank2 <= 3:
+                second_score[2] += 0.08
+            elif rank2 == 4:
+                second_score[2] += 0.03
 
     float_times = []
     for lane, t in enumerate(times, start=1):
@@ -1055,8 +1075,28 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
             fastest_lane = min(float_times, key=lambda x: x[1])[0]
             head_score[fastest_lane] += 0.05
 
+        # v10.2: 1が展示で大崩れしていなければ少し保険
+        lane1_time = next((v for lane, v in float_times if lane == 1), None)
+        if lane1_time is not None:
+            diff1 = lane1_time - min_time
+            if diff1 <= 0.05:
+                head_score[1] += 0.05
+            elif diff1 <= 0.08:
+                head_score[1] += 0.02
+
+        lane2_time = next((v for lane, v in float_times if lane == 2), None)
+        if lane2_time is not None:
+            diff2 = lane2_time - min_time
+            if diff2 <= 0.05:
+                second_score[2] += 0.05
+            elif diff2 <= 0.08:
+                second_score[2] += 0.02
+
     if len(st_map) >= 4:
-        sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
+        sorted_st = sorted(
+            [(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))],
+            key=lambda x: x[1]
+        )
         best_lane = sorted_st[0][0]
         second_lane = sorted_st[1][0]
         worst_lane = sorted_st[-1][0]
@@ -1076,6 +1116,21 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
             second_score[second_lane] += 0.06
             third_score[second_lane] += 0.03
             head_score[worst_lane] -= 0.06
+
+        # v10.2: 1のSTが極端に悪くなければ頭残し
+        st1 = st_map.get(1)
+        if isinstance(st1, (int, float)):
+            if st1 <= 0.14:
+                head_score[1] += 0.05
+            elif st1 <= 0.17:
+                head_score[1] += 0.02
+
+        st2 = st_map.get(2)
+        if isinstance(st2, (int, float)):
+            if st2 <= 0.14:
+                second_score[2] += 0.05
+            elif st2 <= 0.17:
+                second_score[2] += 0.02
 
     for lane in [3, 4, 5, 6]:
         if lane_score_map.get(lane, 0) >= 0.12:
@@ -1126,19 +1181,23 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
     rank1 = ranks.get(1)
     st1 = st_map.get(1)
     weight_1 = 0.0
-    if head_score.get(1, 0) >= 0.10:
-        weight_1 += 0.30
+    if head_score.get(1, 0) >= 0.08:
+        weight_1 += 0.32
     if best_head == 1:
         weight_1 += 0.20
     if rank1 == 1:
         weight_1 += 0.24
     elif rank1 == 2:
-        weight_1 += 0.14
+        weight_1 += 0.15
+    elif rank1 == 3:
+        weight_1 += 0.08
     elif rank1 is not None and rank1 >= 5:
         weight_1 -= 0.18
     if isinstance(st1, (int, float)):
         if st1 <= 0.11:
             weight_1 += 0.12
+        elif st1 <= 0.14:
+            weight_1 += 0.05
         elif st1 >= 0.19:
             weight_1 -= 0.10
     if weather_info.get("water_state_score", 0) > 0:
@@ -1151,25 +1210,25 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_1 += 0.06
     weight_1 = clamp(weight_1, 0.0, 1.0)
 
-    if weight_1 >= 0.22:
+    if weight_1 >= 0.20:
         scenarios.append({
             "name": "1逃げ本線",
             "head_lane": 1,
             "weight": weight_1,
             "head_bonus": {
-                1: 0.24,
+                1: 0.25,
                 2: 0.03,
                 3: 0.02,
             },
             "second_bonus": {
-                2: 0.15,
+                2: 0.17,
                 3: 0.10,
                 4: 0.05,
                 5: 0.01,
                 1: -0.05,
             },
             "third_bonus": {
-                2: 0.05,
+                2: 0.06,
                 3: 0.10,
                 4: 0.10,
                 5: 0.06,
@@ -1196,13 +1255,15 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
     if isinstance(st2, (int, float)):
         if st2 <= 0.11:
             weight_2 += 0.12
+        elif st2 <= 0.14:
+            weight_2 += 0.05
         elif st2 >= 0.18:
             weight_2 -= 0.08
     if "大村イン寄り" in venue_notes:
         weight_2 -= 0.05
     weight_2 = clamp(weight_2, 0.0, 1.0)
 
-    if weight_2 >= 0.22:
+    if weight_2 >= 0.20:
         scenarios.append({
             "name": "2差し注意",
             "head_lane": 2,
@@ -1210,13 +1271,14 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             "head_bonus": {
                 2: 0.23,
                 3: 0.05,
-                1: 0.02,
+                1: 0.03,
             },
             "second_bonus": {
                 1: 0.15,
                 3: 0.12,
                 4: 0.05,
                 5: 0.02,
+                2: -0.03,
             },
             "third_bonus": {
                 1: 0.08,
@@ -1461,6 +1523,121 @@ def enforce_head_diversity(top, scored_rows, scenario_material, scenario_factor)
     return dedup
 
 
+def add_basic_form_triplets(
+    top,
+    scored_rows,
+    role_maps,
+    exhibition_info,
+    base_triplets=None,
+):
+    """
+    v10.2:
+    1頭基本形と2着2号艇を少し残す。
+    強制しすぎず、条件に合う時だけ1点差し替え。
+    """
+    base_triplets = base_triplets or []
+    head_score = role_maps["head"]
+    second_score = role_maps["second"]
+    lane_score_map = role_maps["lane"]
+    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+
+    if not top:
+        return top
+
+    # 1号艇が完全に死んでいない条件
+    keep_one_head = False
+    if head_score.get(1, -999) >= -0.08:
+        keep_one_head = True
+    if ranks.get(1) in [1, 2, 3, 4]:
+        keep_one_head = True
+    if lane_score_map.get(1, -999) >= -0.18:
+        keep_one_head = True
+
+    # 2号艇が2着候補として死んでいない条件
+    keep_two_second = False
+    if second_score.get(2, -999) >= -0.05:
+        keep_two_second = True
+    if ranks.get(2) in [1, 2, 3, 4]:
+        keep_two_second = True
+
+    if not (keep_one_head or keep_two_second):
+        return top
+
+    current_has_one_head = any(tri.startswith("1-") for tri in top)
+    current_has_two_second = any(tri.split("-")[1] == "2" for tri in top if tri.count("-") == 2)
+
+    candidate_basic = []
+    for tri, _score in scored_rows:
+        try:
+            a, b, _c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+
+        if keep_one_head and a == 1:
+            candidate_basic.append(tri)
+        elif keep_two_second and b == 2:
+            candidate_basic.append(tri)
+
+    # baseの1頭/2着2号艇も優先候補に混ぜる
+    for tri in base_triplets:
+        try:
+            a, b, _c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+        if (keep_one_head and a == 1) or (keep_two_second and b == 2):
+            if tri not in candidate_basic:
+                candidate_basic.insert(0, tri)
+
+    if not candidate_basic:
+        return top
+
+    need_insert = False
+    if keep_one_head and not current_has_one_head:
+        need_insert = True
+    if keep_two_second and not current_has_two_second:
+        need_insert = True
+
+    if not need_insert:
+        return top
+
+    chosen = ""
+    for tri in candidate_basic:
+        if tri not in top:
+            chosen = tri
+            break
+
+    if not chosen:
+        return top
+
+    replaced = top[:]
+    replace_idx = len(replaced) - 1
+
+    # 末尾から、1頭でも2着2でもないものを優先して落とす
+    for idx in range(len(replaced) - 1, -1, -1):
+        tri = replaced[idx]
+        try:
+            a, b, _c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+
+        if keep_one_head and a == 1:
+            continue
+        if keep_two_second and b == 2:
+            continue
+        replace_idx = idx
+        break
+
+    replaced[replace_idx] = chosen
+
+    dedup = []
+    for tri in replaced:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+    return dedup
+
+
 def generate_top_triplets(
     venue,
     base_selection,
@@ -1549,6 +1726,7 @@ def generate_top_triplets(
                 top = top[:5] + [alt_tri]
 
     top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
+    top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
 
     dedup = []
     for tri in top:
@@ -1558,7 +1736,7 @@ def generate_top_triplets(
             break
 
     log(
-        f"[selection_regen_v10_1] venue={venue} "
+        f"[selection_regen_v10_2] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} "
         f"base={base_triplets[:3]} final={dedup}"
     )
@@ -1566,7 +1744,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_1_turn_scenario_soft")
+    log("[collector_version] collector_latest_weather_v10_2_basic_restore")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
