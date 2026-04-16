@@ -737,56 +737,17 @@ def fetch_base_map_today():
 
 
 def build_venue_bias_map(venue):
-    venue = str(venue or "").strip()
-
-    bias = {
+    """
+    latest 側では会場傾向を持たせない。
+    会場の土台評価は collector_base.py 側で反映し、
+    ここでは展示・ST・風波など直前要素だけで補正する。
+    """
+    return {
         "head": {lane: 0.0 for lane in range(1, 7)},
         "second": {lane: 0.0 for lane in range(1, 7)},
         "third": {lane: 0.0 for lane in range(1, 7)},
         "notes": [],
     }
-
-    if venue == "江戸川":
-        bias["head"][1] -= 0.10
-        bias["second"][1] -= 0.02
-        bias["third"][1] += 0.02
-        bias["head"][2] -= 0.02
-        bias["second"][2] += 0.03
-        bias["head"][3] += 0.07
-        bias["second"][3] += 0.04
-        bias["third"][3] += 0.03
-        bias["head"][4] += 0.06
-        bias["second"][4] += 0.05
-        bias["third"][4] += 0.04
-        bias["head"][5] += 0.05
-        bias["second"][5] += 0.04
-        bias["third"][5] += 0.05
-        bias["head"][6] += 0.03
-        bias["second"][6] += 0.04
-        bias["third"][6] += 0.06
-        bias["notes"].append("江戸川外警戒")
-    elif venue == "大村":
-        bias["head"][1] += 0.06
-        bias["second"][1] += 0.02
-        bias["head"][2] += 0.02
-        bias["third"][5] -= 0.02
-        bias["third"][6] -= 0.03
-        bias["notes"].append("大村イン寄り")
-    elif venue == "若松":
-        bias["head"][1] -= 0.03
-        bias["head"][3] += 0.04
-        bias["head"][4] += 0.03
-        bias["third"][5] += 0.03
-        bias["third"][6] += 0.04
-        bias["notes"].append("若松やや波乱")
-    elif venue == "住之江":
-        bias["head"][1] += 0.03
-        bias["second"][2] += 0.03
-        bias["third"][3] += 0.02
-        bias["notes"].append("住之江基本形")
-
-    return bias
-
 
 def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=None):
     weather_info = weather_info or {}
@@ -1744,7 +1705,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_2_basic_restore")
+    log("[collector_version] collector_latest_weather_v10_3_no_latest_venue_bias")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
