@@ -2355,6 +2355,7 @@ def render_layout(title, body_html):
         const xhr = new XMLHttpRequest();
         xhr.open('GET', '/api/gpt_race_review?race_id=' + encodeURIComponent(raceId), true);
         xhr.setRequestHeader('Accept', 'application/json');
+        xhr.timeout = 10000;
 
         xhr.onreadystatechange = function(){
           if(xhr.readyState !== 4){
@@ -2400,6 +2401,12 @@ def render_layout(title, body_html):
         xhr.onerror = function(){
           box.style.display = 'block';
           box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
+          done();
+        };
+
+        xhr.ontimeout = function(){
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-error">タイムアウトしました</div>';
           done();
         };
 
