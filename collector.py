@@ -2315,6 +2315,15 @@ def build_candidates():
     rows = list(dedup.values())
     log(f"[dedup_summary] count={len(rows)}")
 
+    base_keys = set(base_map.keys())
+    filtered_by_base = []
+    for row in rows:
+        race_key = f"{row['venue']}|{row['race_no']}R"
+        if race_key in base_keys:
+            filtered_by_base.append(row)
+    rows = filtered_by_base
+    log(f"[base_match_summary] count={len(rows)}")
+
     needed_jcds = set()
     for row in rows:
         jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
