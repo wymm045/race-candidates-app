@@ -41,6 +41,8 @@ CARD_SELECT_COLUMNS = '''
     race_no,
     race_no_num,
     rating,
+    series_day,
+    race_phase,
     bet_type,
     selection,
     amount,
@@ -1554,6 +1556,8 @@ def build_export_rows(rows):
             "venue": csv_safe(r.get("venue")),
             "race_no": csv_safe(r.get("race_no")),
             "official_rating": csv_safe(r.get("rating")),
+            "series_day": int(r.get("series_day") or 0),
+            "race_phase": csv_safe(r.get("race_phase")),
             "bet_type": csv_safe(r.get("bet_type")),
             "official_selection": csv_safe(r.get("selection")),
             "amount_per_point": int(r.get("amount") or 0),
@@ -1597,7 +1601,7 @@ def make_csv_response(rows, filename):
     output = io.StringIO()
     export_rows = build_export_rows(rows)
     fieldnames = list(export_rows[0].keys()) if export_rows else [
-        "race_date", "time", "venue", "race_no", "official_rating", "bet_type",
+        "race_date", "time", "venue", "race_no", "official_rating", "series_day", "race_phase", "bet_type",
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
         "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
@@ -2234,6 +2238,8 @@ def init_db():
             race_no TEXT NOT NULL,
             race_no_num INTEGER NOT NULL DEFAULT 0,
             rating TEXT NOT NULL DEFAULT '',
+            series_day INTEGER NOT NULL DEFAULT 0,
+            race_phase TEXT NOT NULL DEFAULT '',
             bet_type TEXT NOT NULL DEFAULT '',
             selection TEXT NOT NULL DEFAULT '',
             amount INTEGER NOT NULL DEFAULT 100,
@@ -2298,6 +2304,8 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS series_day INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_phase TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
@@ -2377,6 +2385,8 @@ def upsert_base_candidates(cleaned):
                     time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
                     race_no_num = %s,
                     rating = %s,
+                    series_day = %s,
+                    race_phase = %s,
                     bet_type = %s,
                     selection = %s,
                     amount = %s,
@@ -2397,6 +2407,8 @@ def upsert_base_candidates(cleaned):
                     str(r.get('time') or '').strip(),
                     int(r.get('race_no_num') or 0),
                     str(r.get('rating') or '').strip(),
+                    int(r.get('series_day') or 0),
+                    str(r.get('race_phase') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
                     int(r.get('amount') or 100),
@@ -2421,14 +2433,14 @@ def upsert_base_candidates(cleaned):
                 '''
                 INSERT INTO races (
                     race_date, time, venue, race_no, race_no_num,
-                    rating, bet_type, selection, amount,
+                    rating, series_day, race_phase, bet_type, selection, amount,
                     player_names_text, class_history_text, player_stat_text, player_reason_text,
                     base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
@@ -2441,6 +2453,8 @@ def upsert_base_candidates(cleaned):
                     str(r.get('race_no') or '').strip(),
                     int(r.get('race_no_num') or 0),
                     str(r.get('rating') or '').strip(),
+                    int(r.get('series_day') or 0),
+                    str(r.get('race_phase') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
                     int(r.get('amount') or 100),
@@ -2717,6 +2731,8 @@ def import_base_candidates():
                 "race_no": str(r.get("race_no") or "").strip(),
                 "race_no_num": int(r.get("race_no_num") or 0),
                 "rating": str(r.get("rating") or "").strip(),
+                "series_day": int(r.get("series_day") or 0),
+                "race_phase": str(r.get("race_phase") or "").strip(),
                 "bet_type": str(r.get("bet_type") or "").strip(),
                 "selection": str(r.get("selection") or "").strip(),
                 "amount": int(r.get("amount") or 100),
@@ -2755,6 +2771,8 @@ def api_base_map_today():
             venue,
             race_no,
             rating,
+            series_day,
+            race_phase,
             base_ai_score,
             base_ai_rating,
             base_ai_selection,
@@ -2778,6 +2796,8 @@ def api_base_map_today():
         key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
         base_map[key] = {
             "rating": str(row.get("rating") or "").strip(),
+            "series_day": int(row.get("series_day") or 0),
+            "race_phase": str(row.get("race_phase") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
             "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
