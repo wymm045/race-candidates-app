@@ -35,13 +35,13 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-REQUEST_TIMEOUT = (8, 16)
+REQUEST_TIMEOUT = (5, 10)
 POST_TIMEOUT = 35
-MAX_RETRIES = 2
+MAX_RETRIES = 1
 RETRY_SLEEP_SEC = 0.8
 
-OFFICIAL_MAX_WORKERS = 3
-BEFOREINFO_MAX_WORKERS = 4
+OFFICIAL_MAX_WORKERS = 5
+BEFOREINFO_MAX_WORKERS = 6
 
 ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
@@ -2314,6 +2314,15 @@ def build_candidates():
             dedup[key] = row
     rows = list(dedup.values())
     log(f"[dedup_summary] count={len(rows)}")
+
+    base_keys = set(base_map.keys())
+    filtered_by_base = []
+    for row in rows:
+        race_key = f"{row['venue']}|{row['race_no']}R"
+        if race_key in base_keys:
+            filtered_by_base.append(row)
+    rows = filtered_by_base
+    log(f"[base_match_summary] count={len(rows)}")
 
     needed_jcds = set()
     for row in rows:
