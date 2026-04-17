@@ -566,7 +566,7 @@ def parse_start_display_from_lines(lines):
     segment_lines = lines[start_idx:end_idx]
     segment = " ".join(segment_lines)
 
-        pairs = []
+    pairs = []
     pattern = re.compile(r"\b([1-6])\b\s*(?:Image)?\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
     for m in pattern.finditer(segment):
         try:
@@ -841,7 +841,7 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     if entry_change:
         foot_bonus += min(0.10, entry_severity * 0.18)
 
-        foot_bonus = round(foot_bonus, 2)
+    foot_bonus = round(foot_bonus, 2)
     merged_reasons = reasons[:]
     if entry_reason_text:
         merged_reasons.append(entry_reason_text)
