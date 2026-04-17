@@ -1596,7 +1596,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-gpt-review">
           <span class="label">精査</span>
           <span class="value">
-            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}">ChatGPTで精査</button>
+            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}" onclick="loadGptReview('{r['id']}', this); return false;">ChatGPTで精査</button>
             <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
           </span>
         </div>
@@ -2382,12 +2382,6 @@ def render_layout(title, body_html):
           setCheckedValuesFromHidden(raceId);
           updateSelectionSummary(raceId, true);
           form.addEventListener('submit', function(){ syncSelectionValue(null, raceId); });
-        });
-        document.querySelectorAll('.gpt-review-btn').forEach(btn => {
-          btn.addEventListener('click', function(){
-            const raceId = this.getAttribute('data-race-id');
-            loadGptReview(raceId, this);
-          });
         });
         updateBulkDeleteCount();
       });
