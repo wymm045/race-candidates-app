@@ -157,10 +157,6 @@ def build_resultlist_url(jcd):
     return f"https://boatrace.jp/owpc/pc/race/resultlist?hd={today_str()}&jcd={jcd}"
 
 
-def build_kyotei24_result_url():
-    return "https://race.kyotei24.jp/result.html"
-
-
 def row_cells(tr):
     return tr.find_all(["td", "th"], recursive=False)
 
@@ -1018,104 +1014,125 @@ def parse_kimarite_from_text(text):
 
 
 def parse_resultlist_for_jcd(jcd):
-    """
-    旧公式 resultlist ルートは重くて不安定なので残すが、
-    ここでは基本的に使わない。
-    """
-    return jcd, {}
-
-
-def parse_kyotei24_day_results(target_jcds):
-    url = build_kyotei24_result_url()
-    target_jcds = {str(x).zfill(2) for x in (target_jcds or [])}
-    if not target_jcds:
-        return {}
-
+    url = build_resultlist_url(jcd)
     try:
         html = fetch_html(url, timeout=(6, 12), max_retries=2)
     except Exception as e:
-        log(f"[kyotei24_error] err={e}")
-        return {}
+        log(f"[resultlist_error] jcd={jcd} err={e}")
+        return jcd, {}
 
-    results = {}
-    current_jcd = ""
-    current_race_no = None
-
-    # まずHTML全体を compact text として見る
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines_from_soup(soup)
+    compact_html = re.sub(r"\s+", "", soup.get_text(" "))
 
-    # 会場名→jcd 逆引き
-    venue_to_jcd = {v: k for k, v in JCD_NAME_MAP.items()}
+    results = {}
 
-    for line in lines:
-        line_compact = re.sub(r"\s+", "", str(line or ""))
-
-        # 会場切り替え
-        found_venue = None
-        for venue_name, venue_jcd in venue_to_jcd.items():
-            if venue_name in line_compact:
-                found_venue = venue_jcd
-                break
-        if found_venue:
-            current_jcd = found_venue
-            current_race_no = None
-
-        # 対象会場以外はスキップ
-        if current_jcd not in target_jcds:
+    # 1) まず table/tr 単位で拾う
+    current_race_no = None
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if not cells:
             continue
 
-        # R番号検出
-        m_race = re.search(r"(\d{1,2})R", line_compact)
+        cell_texts = [c.get_text(" ", strip=True) for c in cells]
+        row_text = " ".join(cell_texts)
+        compact_row = re.sub(r"\s+", "", row_text)
+
+        m_race = re.search(r"(\d{1,2})R", compact_row)
         if m_race:
             current_race_no = int(m_race.group(1))
 
-        # 3連単検出
-        tri = parse_result_triplet_from_text(line_compact)
+        tri = parse_result_triplet_from_text(compact_row)
         if tri and current_race_no:
             try:
                 a, b, c = [int(x) for x in tri.split("-")]
             except Exception:
-                continue
-            key = (current_jcd, current_race_no)
-            if key not in results:
-                results[key] = {
+                a = b = c = None
+            if a is not None and current_race_no not in results:
+                results[current_race_no] = {
                     "triplet": tri,
                     "head": a,
                     "second": b,
                     "third": c,
-                    "kimarite": parse_kimarite_from_text(line_compact),
+                    "kimarite": parse_kimarite_from_text(compact_row),
                 }
-            else:
-                if not results[key].get("kimarite"):
-                    results[key]["kimarite"] = parse_kimarite_from_text(line_compact)
+            elif current_race_no in results and not results[current_race_no].get("kimarite"):
+                kim = parse_kimarite_from_text(compact_row)
+                if kim:
+                    results[current_race_no]["kimarite"] = kim
 
-        # 決まり手だけ後追いで拾う
-        if current_race_no:
-            kim = parse_kimarite_from_text(line_compact)
-            if kim:
-                key = (current_jcd, current_race_no)
-                if key in results and not results[key].get("kimarite"):
-                    results[key]["kimarite"] = kim
+    # 2) lines ベースで不足分を補完
+    current_race_no = None
+    for line in lines:
+        compact_line = re.sub(r"\s+", "", str(line or ""))
+        m_race = re.search(r"(\d{1,2})R", compact_line)
+        if m_race:
+            current_race_no = int(m_race.group(1))
 
-    per_jcd_counts = {}
-    for (j, _r), _info in results.items():
-        per_jcd_counts[j] = per_jcd_counts.get(j, 0) + 1
-    for j in sorted(target_jcds):
-        log(f"[kyotei24_ok] jcd={j} count={per_jcd_counts.get(j, 0)}")
+        tri = parse_result_triplet_from_text(compact_line)
+        if tri and current_race_no and current_race_no not in results:
+            try:
+                a, b, c = [int(x) for x in tri.split("-")]
+            except Exception:
+                continue
+            results[current_race_no] = {
+                "triplet": tri,
+                "head": a,
+                "second": b,
+                "third": c,
+                "kimarite": parse_kimarite_from_text(compact_line),
+            }
 
-    return results
+        kim = parse_kimarite_from_text(compact_line)
+        if kim and current_race_no in results and not results[current_race_no].get("kimarite"):
+            results[current_race_no]["kimarite"] = kim
+
+    # 3) それでも不足なら HTML 全体からレースごとにざっくり拾う
+    for race_no in range(1, 13):
+        if race_no in results:
+            continue
+        m = re.search(
+            rf"{race_no}R(.*?)(?:{race_no + 1}R|締切予定時刻|進入コース別結果|艇番別結果|$)",
+            compact_html,
+        )
+        if not m:
+            continue
+        chunk = m.group(1)
+        tri = parse_result_triplet_from_text(chunk)
+        if not tri:
+            continue
+        try:
+            a, b, c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+        results[race_no] = {
+            "triplet": tri,
+            "head": a,
+            "second": b,
+            "third": c,
+            "kimarite": parse_kimarite_from_text(chunk),
+        }
+
+    log(f"[resultlist_ok] jcd={jcd} count={len(results)}")
+    return jcd, results
 
 
 def fetch_day_results_parallel(venue_targets):
-    target_jcds = sorted(set((venue_targets or {}).keys()))
-    if not target_jcds:
-        return {}
-    return parse_kyotei24_day_results(target_jcds)
+    results = {}
+    jcds = sorted(set(venue_targets.keys()))
+    if not jcds:
+        return results
+
+    with ThreadPoolExecutor(max_workers=RESULT_MAX_WORKERS) as ex:
+        futures = [ex.submit(parse_resultlist_for_jcd, jcd) for jcd in jcds]
+        for future in as_completed(futures):
+            jcd, venue_results = future.result()
+            for race_no, info in (venue_results or {}).items():
+                results[(jcd, race_no)] = info
+    return results
 
 
 def build_day_trend_bias(jcd, target_race_no, result_cache):
-
 
     target_race_no = normalize_race_no_value(target_race_no)
     prior = []
@@ -2691,7 +2708,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_daytrend_v10_10_kyotei24_try")
+    log("[collector_version] collector_latest_daytrend_v10_11_resultlist_dom")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
