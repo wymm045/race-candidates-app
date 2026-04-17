@@ -1588,30 +1588,32 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
 
     lane_scores = {lane: 0.0 for lane in range(1, 7)}
 
+    # 展示順位は使うが、以前より弱めにする
     if ranks:
         for lane in range(1, 7):
             rank = ranks.get(lane)
             if rank is None:
                 continue
             if rank == 1:
-                lane_scores[lane] += 0.26
+                lane_scores[lane] += 0.18
             elif rank == 2:
-                lane_scores[lane] += 0.14
+                lane_scores[lane] += 0.10
             elif rank == 3:
-                lane_scores[lane] += 0.05
+                lane_scores[lane] += 0.03
             elif rank == 4:
-                lane_scores[lane] -= 0.02
+                lane_scores[lane] -= 0.01
             elif rank == 5:
-                lane_scores[lane] -= 0.08
+                lane_scores[lane] -= 0.05
             elif rank == 6:
-                lane_scores[lane] -= 0.14
+                lane_scores[lane] -= 0.10
 
         r1 = ranks.get(1)
         if r1 == 1:
-            lane_scores[1] += 0.10
+            lane_scores[1] += 0.05
         elif r1 is not None and r1 >= 5:
-            lane_scores[1] -= 0.10
+            lane_scores[1] -= 0.06
 
+    # 展示タイム差を主役にする
     float_times = []
     for lane, t in enumerate(times, start=1):
         try:
@@ -1622,27 +1624,37 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
     if len(float_times) == 6:
         min_time = min(v for _, v in float_times)
         avg_time = sum(v for _, v in float_times) / 6.0
+        sorted_times = sorted(float_times, key=lambda x: x[1])
+        spread = max(v for _, v in float_times) - min_time
+        gap12 = sorted_times[1][1] - sorted_times[0][1]
+
         for lane, v in float_times:
             diff_from_min = v - min_time
             diff_from_avg = v - avg_time
             if diff_from_min <= 0.00:
-                lane_scores[lane] += 0.14
+                lane_scores[lane] += 0.18
             elif diff_from_min <= 0.03:
-                lane_scores[lane] += 0.07
+                lane_scores[lane] += 0.10
             elif diff_from_min >= 0.10:
-                lane_scores[lane] -= 0.12
+                lane_scores[lane] -= 0.14
             elif diff_from_min >= 0.06:
-                lane_scores[lane] -= 0.06
+                lane_scores[lane] -= 0.08
 
             if diff_from_avg <= -0.05:
-                lane_scores[lane] += 0.04
+                lane_scores[lane] += 0.06
             elif diff_from_avg >= 0.05:
-                lane_scores[lane] -= 0.04
+                lane_scores[lane] -= 0.06
 
-        spread = max(v for _, v in float_times) - min_time
-        if spread >= 0.12:
-            fastest_lane = min(float_times, key=lambda x: x[1])[0]
-            lane_scores[fastest_lane] += 0.03
+        if spread >= 0.18:
+            fastest_lane = sorted_times[0][0]
+            lane_scores[fastest_lane] += 0.08
+        elif spread >= 0.12:
+            fastest_lane = sorted_times[0][0]
+            lane_scores[fastest_lane] += 0.05
+
+        if gap12 >= 0.05:
+            fastest_lane = sorted_times[0][0]
+            lane_scores[fastest_lane] += 0.04
 
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score != 0:
@@ -1690,7 +1702,6 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
             lane_scores[lane] += float(foot_lane_scores.get(lane, 0) or 0) * 0.90
 
     return lane_scores
-
 
 def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
     lane_scores = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
@@ -1831,20 +1842,18 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
     entry_text = str(foot_material.get("entry_text") or "")
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
 
-    if ranks:
-        if 1 in ranks:
-            r1 = ranks[1]
-            if r1 == 1:
-                score += 0.42 * latest_push
-                reasons.append("1号艇の展示順位が1位")
-            elif r1 <= 2:
-                score += 0.22 * latest_push
-                reasons.append("1号艇の展示順位が上位")
-            elif r1 >= 5:
-                score -= 0.32 * latest_push
-                reasons.append("1号艇の展示順位が下位")
-        if sorted(ranks.items(), key=lambda x: x[1])[:3]:
-            reasons.append("展示上位を反映")
+    # 順位は補助、タイム差を主役にする
+    if ranks and 1 in ranks:
+        r1 = ranks[1]
+        if r1 == 1:
+            score += 0.24 * latest_push
+            reasons.append("1号艇の展示順位が1位")
+        elif r1 <= 2:
+            score += 0.12 * latest_push
+            reasons.append("1号艇の展示順位が上位")
+        elif r1 >= 5:
+            score -= 0.18 * latest_push
+            reasons.append("1号艇の展示順位が下位")
 
     if times:
         float_times = []
@@ -1854,13 +1863,36 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
             except Exception:
                 pass
         if len(float_times) == 6:
+            sorted_times = sorted(float_times)
             spread = max(float_times) - min(float_times)
+            gap12 = sorted_times[1] - sorted_times[0]
+            lane1_time = float_times[0]
+            lane1_gap = lane1_time - sorted_times[0]
+
             if spread >= 0.18:
+                score += 0.18 * latest_push
+                reasons.append("展示差あり")
+            elif spread >= 0.14:
                 score += 0.12 * latest_push
                 reasons.append("展示差あり")
-            elif spread >= 0.12:
-                score += 0.06 * latest_push
+            elif spread >= 0.10:
+                score += 0.08 * latest_push
                 reasons.append("展示差ややあり")
+
+            if gap12 >= 0.05:
+                score += 0.04 * latest_push
+
+            if lane1_gap <= 0.02:
+                score += 0.10 * latest_push
+            elif lane1_gap <= 0.05:
+                score += 0.05 * latest_push
+            elif lane1_gap >= 0.12:
+                score -= 0.16 * latest_push
+            elif lane1_gap >= 0.08:
+                score -= 0.10 * latest_push
+
+            if spread >= 0.10:
+                reasons.append("展示タイム差を反映")
 
     if entry_change:
         reasons.append(f"進入:{entry_text}") if entry_text else reasons.append("進入変化あり")
@@ -1909,7 +1941,6 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
         "final_ai_rating": score_to_ai_rating(score),
         "latest_reason_text": " / ".join(dict.fromkeys(reasons[:10])),
     }
-
 
 def selection_triplets(selection):
     if not selection:
@@ -2150,42 +2181,41 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
             if rank is None:
                 continue
             if rank == 1:
-                head_score[lane] += 0.14
-                second_score[lane] += 0.07
+                head_score[lane] += 0.09
+                second_score[lane] += 0.05
             elif rank == 2:
-                head_score[lane] += 0.08
-                second_score[lane] += 0.08
-                third_score[lane] += 0.03
-            elif rank == 3:
-                head_score[lane] += 0.03
-                second_score[lane] += 0.04
-                third_score[lane] += 0.04
-            elif rank == 4:
+                head_score[lane] += 0.05
+                second_score[lane] += 0.05
                 third_score[lane] += 0.02
+            elif rank == 3:
+                head_score[lane] += 0.02
+                second_score[lane] += 0.03
+                third_score[lane] += 0.03
+            elif rank == 4:
+                third_score[lane] += 0.01
             elif rank == 5:
-                head_score[lane] -= 0.06
-                second_score[lane] -= 0.02
+                head_score[lane] -= 0.04
+                second_score[lane] -= 0.015
             elif rank == 6:
-                head_score[lane] -= 0.10
-                second_score[lane] -= 0.04
+                head_score[lane] -= 0.07
+                second_score[lane] -= 0.03
                 third_score[lane] -= 0.02
 
-        # v10.2: 1が完全に死んでない時は少し残す
+        # 順位だけでは頭を強くしすぎない
         rank1 = ranks.get(1)
         if rank1 is not None:
             if rank1 <= 3:
-                head_score[1] += 0.04
-                second_score[1] += 0.02
+                head_score[1] += 0.02
+                second_score[1] += 0.01
             elif rank1 == 4:
-                head_score[1] += 0.01
+                head_score[1] += 0.005
 
-        # v10.2: 2号艇は2着の基本形を少し戻す
         rank2 = ranks.get(2)
         if rank2 is not None:
             if rank2 <= 3:
-                second_score[2] += 0.04
+                second_score[2] += 0.025
             elif rank2 == 4:
-                second_score[2] += 0.015
+                second_score[2] += 0.01
 
     float_times = []
     for lane, t in enumerate(times, start=1):
@@ -2198,50 +2228,65 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
         min_time = min(v for _, v in float_times)
         avg_time = sum(v for _, v in float_times) / 6.0
         spread = max(v for _, v in float_times) - min_time
+        sorted_times = sorted(float_times, key=lambda x: x[1])
+        gap12 = sorted_times[1][1] - sorted_times[0][1]
 
         for lane, v in float_times:
             diff_min = v - min_time
             diff_avg = v - avg_time
 
             if diff_min <= 0.00:
-                head_score[lane] += 0.09
-                second_score[lane] += 0.05
+                head_score[lane] += 0.13
+                second_score[lane] += 0.07
             elif diff_min <= 0.03:
-                head_score[lane] += 0.04
-                second_score[lane] += 0.03
-                third_score[lane] += 0.01
+                head_score[lane] += 0.07
+                second_score[lane] += 0.04
+                third_score[lane] += 0.02
             elif diff_min >= 0.10:
-                head_score[lane] -= 0.08
-                second_score[lane] -= 0.03
+                head_score[lane] -= 0.12
+                second_score[lane] -= 0.05
             elif diff_min >= 0.06:
-                head_score[lane] -= 0.03
-                second_score[lane] -= 0.015
+                head_score[lane] -= 0.06
+                second_score[lane] -= 0.025
 
             if diff_avg <= -0.04:
-                third_score[lane] += 0.02
+                third_score[lane] += 0.03
             elif diff_avg >= 0.05:
-                third_score[lane] -= 0.02
+                third_score[lane] -= 0.03
 
-        if spread >= 0.12:
-            fastest_lane = min(float_times, key=lambda x: x[1])[0]
-            head_score[fastest_lane] += 0.02
+        if spread >= 0.18:
+            fastest_lane = sorted_times[0][0]
+            head_score[fastest_lane] += 0.05
+        elif spread >= 0.12:
+            fastest_lane = sorted_times[0][0]
+            head_score[fastest_lane] += 0.03
 
-        # v10.2: 1が展示で大崩れしていなければ少し保険
+        if gap12 >= 0.05:
+            fastest_lane = sorted_times[0][0]
+            head_score[fastest_lane] += 0.03
+            second_score[fastest_lane] += 0.02
+
         lane1_time = next((v for lane, v in float_times if lane == 1), None)
         if lane1_time is not None:
             diff1 = lane1_time - min_time
-            if diff1 <= 0.05:
-                head_score[1] += 0.025
-            elif diff1 <= 0.08:
-                head_score[1] += 0.01
+            if diff1 <= 0.03:
+                head_score[1] += 0.04
+            elif diff1 <= 0.05:
+                head_score[1] += 0.02
+            elif diff1 >= 0.12:
+                head_score[1] -= 0.06
+            elif diff1 >= 0.08:
+                head_score[1] -= 0.03
 
         lane2_time = next((v for lane, v in float_times if lane == 2), None)
         if lane2_time is not None:
             diff2 = lane2_time - min_time
-            if diff2 <= 0.05:
-                second_score[2] += 0.025
-            elif diff2 <= 0.08:
-                second_score[2] += 0.01
+            if diff2 <= 0.03:
+                second_score[2] += 0.04
+            elif diff2 <= 0.05:
+                second_score[2] += 0.02
+            elif diff2 >= 0.12:
+                second_score[2] -= 0.04
 
     if len(st_map) >= 4:
         sorted_st = sorted(
@@ -3045,7 +3090,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_20")
+    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
