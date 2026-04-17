@@ -418,18 +418,42 @@ def extract_wind_direction_from_text(text):
         return ""
 
     directions = [
-        "北北西", "北西", "西北西", "西", "西南西", "南西", "南南西", "南",
-        "南南東", "南東", "東南東", "東", "東北東", "北東", "北北東", "北",
+        "北北西", "西北西", "西南西", "南南西",
+        "南南東", "東南東", "東北東", "北北東",
+        "北西", "南西", "南東", "北東",
+        "北", "西", "南", "東",
         "無風",
     ]
+
+    compact = re.sub(r"\s+", "", s)
+
+    label_patterns = [
+        r"風向[:：]?([北西南東無風]{1,3})",
+        r"風向き[:：]?([北西南東無風]{1,3})",
+        r"([北西南東無風]{1,3})の風",
+        r"([北西南東無風]{1,3})\s*([0-9]+(?:\.[0-9]+)?)\s*m",
+    ]
+
+    for pat in label_patterns:
+        m = re.search(pat, compact)
+        if m:
+            cand = m.group(1)
+            if cand in directions:
+                return cand
+
     for direction in directions:
+        if direction in compact:
+            return direction
         if direction in s:
             return direction
     return ""
 
 
+
 def parse_weather_info_from_lines(lines):
     joined = " ".join(lines)
+    compact = re.sub(r"\s+", "", joined)
+
     weather = {
         "weather": "",
         "wind_speed": None,
@@ -440,40 +464,51 @@ def parse_weather_info_from_lines(lines):
     }
 
     for word in ["晴", "曇", "雨", "雪"]:
-        if word in joined:
+        if word in compact:
             weather["weather"] = word
             break
 
-    weather["wind_dir"] = extract_wind_direction_from_text(joined)
+    weather["wind_dir"] = extract_wind_direction_from_text(compact or joined)
 
-    m_wind = re.search(r"風速\s*([0-9]+(?:\.[0-9]+)?)", joined)
-    if not m_wind:
-        m_wind = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*m(?:\s|$)", joined)
-    if m_wind:
-        try:
-            weather["wind_speed"] = float(m_wind.group(1))
-        except Exception:
-            pass
+    wind_patterns = [
+        r"風速[:：]?([0-9]+(?:\.[0-9]+)?)",
+        r"風[:：]?([0-9]+(?:\.[0-9]+)?)m",
+        r"([0-9]+(?:\.[0-9]+)?)m(?:/s)?",
+    ]
+    for pat in wind_patterns:
+        m_wind = re.search(pat, compact, re.I)
+        if m_wind:
+            try:
+                weather["wind_speed"] = float(m_wind.group(1))
+                break
+            except Exception:
+                pass
 
-    m_wave = re.search(r"波高\s*([0-9]+(?:\.[0-9]+)?)", joined)
-    if not m_wave:
-        m_wave = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*cm(?:\s|$)", joined)
-    if m_wave:
-        try:
-            weather["wave_height"] = float(m_wave.group(1))
-        except Exception:
-            pass
+    wave_patterns = [
+        r"波高[:：]?([0-9]+(?:\.[0-9]+)?)",
+        r"波[:：]?([0-9]+(?:\.[0-9]+)?)cm",
+        r"([0-9]+(?:\.[0-9]+)?)cm",
+    ]
+    for pat in wave_patterns:
+        m_wave = re.search(pat, compact, re.I)
+        if m_wave:
+            try:
+                weather["wave_height"] = float(m_wave.group(1))
+                break
+            except Exception:
+                pass
 
-    if "向い風" in joined:
+    if any(x in compact for x in ["向い風", "向かい風", "向風", "ホーム向い", "ホーム向かい"]):
         weather["wind_type"] = "向い風"
-    elif "追い風" in joined:
+    elif any(x in compact for x in ["追い風", "追風", "ホーム追い"]):
         weather["wind_type"] = "追い風"
-    elif "横風" in joined:
+    elif any(x in compact for x in ["横風", "左横風", "右横風", "左横", "右横"]):
         weather["wind_type"] = "横風"
 
     wind = weather["wind_speed"]
     wave = weather["wave_height"]
     score = 0.0
+
     if isinstance(wind, (int, float)):
         if wind >= 7:
             score -= 0.18
@@ -507,20 +542,6 @@ def parse_weather_info_from_lines(lines):
     weather["water_state_score"] = round(score, 2)
     return weather
 
-
-def get_wind_level(weather_info):
-    wind = weather_info.get("wind_speed")
-    try:
-        w = float(wind)
-    except Exception:
-        return 0.0
-    if w >= 7:
-        return 1.0
-    if w >= 5:
-        return 0.72
-    if w >= 3:
-        return 0.40
-    return 0.0
 
 
 def parse_st_value(text):
@@ -2412,7 +2433,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_7_wind_course_bias")
+    log("[collector_version] collector_latest_weather_v10_7b_wind_course_bias")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
