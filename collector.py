@@ -45,7 +45,7 @@ OFFICIAL_MAX_WORKERS = 3
 BEFOREINFO_MAX_WORKERS = 4
 RESULT_MAX_WORKERS = 4
 
-ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
+ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "2"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
 
 JCD_NAME_MAP = {
@@ -488,31 +488,38 @@ def parse_weather_info_from_lines(lines):
 
     weather["wind_dir"] = extract_wind_direction_from_text(compact or joined)
 
+    # 風速はラベル付きだけ拾う。競走水面の 1800m などを誤取得しないようにする。
     wind_patterns = [
         r"風速[:：]?([0-9]+(?:\.[0-9]+)?)",
-        r"風[:：]?([0-9]+(?:\.[0-9]+)?)m",
-        r"([0-9]+(?:\.[0-9]+)?)m(?:/s)?",
+        r"風速([0-9]+(?:\.[0-9]+)?)m",
+        r"風速([0-9]+(?:\.[0-9]+)?)m/s",
+        r"風速([0-9]+(?:\.[0-9]+)?)メートル",
     ]
     for pat in wind_patterns:
         m_wind = re.search(pat, compact, re.I)
         if m_wind:
             try:
-                weather["wind_speed"] = float(m_wind.group(1))
-                break
+                v = float(m_wind.group(1))
+                if 0 <= v <= 20:
+                    weather["wind_speed"] = v
+                    break
             except Exception:
                 pass
 
+    # 波高もラベル付きだけ拾う。
     wave_patterns = [
         r"波高[:：]?([0-9]+(?:\.[0-9]+)?)",
-        r"波[:：]?([0-9]+(?:\.[0-9]+)?)cm",
-        r"([0-9]+(?:\.[0-9]+)?)cm",
+        r"波高([0-9]+(?:\.[0-9]+)?)cm",
+        r"波高([0-9]+(?:\.[0-9]+)?)センチ",
     ]
     for pat in wave_patterns:
         m_wave = re.search(pat, compact, re.I)
         if m_wave:
             try:
-                weather["wave_height"] = float(m_wave.group(1))
-                break
+                v = float(m_wave.group(1))
+                if 0 <= v <= 50:
+                    weather["wave_height"] = v
+                    break
             except Exception:
                 pass
 
@@ -559,8 +566,6 @@ def parse_weather_info_from_lines(lines):
 
     weather["water_state_score"] = round(score, 2)
     return weather
-
-
 
 
 
