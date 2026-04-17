@@ -808,6 +808,44 @@ def final_rank_badge(rank_text):
     return ""
 
 
+def format_series_day_label(series_day):
+    try:
+        day = int(series_day or 0)
+    except Exception:
+        day = 0
+    if day <= 0:
+        return ""
+    if day == 1:
+        return "初日"
+    return f"{day}日目"
+
+
+def normalize_race_phase_label_for_badge(race_phase):
+    s = str(race_phase or "").strip()
+    if not s:
+        return ""
+    if "優勝戦" in s:
+        return "優勝戦"
+    if "準優勝戦" in s or "準優" in s:
+        return "準優"
+    if "ドリーム戦" in s or "ドリーム" in s:
+        return "ドリーム"
+    return ""
+
+
+def render_series_phase_badges(series_day, race_phase):
+    badges = []
+    day_label = format_series_day_label(series_day)
+    if day_label:
+        badges.append(f'<span class="series-phase-badge series-phase-badge-day">{day_label}</span>')
+
+    phase_label = normalize_race_phase_label_for_badge(race_phase)
+    if phase_label:
+        badges.append(f'<span class="series-phase-badge series-phase-badge-phase">{phase_label}</span>')
+
+    return "".join(badges)
+
+
 def render_ai_rating_filter_options(current_value):
     html = '<option value="">すべて</option>'
     for value in AI_RATING_OPTIONS:
@@ -1370,6 +1408,7 @@ def build_card_html(r, is_history=False, race_date=""):
         r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
     final_rank_html = final_rank_badge(r.get("final_rank"))
+    series_phase_badges_html = render_series_phase_badges(r.get("series_day"), r.get("race_phase"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
     form_id = f"race-form-{race_id_key}"
@@ -1409,6 +1448,7 @@ def build_card_html(r, is_history=False, race_date=""):
               <span class="race-venue">{r['venue']}</span>
               <span class="race-rno">{r['race_no']}</span>
             </span>
+            {series_phase_badges_html}
           </div>
         </div>
         {status_html}
@@ -1922,9 +1962,13 @@ def render_layout(title, body_html):
       .countdown-warning{background:#fff4e5;color:#b54708}
       .countdown-soon{background:#ffead5;color:#c4320a}
       .countdown-closed{background:#f2f4f7;color:#475467}
+      .race-mainline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
       .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
       .race-venue{font-size:22px}
       .race-rno{font-size:22px}
+      .series-phase-badge{display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:800;line-height:1}
+      .series-phase-badge-day{background:#ecfdf3;color:#067647}
+      .series-phase-badge-phase{background:#fff4e5;color:#b54708}
       .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
       .status-badge-saved{background:#ecfdf3;color:#067647}
