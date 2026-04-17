@@ -1,3 +1,4 @@
+
 from datetime import datetime, timezone, timedelta
 import os
 import re
@@ -928,23 +929,41 @@ def fetch_beforeinfo_parallel(keys):
 
 
 def score_to_ai_rating(score):
-    if score >= 2.0:
+    """
+    星を全体的に厳しめにして 1〜5 をしっかり使う。
+    ★5 = かなり強い
+    ★4 = 強い
+    ★3 = 普通に候補
+    ★2 = 弱め
+    ★1 = 見送り寄り
+    """
+    try:
+        s = float(score or 0)
+    except Exception:
+        s = 0.0
+
+    if s >= 3.2:
         return "AI★★★★★"
-    if score >= 1.2:
+    if s >= 2.2:
         return "AI★★★★☆"
-    if score >= 0.5:
+    if s >= 1.2:
         return "AI★★★☆☆"
-    if score >= -0.2:
+    if s >= 0.3:
         return "AI★★☆☆☆"
     return "AI★☆☆☆☆"
 
 
 def score_to_final_rank(score):
-    if score >= 2.0:
+    try:
+        s = float(score or 0)
+    except Exception:
+        s = 0.0
+
+    if s >= 3.0:
         return "買い強め"
-    if score >= 1.0:
+    if s >= 1.8:
         return "買い"
-    if score >= 0:
+    if s >= 0.8:
         return "様子見"
     return "見送り寄り"
 
