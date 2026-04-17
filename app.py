@@ -1596,7 +1596,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-gpt-review">
           <span class="label">精査</span>
           <span class="value">
-            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}" onclick="this.disabled=true;this.textContent='精査中...';document.getElementById('gpt-review-{r['id']}').style.display='block';document.getElementById('gpt-review-{r['id']}').innerHTML='&lt;div class=\"gpt-review-content\"&gt;読み込み中...&lt;/div&gt;';return loadGptReview('{r['id']}', this);">ChatGPTで精査</button>
+            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}" onclick="this.disabled=true;this.textContent='精査中...';document.getElementById('gpt-review-{r['id']}').style.display='block';document.getElementById('gpt-review-{r['id']}').innerHTML='&lt;div class=&quot;gpt-review-content&quot;&gt;読み込み中...&lt;/div&gt;';return loadGptReview('{r['id']}', this);">ChatGPTで精査</button>
             <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
           </span>
         </div>
