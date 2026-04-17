@@ -45,8 +45,8 @@ OFFICIAL_MAX_WORKERS = 3
 BEFOREINFO_MAX_WORKERS = 4
 RESULT_MAX_WORKERS = 4
 
-ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "24"))
-SKIP_PAST_RACES = False  # 動作確認用: 締切後も含める
+ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
+SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
 
 JCD_NAME_MAP = {
     "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川",
@@ -2708,8 +2708,8 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_daytrend_v10_11_test_mode")
-    log(f"[debug_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
+    log("[collector_version] collector_latest_daytrend_v10_12_prod")
+    log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
@@ -2809,11 +2809,6 @@ def build_candidates():
         scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
 
         day_trend_bias = build_day_trend_bias(jcd, race_no, day_result_cache)
-        log(
-            f"[day_trend_debug] venue={venue} race_no={race_no} "
-            f"sample={day_trend_bias.get('sample_size', 0)} "
-            f"text={day_trend_bias.get('trend_text', '')}"
-        )
         role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material, day_trend_bias=day_trend_bias)
         scenario_material = build_turn_scenario_material(
             venue,
