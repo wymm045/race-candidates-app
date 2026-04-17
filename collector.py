@@ -968,6 +968,11 @@ def parse_beforeinfo_for_key(jcd, race_no):
     weather_info = parse_weather_info_from_lines(lines)
     start_info = parse_start_info_from_lines(lines)
 
+    if not weather_info.get("wind_dir"):
+        preview_lines = lines[:120]
+        preview = " | ".join(preview_lines)
+        log(f"[wind_dir_missing] jcd={jcd} race_no={race_no} preview={preview[:1200]}")
+
     return (jcd, race_no), {
         "exhibition": {
             "times": exhibition_times,
