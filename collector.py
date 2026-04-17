@@ -544,6 +544,30 @@ def parse_weather_info_from_lines(lines):
 
 
 
+
+
+def get_wind_level(weather_info):
+    """
+    風補正の強さを 0.0〜1.0 で返す。
+    風速が取れない時は 0。
+    """
+    try:
+        wind = float((weather_info or {}).get("wind_speed") or 0)
+    except Exception:
+        wind = 0.0
+
+    if wind >= 8:
+        return 1.0
+    if wind >= 6:
+        return 0.8
+    if wind >= 5:
+        return 0.65
+    if wind >= 4:
+        return 0.45
+    if wind >= 3:
+        return 0.25
+    return 0.0
+
 def parse_st_value(text):
     if text is None:
         return None
