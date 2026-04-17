@@ -1596,7 +1596,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-gpt-review">
           <span class="label">精査</span>
           <span class="value">
-            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}" onclick="loadGptReview('{r['id']}', this); return false;">ChatGPTで精査</button>
+            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}" onclick="this.disabled=true;this.textContent='精査中...';document.getElementById('gpt-review-{r['id']}').style.display='block';document.getElementById('gpt-review-{r['id']}').innerHTML='&lt;div class=\"gpt-review-content\"&gt;読み込み中...&lt;/div&gt;';return loadGptReview('{r['id']}', this);">ChatGPTで精査</button>
             <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
           </span>
         </div>
@@ -2338,38 +2338,74 @@ def render_layout(title, body_html):
         document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
         updateBulkDeleteCount();
       }
-      async function loadGptReview(raceId, btn){
+      function loadGptReview(raceId, btn){
         const box = document.getElementById('gpt-review-' + raceId);
-        if(!box){ return; }
-        if(box.dataset.loaded === '1'){
-          box.style.display = box.style.display === 'none' ? 'block' : 'none';
-          return;
-        }
-        btn.disabled = true;
-        const oldText = btn.textContent;
-        btn.textContent = '精査中...';
-        try{
-          const res = await fetch('/api/gpt_race_review?race_id=' + encodeURIComponent(raceId));
-          const data = await res.json();
-          if(!data.ok){
-            box.innerHTML = '<div class="gpt-review-error">取得失敗: ' + (data.error || 'unknown error') + '</div>';
-          }else{
-            const escaped = String(data.review_text || '')
-              .replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/\n/g, '<br>');
-            box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
-            box.dataset.loaded = '1';
-          }
-          box.style.display = 'block';
-        }catch(e){
-          box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
-          box.style.display = 'block';
-        }finally{
+        if(!box){
+          alert('レビュー表示欄が見つかりません: ' + raceId);
           btn.disabled = false;
-          btn.textContent = oldText;
+          btn.textContent = 'ChatGPTで精査';
+          return false;
         }
+
+        const done = function(){
+          btn.disabled = false;
+          btn.textContent = 'ChatGPTで精査';
+        };
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/gpt_race_review?race_id=' + encodeURIComponent(raceId), true);
+        xhr.setRequestHeader('Accept', 'application/json');
+
+        xhr.onreadystatechange = function(){
+          if(xhr.readyState !== 4){
+            return;
+          }
+
+          if(xhr.status < 200 || xhr.status >= 300){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">通信失敗: HTTP ' + xhr.status + '</div>';
+            done();
+            return;
+          }
+
+          let data;
+          try{
+            data = JSON.parse(xhr.responseText || '{}');
+          }catch(e){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">JSON変換失敗</div><div class="gpt-review-content">' + String(xhr.responseText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+            done();
+            return;
+          }
+
+          if(!data.ok){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">取得失敗: ' + (data.error || 'unknown error') + '</div>';
+            done();
+            return;
+          }
+
+          const escaped = String(data.review_text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/
+/g, '<br>');
+
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
+          box.dataset.loaded = '1';
+          done();
+        };
+
+        xhr.onerror = function(){
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
+          done();
+        };
+
+        xhr.send();
+        return false;
       }
       function confirmBulkDelete(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
