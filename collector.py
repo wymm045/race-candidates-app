@@ -508,6 +508,21 @@ def parse_weather_info_from_lines(lines):
     return weather
 
 
+def get_wind_level(weather_info):
+    wind = weather_info.get("wind_speed")
+    try:
+        w = float(wind)
+    except Exception:
+        return 0.0
+    if w >= 7:
+        return 1.0
+    if w >= 5:
+        return 0.72
+    if w >= 3:
+        return 0.40
+    return 0.0
+
+
 def parse_st_value(text):
     if text is None:
         return None
@@ -1016,6 +1031,7 @@ def build_venue_bias_map(venue):
         "notes": [],
     }
 
+
 def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=None):
     weather_info = weather_info or {}
     foot_material = foot_material or {}
@@ -1085,6 +1101,40 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
         lane_scores[1] += water_state_score * 0.8
         for lane in [4, 5, 6]:
             lane_scores[lane] -= water_state_score * 0.25
+
+    wind_type = str(weather_info.get("wind_type") or "")
+    wind_level = get_wind_level(weather_info)
+    try:
+        wind_speed = float(weather_info.get("wind_speed") or 0)
+    except Exception:
+        wind_speed = 0.0
+
+    if wind_level > 0:
+        if wind_type == "向い風":
+            lane_scores[1] -= 0.06 * wind_level
+            lane_scores[2] += 0.05 * wind_level
+            lane_scores[3] += 0.03 * wind_level
+            lane_scores[5] += 0.01 * wind_level
+            lane_scores[6] += 0.02 * wind_level
+        elif wind_type == "追い風":
+            lane_scores[1] += 0.08 * wind_level
+            lane_scores[2] += 0.02 * wind_level
+            lane_scores[4] -= 0.02 * wind_level
+            lane_scores[5] -= 0.04 * wind_level
+            lane_scores[6] -= 0.06 * wind_level
+        elif wind_type == "横風":
+            lane_scores[1] -= 0.01 * wind_level
+            lane_scores[2] += 0.02 * wind_level
+            lane_scores[3] += 0.02 * wind_level
+            lane_scores[4] -= 0.03 * wind_level
+            lane_scores[5] -= 0.05 * wind_level
+            lane_scores[6] -= 0.06 * wind_level
+
+    if wind_speed >= 7:
+        lane_scores[2] += 0.02
+        lane_scores[3] += 0.02
+        lane_scores[5] -= 0.03
+        lane_scores[6] -= 0.05
 
     foot_lane_scores = foot_material.get("lane_scores", {})
     if foot_lane_scores:
@@ -1599,6 +1649,50 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                 second_score[2] += 0.05
             elif st2 <= 0.17:
                 second_score[2] += 0.02
+
+    wind_type = str((weather_info or {}).get("wind_type") or "")
+    wind_level = get_wind_level(weather_info or {})
+    try:
+        wind_speed = float((weather_info or {}).get("wind_speed") or 0)
+    except Exception:
+        wind_speed = 0.0
+
+    if wind_level > 0:
+        if wind_type == "向い風":
+            head_score[1] -= 0.08 * wind_level
+            head_score[2] += 0.05 * wind_level
+            head_score[3] += 0.04 * wind_level
+            second_score[2] += 0.06 * wind_level
+            second_score[3] += 0.04 * wind_level
+            third_score[5] += 0.03 * wind_level
+            third_score[6] += 0.04 * wind_level
+        elif wind_type == "追い風":
+            head_score[1] += 0.10 * wind_level
+            second_score[1] += 0.03 * wind_level
+            second_score[2] += 0.03 * wind_level
+            head_score[4] -= 0.02 * wind_level
+            head_score[5] -= 0.05 * wind_level
+            head_score[6] -= 0.08 * wind_level
+        elif wind_type == "横風":
+            head_score[4] -= 0.04 * wind_level
+            head_score[5] -= 0.07 * wind_level
+            head_score[6] -= 0.10 * wind_level
+            second_score[2] += 0.04 * wind_level
+            second_score[3] += 0.04 * wind_level
+            third_score[1] += 0.02 * wind_level
+            third_score[2] += 0.03 * wind_level
+
+    if wind_speed >= 7:
+        head_score[2] += 0.03
+        head_score[3] += 0.03
+        second_score[2] += 0.03
+        second_score[3] += 0.02
+        head_score[5] -= 0.04
+        head_score[6] -= 0.07
+        second_score[5] -= 0.03
+        second_score[6] -= 0.04
+        third_score[5] -= 0.01
+        third_score[6] -= 0.02
 
     for lane in [3, 4, 5, 6]:
         if lane_score_map.get(lane, 0) >= 0.12:
@@ -2318,7 +2412,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_6_entry_shift_star4")
+    log("[collector_version] collector_latest_weather_v10_7_wind_course_bias")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
