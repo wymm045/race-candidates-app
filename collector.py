@@ -989,29 +989,20 @@ def fetch_beforeinfo_parallel(keys):
 
 
 def score_to_ai_rating(score):
-    """
-    星を全体的に厳しめにして 1〜5 をしっかり使う。
-    ★5 = かなり強い
-    ★4 = 強い
-    ★3 = 普通に候補
-    ★2 = 弱め
-    ★1 = 見送り寄り
-    """
     try:
         s = float(score or 0)
     except Exception:
         s = 0.0
 
-    if s >= 3.2:
+    if s >= 4.2:
         return "AI★★★★★"
-    if s >= 2.2:
+    if s >= 3.0:
         return "AI★★★★☆"
-    if s >= 1.2:
+    if s >= 1.9:
         return "AI★★★☆☆"
-    if s >= 0.3:
+    if s >= 0.8:
         return "AI★★☆☆☆"
     return "AI★☆☆☆☆"
-
 
 def score_to_final_rank(score):
     try:
@@ -1019,14 +1010,13 @@ def score_to_final_rank(score):
     except Exception:
         s = 0.0
 
-    if s >= 3.0:
+    if s >= 3.8:
         return "買い強め"
-    if s >= 1.8:
+    if s >= 2.4:
         return "買い"
-    if s >= 0.8:
+    if s >= 1.0:
         return "様子見"
     return "見送り寄り"
-
 
 def exhibition_rank_text_from_map(rank_map):
     if not rank_map:
