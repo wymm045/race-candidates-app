@@ -43,6 +43,7 @@ RETRY_SLEEP_SEC = 0.8
 
 OFFICIAL_MAX_WORKERS = 3
 BEFOREINFO_MAX_WORKERS = 4
+RESULT_MAX_WORKERS = 4
 
 ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "6"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
@@ -146,6 +147,10 @@ def build_official_url(jcd, race_no=1):
 def build_beforeinfo_url(jcd, race_no):
     qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
     return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
+
+
+def build_result_url(jcd, race_no):
+    return f"https://boatrace.jp/owpc/pc/race/raceresult?rno={race_no}&jcd={jcd}&hd={today_str()}"
 
 
 def row_cells(tr):
@@ -978,6 +983,182 @@ def parse_beforeinfo_for_key(jcd, race_no):
     }
 
 
+def parse_result_triplet_from_text(text):
+    s = str(text or "")
+    compact = re.sub(r"\s+", "", s)
+    patterns = [
+        r"3連単[^0-9]*([1-6])[-=]([1-6])[-=]([1-6])",
+        r"組番[^0-9]*([1-6])[-=]([1-6])[-=]([1-6])",
+        r"\b([1-6])-([1-6])-([1-6])\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, compact)
+        if m:
+            a, b, c = m.group(1), m.group(2), m.group(3)
+            if len({a, b, c}) == 3:
+                return f"{a}-{b}-{c}"
+    return ""
+
+
+def parse_kimarite_from_text(text):
+    s = str(text or "")
+    words = ["まくり差し", "まくり", "差し", "抜き", "恵まれ", "逃げ"]
+    for w in words:
+        if w in s:
+            return w
+    return ""
+
+
+def parse_raceresult_for_key(jcd, race_no):
+    race_no = normalize_race_no_value(race_no)
+    url = build_result_url(jcd, race_no)
+    try:
+        html = fetch_html(url, timeout=(5, 10), max_retries=2)
+    except Exception:
+        return (jcd, race_no), {}
+
+    soup = BeautifulSoup(html, "html.parser")
+    lines = normalize_lines_from_soup(soup)
+    joined = " ".join(lines)
+    triplet = parse_result_triplet_from_text(joined)
+    if not triplet:
+        return (jcd, race_no), {}
+
+    kimarite = parse_kimarite_from_text(joined)
+    try:
+        a, b, c = [int(x) for x in triplet.split("-")]
+    except Exception:
+        return (jcd, race_no), {}
+
+    return (jcd, race_no), {
+        "triplet": triplet,
+        "head": a,
+        "second": b,
+        "third": c,
+        "kimarite": kimarite,
+    }
+
+
+def fetch_day_results_parallel(venue_targets):
+    results = {}
+    keys = []
+    for jcd, max_race_no in sorted(venue_targets.items()):
+        upper = max(1, int(max_race_no) - 1)
+        for race_no in range(1, upper + 1):
+            keys.append((jcd, race_no))
+
+    if not keys:
+        return results
+
+    with ThreadPoolExecutor(max_workers=RESULT_MAX_WORKERS) as ex:
+        futures = [ex.submit(parse_raceresult_for_key, jcd, race_no) for (jcd, race_no) in keys]
+        for future in as_completed(futures):
+            key, info = future.result()
+            if info:
+                results[key] = info
+    return results
+
+
+def build_day_trend_bias(jcd, target_race_no, result_cache):
+    target_race_no = normalize_race_no_value(target_race_no)
+    prior = []
+    for race_no in range(1, target_race_no):
+        info = result_cache.get((jcd, race_no))
+        if info and info.get("triplet"):
+            prior.append(info)
+
+    n = len(prior)
+    if n < 3:
+        return {
+            "head": {lane: 0.0 for lane in range(1, 7)},
+            "second": {lane: 0.0 for lane in range(1, 7)},
+            "third": {lane: 0.0 for lane in range(1, 7)},
+            "notes": [],
+            "trend_text": "",
+            "sample_size": n,
+        }
+
+    scale = clamp((n - 2) / 6.0, 0.18, 1.0)
+    head_counts = {lane: 0 for lane in range(1, 7)}
+    second_counts = {lane: 0 for lane in range(1, 7)}
+    third_counts = {lane: 0 for lane in range(1, 7)}
+    kimarite_counts = {}
+
+    for info in prior:
+        head_counts[info["head"]] += 1
+        second_counts[info["second"]] += 1
+        third_counts[info["third"]] += 1
+        k = str(info.get("kimarite") or "")
+        if k:
+            kimarite_counts[k] = kimarite_counts.get(k, 0) + 1
+
+    bias = {
+        "head": {lane: 0.0 for lane in range(1, 7)},
+        "second": {lane: 0.0 for lane in range(1, 7)},
+        "third": {lane: 0.0 for lane in range(1, 7)},
+        "notes": [],
+        "trend_text": "",
+        "sample_size": n,
+    }
+
+    head1_rate = head_counts[1] / n
+    if head1_rate >= 0.62:
+        bias["head"][1] += 0.12 * scale
+        bias["second"][1] += 0.04 * scale
+        bias["notes"].append("当日1頭寄り")
+    elif head1_rate <= 0.34:
+        bias["head"][1] -= 0.08 * scale
+        bias["notes"].append("当日イン弱め")
+
+    head23_rate = (head_counts[2] + head_counts[3]) / n
+    if head23_rate >= 0.34:
+        bias["head"][2] += 0.05 * scale
+        bias["head"][3] += 0.05 * scale
+        bias["second"][2] += 0.03 * scale
+        bias["second"][3] += 0.02 * scale
+        bias["notes"].append("当日差し/まくり寄り")
+
+    outer_head_rate = (head_counts[4] + head_counts[5] + head_counts[6]) / n
+    if outer_head_rate >= 0.24:
+        for lane in [4, 5, 6]:
+            bias["head"][lane] += 0.04 * scale
+        bias["head"][1] -= 0.03 * scale
+        bias["notes"].append("当日外伸び注意")
+
+    second2_rate = second_counts[2] / n
+    if second2_rate >= 0.34:
+        bias["second"][2] += 0.05 * scale
+    third456_rate = (third_counts[4] + third_counts[5] + third_counts[6]) / n
+    if third456_rate <= 0.22:
+        bias["third"][5] -= 0.03 * scale
+        bias["third"][6] -= 0.04 * scale
+        bias["notes"].append("当日外3着弱め")
+
+    kim_total = sum(kimarite_counts.values())
+    if kim_total >= 2:
+        nige_rate = kimarite_counts.get("逃げ", 0) / kim_total
+        sashi_rate = (kimarite_counts.get("差し", 0) + kimarite_counts.get("まくり差し", 0)) / kim_total
+        makuri_rate = kimarite_counts.get("まくり", 0) / kim_total
+
+        if nige_rate >= 0.60:
+            bias["head"][1] += 0.05 * scale
+            bias["notes"].append("決まり手逃げ多め")
+        if sashi_rate >= 0.34:
+            bias["head"][2] += 0.03 * scale
+            bias["head"][3] += 0.02 * scale
+            bias["second"][2] += 0.03 * scale
+            bias["notes"].append("決まり手差し寄り")
+        if makuri_rate >= 0.22:
+            bias["head"][3] += 0.03 * scale
+            bias["head"][4] += 0.03 * scale
+            bias["third"][1] -= 0.02 * scale
+            bias["notes"].append("決まり手まくり寄り")
+
+    bias["notes"] = list(dict.fromkeys(bias["notes"]))[:3]
+    bias["trend_text"] = " / ".join(bias["notes"])
+    return bias
+
+
 def fetch_beforeinfo_parallel(keys):
     results = {}
     with ThreadPoolExecutor(max_workers=BEFOREINFO_MAX_WORKERS) as ex:
@@ -1053,12 +1234,18 @@ def fetch_base_map_today():
     raise last_err
 
 
-def build_venue_bias_map(venue):
+def build_venue_bias_map(venue, day_trend_bias=None):
     """
-    latest 側では会場傾向を持たせない。
-    会場の土台評価は collector_base.py 側で反映し、
-    ここでは展示・ST・風波など直前要素だけで補正する。
+    latest 側では静的な会場傾向は持たせず、
+    後半レースではその日の前半結果から作る当日傾向だけを微補正で使う。
     """
+    if day_trend_bias:
+        return {
+            "head": dict(day_trend_bias.get("head", {}) or {lane: 0.0 for lane in range(1, 7)}),
+            "second": dict(day_trend_bias.get("second", {}) or {lane: 0.0 for lane in range(1, 7)}),
+            "third": dict(day_trend_bias.get("third", {}) or {lane: 0.0 for lane in range(1, 7)}),
+            "notes": list(day_trend_bias.get("notes", []) or []),
+        }
     return {
         "head": {lane: 0.0 for lane in range(1, 7)},
         "second": {lane: 0.0 for lane in range(1, 7)},
@@ -1474,7 +1661,7 @@ def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_streng
     return round(base_ai_score + delta, 2)
 
 
-def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None):
+def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None, day_trend_bias=None):
     lane_score_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
@@ -1506,7 +1693,7 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     second_score[6] -= 0.01
     third_score[6] += 0.08
 
-    venue_bias = build_venue_bias_map(venue)
+    venue_bias = build_venue_bias_map(venue, day_trend_bias=day_trend_bias)
     for lane in range(1, 7):
         head_score[lane] += float(venue_bias["head"].get(lane, 0) or 0)
         second_score[lane] += float(venue_bias["second"].get(lane, 0) or 0)
@@ -1752,10 +1939,10 @@ def build_pref_bonus_map(lanes, values):
     return out
 
 
-def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None, role_maps=None):
+def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None, role_maps=None, day_trend_bias=None):
     weather_info = weather_info or {}
     foot_material = foot_material or {}
-    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material, day_trend_bias=day_trend_bias)
 
     head_score = role_maps["head"]
     second_score = role_maps["second"]
@@ -2447,7 +2634,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_weather_v10_7b_wind_course_bias")
+    log("[collector_version] collector_latest_daytrend_v10_8")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -2480,6 +2667,14 @@ def build_candidates():
 
     deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
+
+    venue_targets = {}
+    for row in rows:
+        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+        if not jcd:
+            continue
+        venue_targets[jcd] = max(venue_targets.get(jcd, 0), int(row.get("race_no") or 0))
+    day_result_cache = fetch_day_results_parallel(venue_targets) if venue_targets else {}
 
     filtered_rows = []
     for row in rows:
@@ -2539,13 +2734,15 @@ def build_candidates():
         analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material, signal_metrics=signal_metrics)
         scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
 
-        role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+        day_trend_bias = build_day_trend_bias(jcd, race_no, day_result_cache)
+        role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material, day_trend_bias=day_trend_bias)
         scenario_material = build_turn_scenario_material(
             venue,
             exhibition_info,
             weather_info,
             foot_material,
             role_maps,
+            day_trend_bias=day_trend_bias,
         )
 
         latest_reason_parts = []
@@ -2559,6 +2756,8 @@ def build_candidates():
             latest_reason_parts.append("朝評価をやや優先")
         if scenario_material.get("scenario_text"):
             latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
+        if day_trend_bias.get("trend_text"):
+            latest_reason_parts.append(f"当日傾向:{day_trend_bias['trend_text']}")
 
         final_ai_selection = generate_top_triplets(
             venue,
@@ -2593,6 +2792,8 @@ def build_candidates():
             "wind_type": str(weather_info.get("wind_type") or "").strip(),
             "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
             "water_state_score": float(weather_info.get("water_state_score") or 0),
+            "day_trend_text": str(day_trend_bias.get("trend_text") or "").strip(),
+            "day_trend_sample": int(day_trend_bias.get("sample_size") or 0),
             "ai_lane_score_text": ai_lane_score_text,
             "rating": str(base_info.get("rating") or row.get("rating") or ""),
             "final_ai_score": final_ai_score,
