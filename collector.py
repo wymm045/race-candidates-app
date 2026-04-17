@@ -106,6 +106,15 @@ def clamp(v, low, high):
     return max(low, min(high, v))
 
 
+def is_past_race(time_str):
+    if not time_str:
+        return False
+    try:
+        return to_minutes(time_str) < to_minutes(current_hhmm())
+    except Exception:
+        return False
+
+
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
     last_err = None
     for attempt in range(1, max_retries + 1):
@@ -1013,6 +1022,28 @@ def parse_kimarite_from_text(text):
     return ""
 
 
+def parse_payout_from_text(text):
+    s = str(text or "")
+    if not s:
+        return 0
+
+    compact = re.sub(r"\s+", "", s)
+    candidates = []
+    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", compact):
+        try:
+            val = int(m.group(1).replace(",", ""))
+            if val >= 100:
+                candidates.append(val)
+        except Exception:
+            pass
+
+    if not candidates:
+        return 0
+
+    # 3連単の払戻として大きめの金額を優先
+    return max(candidates)
+
+
 def parse_resultlist_for_jcd(jcd):
     url = build_resultlist_url(jcd)
     try:
@@ -1055,6 +1086,7 @@ def parse_resultlist_for_jcd(jcd):
                     "second": b,
                     "third": c,
                     "kimarite": parse_kimarite_from_text(compact_row),
+                    "trifecta_payout": parse_payout_from_text(row_text),
                 }
             elif current_race_no in results and not results[current_race_no].get("kimarite"):
                 kim = parse_kimarite_from_text(compact_row)
@@ -1081,11 +1113,16 @@ def parse_resultlist_for_jcd(jcd):
                 "second": b,
                 "third": c,
                 "kimarite": parse_kimarite_from_text(compact_line),
+                "trifecta_payout": parse_payout_from_text(compact_line),
             }
 
         kim = parse_kimarite_from_text(compact_line)
         if kim and current_race_no in results and not results[current_race_no].get("kimarite"):
             results[current_race_no]["kimarite"] = kim
+
+        pay = parse_payout_from_text(compact_line)
+        if pay and current_race_no in results and not results[current_race_no].get("trifecta_payout"):
+            results[current_race_no]["trifecta_payout"] = pay
 
     # 3) それでも不足なら HTML 全体からレースごとにざっくり拾う
     for race_no in range(1, 13):
@@ -1111,6 +1148,7 @@ def parse_resultlist_for_jcd(jcd):
             "second": b,
             "third": c,
             "kimarite": parse_kimarite_from_text(chunk),
+            "trifecta_payout": parse_payout_from_text(chunk),
         }
 
     log(f"[resultlist_ok] jcd={jcd} count={len(results)}")
@@ -2708,7 +2746,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_daytrend_v10_12_prod")
+    log("[collector_version] collector_latest_daytrend_v10_13_resultsync")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -2853,6 +2891,7 @@ def build_candidates():
         )
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
+        result_info = day_result_cache.get((jcd, race_no), {}) if is_past_race(deadline) else {}
         candidate = {
             "race_date": today_text(),
             "venue": venue,
@@ -2876,6 +2915,9 @@ def build_candidates():
             "final_rank": score_to_final_rank(final_ai_score),
             "latest_reason_text": " / ".join(latest_reason_parts[:10]),
             "latest_updated_at": jst_now_str(),
+            "result_trifecta_text": str(result_info.get("triplet") or "").strip(),
+            "result_trifecta_payout": int(result_info.get("trifecta_payout") or 0),
+            "result_source_url": build_resultlist_url(jcd) if result_info else "",
         }
         results.append(candidate)
 
