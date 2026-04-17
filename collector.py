@@ -968,29 +968,6 @@ def parse_beforeinfo_for_key(jcd, race_no):
     weather_info = parse_weather_info_from_lines(lines)
     start_info = parse_start_info_from_lines(lines)
 
-    if not weather_info.get("wind_dir"):
-        weather_section = []
-        start_idx = None
-        for idx, line in enumerate(lines):
-            if "水面気象情報" in str(line):
-                start_idx = idx
-                break
-        if start_idx is not None:
-            for line in lines[start_idx:start_idx + 40]:
-                s = str(line).strip()
-                if s:
-                    weather_section.append(s)
-        else:
-            for line in lines[:120]:
-                s = str(line).strip()
-                if any(key in s for key in ["風", "波", "m", "cm", "天候", "気象", "向い", "向かい", "追い", "横"]):
-                    weather_section.append(s)
-                if len(weather_section) >= 15:
-                    break
-
-        preview = " | ".join(weather_section[:20])
-        log(f"[wind_dir_missing_section] jcd={jcd} race_no={race_no} weather_section={preview[:800]}")
-
     return (jcd, race_no), {
         "exhibition": {
             "times": exhibition_times,
