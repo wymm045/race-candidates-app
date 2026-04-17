@@ -1172,6 +1172,19 @@ def fetch_day_results_parallel(venue_targets):
 
 def build_day_trend_bias(jcd, target_race_no, result_cache):
 
+    def empty_bias(sample_size, phase="observe", observe_text=""):
+        return {
+            "head": {lane: 0.0 for lane in range(1, 7)},
+            "second": {lane: 0.0 for lane in range(1, 7)},
+            "third": {lane: 0.0 for lane in range(1, 7)},
+            "notes": [],
+            "trend_text": "",
+            "sample_size": sample_size,
+            "active": False,
+            "phase": phase,
+            "observe_text": observe_text,
+        }
+
     target_race_no = normalize_race_no_value(target_race_no)
     prior = []
     for race_no in range(1, target_race_no):
@@ -1180,17 +1193,10 @@ def build_day_trend_bias(jcd, target_race_no, result_cache):
             prior.append(info)
 
     n = len(prior)
-    if n < 3:
-        return {
-            "head": {lane: 0.0 for lane in range(1, 7)},
-            "second": {lane: 0.0 for lane in range(1, 7)},
-            "third": {lane: 0.0 for lane in range(1, 7)},
-            "notes": [],
-            "trend_text": "",
-            "sample_size": n,
-        }
+    if n < 5:
+        observe_text = f"当日傾向はまだ観察のみ({n}R)" if n > 0 else ""
+        return empty_bias(n, phase="observe", observe_text=observe_text)
 
-    scale = clamp((n - 2) / 6.0, 0.18, 1.0)
     head_counts = {lane: 0 for lane in range(1, 7)}
     second_counts = {lane: 0 for lane in range(1, 7)}
     third_counts = {lane: 0 for lane in range(1, 7)}
@@ -1204,6 +1210,62 @@ def build_day_trend_bias(jcd, target_race_no, result_cache):
         if k:
             kimarite_counts[k] = kimarite_counts.get(k, 0) + 1
 
+    head1_rate = head_counts[1] / n
+    head23_rate = (head_counts[2] + head_counts[3]) / n
+    outer_head_rate = (head_counts[4] + head_counts[5] + head_counts[6]) / n
+    second2_rate = second_counts[2] / n
+    third456_rate = (third_counts[4] + third_counts[5] + third_counts[6]) / n
+
+    kim_total = sum(kimarite_counts.values())
+    nige_rate = kimarite_counts.get("逃げ", 0) / kim_total if kim_total else 0.0
+    sashi_rate = (kimarite_counts.get("差し", 0) + kimarite_counts.get("まくり差し", 0)) / kim_total if kim_total else 0.0
+    makuri_rate = kimarite_counts.get("まくり", 0) / kim_total if kim_total else 0.0
+
+    strong_inside = head1_rate >= 0.64
+    strong_inside_confirm = strong_inside and nige_rate >= 0.58
+
+    inside_weak = head1_rate <= 0.30
+    attack_style = head23_rate >= 0.38 or sashi_rate >= 0.36
+    outer_style = outer_head_rate >= 0.26 or makuri_rate >= 0.24
+    inside_weak_confirm = inside_weak and (attack_style or outer_style)
+
+    second2_confirm = second2_rate >= 0.38
+    outer3weak_confirm = n >= 6 and third456_rate <= 0.20
+
+    confirm_flags = []
+    if strong_inside_confirm:
+        confirm_flags.append("inside")
+    if inside_weak_confirm:
+        confirm_flags.append("anti_inside")
+    if attack_style and sashi_rate >= 0.34:
+        confirm_flags.append("sashi")
+    if outer_style and makuri_rate >= 0.22:
+        confirm_flags.append("makuri")
+    if outer3weak_confirm:
+        confirm_flags.append("outer3weak")
+
+    if n < 8:
+        active = len(confirm_flags) >= 2
+        phase = "early_guard"
+        scale = clamp(0.24 + (n - 5) * 0.08, 0.24, 0.42)
+    else:
+        active = bool(confirm_flags)
+        phase = "active"
+        scale = clamp(0.42 + (n - 8) * 0.08, 0.42, 0.82)
+
+    if not active:
+        hint_parts = []
+        if strong_inside:
+            hint_parts.append("1頭気味")
+        if inside_weak:
+            hint_parts.append("イン弱め気味")
+        if attack_style:
+            hint_parts.append("差し寄り気味")
+        if outer_style:
+            hint_parts.append("外注意気味")
+        observe_text = f"当日傾向は保留({n}R: {' / '.join(hint_parts[:2])})" if hint_parts else f"当日傾向は保留({n}R)"
+        return empty_bias(n, phase=phase, observe_text=observe_text)
+
     bias = {
         "head": {lane: 0.0 for lane in range(1, 7)},
         "second": {lane: 0.0 for lane in range(1, 7)},
@@ -1211,60 +1273,53 @@ def build_day_trend_bias(jcd, target_race_no, result_cache):
         "notes": [],
         "trend_text": "",
         "sample_size": n,
+        "active": True,
+        "phase": phase,
+        "observe_text": "",
     }
 
-    head1_rate = head_counts[1] / n
-    if head1_rate >= 0.62:
-        bias["head"][1] += 0.12 * scale
-        bias["second"][1] += 0.04 * scale
+    if strong_inside_confirm:
+        bias["head"][1] += 0.10 * scale
+        bias["second"][1] += 0.03 * scale
         bias["notes"].append("当日1頭寄り")
-    elif head1_rate <= 0.34:
+    elif inside_weak_confirm:
         bias["head"][1] -= 0.08 * scale
         bias["notes"].append("当日イン弱め")
 
-    head23_rate = (head_counts[2] + head_counts[3]) / n
-    if head23_rate >= 0.34:
-        bias["head"][2] += 0.05 * scale
-        bias["head"][3] += 0.05 * scale
+    if attack_style:
+        bias["head"][2] += 0.04 * scale
+        bias["head"][3] += 0.04 * scale
         bias["second"][2] += 0.03 * scale
         bias["second"][3] += 0.02 * scale
         bias["notes"].append("当日差し/まくり寄り")
 
-    outer_head_rate = (head_counts[4] + head_counts[5] + head_counts[6]) / n
-    if outer_head_rate >= 0.24:
+    if outer_style:
         for lane in [4, 5, 6]:
-            bias["head"][lane] += 0.04 * scale
+            bias["head"][lane] += 0.03 * scale
         bias["head"][1] -= 0.03 * scale
         bias["notes"].append("当日外伸び注意")
 
-    second2_rate = second_counts[2] / n
-    if second2_rate >= 0.34:
-        bias["second"][2] += 0.05 * scale
-    third456_rate = (third_counts[4] + third_counts[5] + third_counts[6]) / n
-    if third456_rate <= 0.22:
+    if second2_confirm:
+        bias["second"][2] += 0.04 * scale
+
+    if outer3weak_confirm:
         bias["third"][5] -= 0.03 * scale
         bias["third"][6] -= 0.04 * scale
         bias["notes"].append("当日外3着弱め")
 
-    kim_total = sum(kimarite_counts.values())
-    if kim_total >= 2:
-        nige_rate = kimarite_counts.get("逃げ", 0) / kim_total
-        sashi_rate = (kimarite_counts.get("差し", 0) + kimarite_counts.get("まくり差し", 0)) / kim_total
-        makuri_rate = kimarite_counts.get("まくり", 0) / kim_total
-
-        if nige_rate >= 0.60:
-            bias["head"][1] += 0.05 * scale
-            bias["notes"].append("決まり手逃げ多め")
-        if sashi_rate >= 0.34:
-            bias["head"][2] += 0.03 * scale
-            bias["head"][3] += 0.02 * scale
-            bias["second"][2] += 0.03 * scale
-            bias["notes"].append("決まり手差し寄り")
-        if makuri_rate >= 0.22:
-            bias["head"][3] += 0.03 * scale
-            bias["head"][4] += 0.03 * scale
-            bias["third"][1] -= 0.02 * scale
-            bias["notes"].append("決まり手まくり寄り")
+    if strong_inside_confirm and nige_rate >= 0.62:
+        bias["head"][1] += 0.04 * scale
+        bias["notes"].append("決まり手逃げ多め")
+    if attack_style and sashi_rate >= 0.36:
+        bias["head"][2] += 0.03 * scale
+        bias["head"][3] += 0.02 * scale
+        bias["second"][2] += 0.02 * scale
+        bias["notes"].append("決まり手差し寄り")
+    if outer_style and makuri_rate >= 0.24:
+        bias["head"][3] += 0.03 * scale
+        bias["head"][4] += 0.03 * scale
+        bias["third"][1] -= 0.02 * scale
+        bias["notes"].append("決まり手まくり寄り")
 
     bias["notes"] = list(dict.fromkeys(bias["notes"]))[:3]
     bias["trend_text"] = " / ".join(bias["notes"])
@@ -1309,6 +1364,160 @@ def score_to_final_rank(score):
         return "買い"
     if s >= 1.0:
         return "様子見"
+    return "見送り寄り"
+
+
+def count_rank_signals(signal_metrics=None, foot_material=None):
+    signal_metrics = signal_metrics or {}
+    foot_material = foot_material or {}
+
+    foot_reason_text = str(foot_material.get("reason_text") or "")
+    course_map = foot_material.get("course_map", {}) or {}
+    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
+
+    exp_spread = float(signal_metrics.get("exp_spread", 0) or 0)
+    st_spread = float(signal_metrics.get("st_spread", 0) or 0)
+    lane1_time_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
+    lane1_st = signal_metrics.get("lane1_st")
+
+    has_display_gap = exp_spread >= 0.12
+    has_foot_gap = ("足差あり" in foot_reason_text) or ("足差ややあり" in foot_reason_text)
+    has_st_sign = ("ST気配あり" in foot_reason_text) or st_spread >= 0.06
+    has_entry_change = bool(foot_material.get("entry_change")) and entry_severity >= 0.12
+
+    lane1_weak = False
+    if course_map.get(1, 1) > 1:
+        lane1_weak = True
+    if lane1_time_gap >= 0.07:
+        lane1_weak = True
+    if isinstance(lane1_st, (int, float)) and float(lane1_st) >= 0.18:
+        lane1_weak = True
+
+    direct_count = sum(1 for x in [has_display_gap, has_foot_gap, has_st_sign, has_entry_change] if x)
+    return {
+        "has_display_gap": has_display_gap,
+        "has_foot_gap": has_foot_gap,
+        "has_st_sign": has_st_sign,
+        "has_entry_change": has_entry_change,
+        "lane1_weak": lane1_weak,
+        "direct_count": direct_count,
+    }
+
+
+def determine_final_rank(
+    base_info,
+    final_ai_score,
+    signal_metrics=None,
+    foot_material=None,
+    role_maps=None,
+    scenario_material=None,
+    base_hold_strength=0.0,
+    phase_material=None,
+):
+    base_info = base_info or {}
+    signal_metrics = signal_metrics or {}
+    foot_material = foot_material or {}
+    role_maps = role_maps or {}
+    scenario_material = scenario_material or {}
+    phase_material = phase_material or {}
+
+    try:
+        score = float(final_ai_score or 0)
+    except Exception:
+        score = 0.0
+
+    rating = str(base_info.get("rating") or "").strip()
+    head_score = role_maps.get("head", {}) or {}
+    head_ranked = list(scenario_material.get("head_ranked") or [])
+    if not head_ranked and head_score:
+        head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
+    if not head_ranked:
+        return score_to_final_rank(score)
+
+    top_head_lane = int(head_ranked[0])
+    second_head_lane = int(head_ranked[1]) if len(head_ranked) >= 2 else top_head_lane
+    top_head_score = float(head_score.get(top_head_lane, 0) or 0)
+    second_head_score = float(head_score.get(second_head_lane, 0) or 0)
+    head_gap = top_head_score - second_head_score
+
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+    morning_priority = float(base_hold_strength or 0) >= 0.18 and signal_strength < 0.35
+    flags = count_rank_signals(signal_metrics=signal_metrics, foot_material=foot_material)
+    direct_count = int(flags["direct_count"])
+
+    top_head_inner = top_head_lane in {1, 2}
+    top_head_safe = top_head_lane in {1, 2, 3}
+    outer_head_risky = top_head_lane in {4, 5, 6} and head_gap < 0.16
+    extreme_outer_head = top_head_lane in {5, 6}
+
+    race_phase = normalize_race_phase_label(
+        phase_material.get("race_phase") or base_info.get("race_phase") or ""
+    )
+    phase_bonus = 0.0
+    if race_phase == "準優勝戦":
+        phase_bonus = 0.14
+    elif race_phase in {"優勝戦", "ドリーム戦"}:
+        phase_bonus = 0.10
+
+    strong_score_threshold = 3.35 - phase_bonus
+    buy_score_threshold = 2.25 - phase_bonus * 0.5
+    watch_score_threshold = 1.00
+
+    # 星4はかなり厳選
+    if rating == "★★★★☆":
+        if (
+            score >= (3.55 - phase_bonus)
+            and direct_count >= 3
+            and top_head_inner
+            and head_gap >= 0.12
+            and not morning_priority
+            and not outer_head_risky
+            and not extreme_outer_head
+        ):
+            return "買い強め"
+        if (
+            score >= (2.45 - phase_bonus * 0.4)
+            and direct_count >= 2
+            and top_head_safe
+            and not morning_priority
+            and not extreme_outer_head
+        ):
+            return "買い"
+        if (
+            score >= 1.35
+            and direct_count >= 1
+            and top_head_safe
+            and not extreme_outer_head
+        ):
+            return "様子見"
+        return "見送り寄り"
+
+    # 星5は直前材料と頭の読みを合わせて判定
+    if (
+        score >= strong_score_threshold
+        and direct_count >= 2
+        and top_head_inner
+        and head_gap >= 0.10
+        and not morning_priority
+        and not outer_head_risky
+    ):
+        return "買い強め"
+
+    if (
+        score >= buy_score_threshold
+        and (direct_count >= 1 or signal_strength >= 0.42 or flags["lane1_weak"])
+        and top_head_safe
+        and not (morning_priority and direct_count == 0)
+        and not extreme_outer_head
+    ):
+        return "買い"
+
+    if (
+        score >= watch_score_threshold
+        and (direct_count >= 1 or top_head_safe or signal_strength >= 0.30)
+    ):
+        return "様子見"
+
     return "見送り寄り"
 
 def exhibition_rank_text_from_map(rank_map):
@@ -1731,10 +1940,6 @@ def calc_base_hold_strength(base_info):
     elif base_score >= 1.6:
         strength += 0.06
 
-    if rating == "★★★★★":
-        strength += 0.08
-    elif rating == "★★★★☆":
-        strength += 0.04
 
     reason_bonus = 0.0
     for word, bonus in [
@@ -2835,7 +3040,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_daytrend_v10_13_resultsync")
+    log("[collector_version] collector_latest_rankgate_v10_20")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -2963,6 +3168,8 @@ def build_candidates():
             latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
         if day_trend_bias.get("trend_text"):
             latest_reason_parts.append(f"当日傾向:{day_trend_bias['trend_text']}")
+        elif day_trend_bias.get("observe_text"):
+            latest_reason_parts.append(day_trend_bias.get("observe_text"))
         if phase_material.get("reason_text"):
             latest_reason_parts.append(f"開催:{phase_material['reason_text']}")
 
@@ -3010,7 +3217,16 @@ def build_candidates():
             "final_ai_score": final_ai_score,
             "final_ai_rating": score_to_ai_rating(final_ai_score),
             "final_ai_selection": final_ai_selection,
-            "final_rank": score_to_final_rank(final_ai_score),
+            "final_rank": determine_final_rank(
+                base_info,
+                final_ai_score,
+                signal_metrics=signal_metrics,
+                foot_material=foot_material,
+                role_maps=role_maps,
+                scenario_material=scenario_material,
+                base_hold_strength=base_hold_strength,
+                phase_material=phase_material,
+            ),
             "latest_reason_text": " / ".join(latest_reason_parts[:10]),
             "latest_updated_at": jst_now_str(),
             "result_trifecta_text": str(result_info.get("triplet") or "").strip(),
