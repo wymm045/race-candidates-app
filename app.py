@@ -1330,6 +1330,123 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
     return venue_options, race_no_options, venues, race_nos
 
 
+
+
+def build_simple_gpt_review(row):
+    player_map = parse_player_names_map(row.get("player_names_text", ""))
+    class_rows = parse_class_history_rows(row.get("class_history_text", ""))
+    class_map = {}
+    for item in class_rows:
+        lane = item.get("lane")
+        classes = item.get("classes") or []
+        if lane:
+            class_map[lane] = classes[0] if classes else ""
+
+    venue = str(row.get("venue") or "").strip()
+    race_no = str(row.get("race_no") or "").strip()
+    time_text = str(row.get("time") or "").strip()
+
+    display_ai_rating = (
+        display_text(row.get("final_ai_rating"), "")
+        or display_text(row.get("base_ai_rating"), "")
+        or display_text(row.get("ai_rating"), "")
+        or "AI評価なし"
+    )
+
+    display_ai_selection = (
+        str(row.get("final_ai_selection") or "").strip()
+        or str(row.get("base_ai_selection") or "").strip()
+        or str(row.get("ai_selection") or "").strip()
+    )
+
+    latest_reason = str(row.get("latest_reason_text") or "").strip()
+    base_reason = str(row.get("base_reason_text") or "").strip()
+    merged_reason = " / ".join([x for x in [base_reason, latest_reason] if x])
+
+    positives = []
+    cautions = []
+
+    if "★★★★★" in display_ai_rating:
+        positives.append("AI評価が高く、軸候補として見やすい")
+    elif "★★★★☆" in display_ai_rating:
+        positives.append("AI評価は悪くなく、相手次第で狙える")
+    else:
+        cautions.append("AI評価が高すぎるレースではないので過信は禁物")
+
+    if "地力" in merged_reason or "勝率" in merged_reason:
+        positives.append("勝率系の裏付けがある")
+    if "当地" in merged_reason:
+        positives.append("当地実績がプラス材料")
+    if "モーター" in merged_reason:
+        positives.append("モーター面の後押しがある")
+    if "ST" in merged_reason or "スタート" in merged_reason:
+        positives.append("スタート面を評価できる")
+    if "近況" in merged_reason:
+        positives.append("近況面は悪くなさそう")
+    if "コース" in merged_reason:
+        positives.append("コース相性の裏付けがある")
+    if "展示" in merged_reason:
+        positives.append("展示材料も評価に入っている")
+    if "進入" in merged_reason or "前づけ" in merged_reason or "イン外し" in merged_reason:
+        cautions.append("進入想定が崩れると評価が変わる可能性がある")
+
+    a1_lanes = []
+    for lane in range(1, 7):
+        if "A1" in str(class_map.get(lane, "")):
+            a1_lanes.append(f"{lane}号艇")
+    if a1_lanes:
+        positives.append("級別上位は " + "・".join(a1_lanes))
+
+    if not display_ai_selection:
+        cautions.append("AI買い目が空なので見送り寄り")
+
+    conclusion = "あり"
+    if not display_ai_selection:
+        conclusion = "見送り寄り"
+    elif len(cautions) >= 2 and len(positives) <= 1:
+        conclusion = "慎重"
+    elif "★★★★★" not in display_ai_rating and len(positives) <= 1:
+        conclusion = "抑えまで"
+
+    buy_items = selection_items(display_ai_selection)[:3]
+
+    lines = []
+    lines.append(f"結論：{conclusion}")
+    lines.append(f"対象：{venue} {race_no}")
+    if time_text:
+        lines.append(f"締切：{time_text}")
+    lines.append(f"AI評価：{display_ai_rating}")
+    lines.append("")
+
+    if positives:
+        lines.append("プラス材料")
+        for item in positives[:5]:
+            lines.append(f"・{item}")
+        lines.append("")
+
+    if cautions:
+        lines.append("注意材料")
+        for item in cautions[:5]:
+            lines.append(f"・{item}")
+        lines.append("")
+
+    if buy_items:
+        lines.append("買うなら")
+        for item in buy_items:
+            lines.append(f"・{item}")
+        lines.append("")
+
+    lines.append("出走")
+    for lane in range(1, 7):
+        name = player_map.get(lane, f"{lane}号艇")
+        cls = str(class_map.get(lane, "")).strip()
+        if cls:
+            lines.append(f"・{lane}号艇 {name}（{cls}）")
+        else:
+            lines.append(f"・{lane}号艇 {name}")
+
+    return "\n".join(lines)
+
 def build_card_html(r, is_history=False, race_date=""):
     selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
     selected_total_amount = get_selected_total_amount(r)
@@ -1476,6 +1593,13 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row row-gpt-review">
+          <span class="label">精査</span>
+          <span class="value">
+            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}">ChatGPTで精査</button>
+            <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
+          </span>
+        </div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         {ai_reason_html}
@@ -2065,6 +2189,11 @@ def render_layout(title, body_html):
       .save-btn{width:100%;margin-top:10px}
       .half-btn{width:100%}
       .delete-form{margin-top:8px}
+      .gpt-review-btn{border:none;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer;background:#101828;color:#fff}
+      .gpt-review-btn:disabled{opacity:.7;cursor:default}
+      .gpt-review-box{margin-top:10px;padding:12px;border-radius:12px;background:#f8fafc;border:1px solid #eaecf0;line-height:1.7;color:#172033}
+      .gpt-review-content{font-size:14px;white-space:normal;word-break:break-word}
+      .gpt-review-error{color:#b42318;font-weight:700}
       .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}
       .message-success{background:#ecfdf3;color:#027a48}
       .message-error{background:#fef3f2;color:#b42318}
@@ -2209,6 +2338,39 @@ def render_layout(title, body_html):
         document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
         updateBulkDeleteCount();
       }
+      async function loadGptReview(raceId, btn){
+        const box = document.getElementById('gpt-review-' + raceId);
+        if(!box){ return; }
+        if(box.dataset.loaded === '1'){
+          box.style.display = box.style.display === 'none' ? 'block' : 'none';
+          return;
+        }
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '精査中...';
+        try{
+          const res = await fetch('/api/gpt_race_review?race_id=' + encodeURIComponent(raceId));
+          const data = await res.json();
+          if(!data.ok){
+            box.innerHTML = '<div class="gpt-review-error">取得失敗: ' + (data.error || 'unknown error') + '</div>';
+          }else{
+            const escaped = String(data.review_text || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/\n/g, '<br>');
+            box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
+            box.dataset.loaded = '1';
+          }
+          box.style.display = 'block';
+        }catch(e){
+          box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
+          box.style.display = 'block';
+        }finally{
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      }
       function confirmBulkDelete(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
         if(count <= 0){ alert('削除するデータを選んでください'); return false; }
@@ -2220,6 +2382,12 @@ def render_layout(title, body_html):
           setCheckedValuesFromHidden(raceId);
           updateSelectionSummary(raceId, true);
           form.addEventListener('submit', function(){ syncSelectionValue(null, raceId); });
+        });
+        document.querySelectorAll('.gpt-review-btn').forEach(btn => {
+          btn.addEventListener('click', function(){
+            const raceId = this.getAttribute('data-race-id');
+            loadGptReview(raceId, this);
+          });
         });
         updateBulkDeleteCount();
       });
@@ -2885,6 +3053,41 @@ def import_latest_candidates():
     result = upsert_latest_candidates(cleaned)
     return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
 
+
+
+
+@app.route("/api/gpt_race_review")
+def api_gpt_race_review():
+    race_id = (request.args.get("race_id") or "").strip()
+    if not race_id.isdigit():
+        return jsonify({"ok": False, "error": "race_id missing"}), 400
+
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        SELECT {CARD_SELECT_COLUMNS}
+        FROM races
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (int(race_id),),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not row:
+        return jsonify({"ok": False, "error": "race not found"}), 404
+
+    review_text = build_simple_gpt_review(row)
+
+    return jsonify({
+        "ok": True,
+        "race_id": int(race_id),
+        "review_text": review_text,
+    })
 
 @app.route("/export/today.csv")
 def export_today_csv():
