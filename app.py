@@ -2,11 +2,13 @@ from datetime import datetime, timezone, timedelta
 import os
 import re
 import json
+import csv
+import io
 from urllib.parse import quote
 
 import psycopg2
 import psycopg2.extras
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request, redirect, jsonify, Response
 
 app = Flask(__name__)
 
@@ -1487,6 +1489,136 @@ def build_safe_card_html(r, is_history=False, race_date=""):
         '''
 
 
+
+
+def csv_safe(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def build_export_rows(rows):
+    export_rows = []
+    for r in rows:
+        selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
+        selected_total_amount = get_selected_total_amount(r)
+
+        result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
+        result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+        auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
+        auto_payout = result_trifecta_payout if auto_hit else 0
+        display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
+        display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
+        auto_profit_value = display_payout_value - selected_total_amount if selected_count > 0 else 0
+
+        display_ai_rating = (
+            display_text(r.get("final_ai_rating"), "")
+            or display_text(r.get("base_ai_rating"), "")
+            or "AI評価なし"
+        )
+        display_ai_selection = (
+            str(r.get("final_ai_selection") or "").strip()
+            or str(r.get("base_ai_selection") or "").strip()
+            or ""
+        )
+        display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
+        ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
+
+        weather_parts = []
+        weather = str(r.get("weather") or "").strip()
+        wind_type = str(r.get("wind_type") or "").strip()
+        wind_dir = str(r.get("wind_dir") or "").strip()
+        wind_speed = r.get("wind_speed")
+        wave_height = r.get("wave_height")
+        water_state_score = r.get("water_state_score")
+
+        if weather:
+            weather_parts.append(weather)
+        if wind_type:
+            weather_parts.append(wind_type)
+        if wind_dir:
+            weather_parts.append(wind_dir)
+        if wind_speed not in [None, ""]:
+            weather_parts.append(f"風速{wind_speed}m")
+        if wave_height not in [None, ""]:
+            weather_parts.append(f"波高{wave_height}cm")
+
+        export_rows.append({
+            "race_date": csv_safe(r.get("race_date")),
+            "time": csv_safe(r.get("time")),
+            "venue": csv_safe(r.get("venue")),
+            "race_no": csv_safe(r.get("race_no")),
+            "official_rating": csv_safe(r.get("rating")),
+            "bet_type": csv_safe(r.get("bet_type")),
+            "official_selection": csv_safe(r.get("selection")),
+            "amount_per_point": int(r.get("amount") or 0),
+            "ai_score": round(ai_score_value, 2),
+            "ai_rating": csv_safe(display_ai_rating),
+            "ai_selection": csv_safe(display_ai_selection),
+            "final_rank": csv_safe(r.get("final_rank")),
+            "latest_reason_text": csv_safe(display_ai_detail_text),
+            "player_names_text": csv_safe(r.get("player_names_text")),
+            "class_history_text": csv_safe(r.get("class_history_text")),
+            "player_stat_text": csv_safe(r.get("player_stat_text")),
+            "player_reason_text": csv_safe(r.get("player_reason_text")),
+            "exhibition_times": csv_safe(parse_json_array_text(r.get("exhibition", "[]"))),
+            "exhibition_rank": csv_safe(r.get("exhibition_rank")),
+            "ai_lane_score_text": csv_safe(r.get("ai_lane_score_text")),
+            "weather_summary": " / ".join(weather_parts),
+            "weather": csv_safe(weather),
+            "wind_type": csv_safe(wind_type),
+            "wind_dir": csv_safe(wind_dir),
+            "wind_speed": csv_safe(wind_speed),
+            "wave_height": csv_safe(wave_height),
+            "water_state_score": csv_safe(water_state_score),
+            "selected_count": selected_count,
+            "selected_total_amount": selected_total_amount,
+            "purchased": int(r.get("purchased") or 0),
+            "purchased_selection_text": csv_safe(r.get("purchased_selection_text")),
+            "official_result_trifecta": csv_safe(result_trifecta_text),
+            "official_result_trifecta_payout": result_trifecta_payout,
+            "display_hit": display_hit_value,
+            "display_payout": display_payout_value,
+            "auto_profit": auto_profit_value,
+            "memo": csv_safe(r.get("memo")),
+            "settled_flag": int(r.get("settled_flag") or 0),
+            "settled_at": csv_safe(r.get("settled_at")),
+            "imported_at": csv_safe(r.get("imported_at")),
+        })
+    return export_rows
+
+
+def make_csv_response(rows, filename):
+    output = io.StringIO()
+    export_rows = build_export_rows(rows)
+    fieldnames = list(export_rows[0].keys()) if export_rows else [
+        "race_date", "time", "venue", "race_no", "official_rating", "bet_type",
+        "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
+        "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
+        "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
+        "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
+        "wind_speed", "wave_height", "water_state_score", "selected_count",
+        "selected_total_amount", "purchased", "purchased_selection_text",
+        "official_result_trifecta", "official_result_trifecta_payout", "display_hit",
+        "display_payout", "auto_profit", "memo", "settled_flag", "settled_at", "imported_at"
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in export_rows:
+        writer.writerow(row)
+
+    csv_text = output.getvalue()
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
@@ -1554,6 +1686,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
           <a href="/" class="nav-card active">今日の候補</a>
           <a href="/stats" class="nav-card">今日の集計</a>
           <a href="/history" class="nav-card">過去データ</a>
+          <a href="/export/today.csv" class="nav-card">今日CSV</a>
         </div>
         <div class="summary">
           <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
@@ -1717,7 +1850,7 @@ def render_history_detail_page(
     content = f'''
     <div class="app-shell">
       <div class="topbar"><div class="brand"><div class="brand-logo">🧾</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ詳細</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
-      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div></div></div>
+      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a><a href="/export/history/{race_date}.csv" class="nav-card">この日CSV</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div></div></div>
       {body}
     </div>
     '''
@@ -2705,6 +2838,20 @@ def import_latest_candidates():
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
     result = upsert_latest_candidates(cleaned)
     return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
+
+
+@app.route("/export/today.csv")
+def export_today_csv():
+    rows = get_races_by_date(today_text())
+    return make_csv_response(rows, f"race_candidates_today_{today_text()}.csv")
+
+
+@app.route("/export/history/<race_date>.csv")
+def export_history_csv(race_date):
+    rows = get_races_by_date(race_date)
+    return make_csv_response(rows, f"race_candidates_{race_date}.csv")
+
+
 
 
 init_db()
