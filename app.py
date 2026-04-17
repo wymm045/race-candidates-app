@@ -1601,16 +1601,6 @@ def build_card_html(r, is_history=False, race_date=""):
           </span>
         </div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
-        <div class="row">
-  <span class="label">精査</span>
-  <span class="value">
-    <button
-      type="button"
-      class="gpt-review-btn"
-      onclick="this.textContent='押せた'; this.style.background='#b42318'; return false;"
-    >ChatGPTで精査_TEST123</button>
-  </span>
-</div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         {ai_reason_html}
       </div>
@@ -2399,8 +2389,7 @@ def render_layout(title, body_html):
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
-            .replace(/
-/g, '<br>');
+            .replace(/\n/g, '<br>');
 
           box.style.display = 'block';
           box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
