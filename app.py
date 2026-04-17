@@ -45,6 +45,12 @@ CARD_SELECT_COLUMNS = '''
     ai_reasons,
     exhibition,
     exhibition_rank,
+    weather,
+    wind_speed,
+    wave_height,
+    wind_type,
+    wind_dir,
+    water_state_score,
     ai_lane_score_text,
     class_history_text,
     player_names_text,
@@ -116,8 +122,6 @@ def today_text():
 
 def current_hhmm():
     return jst_now().strftime("%H:%M")
-
-
 
 
 def hhmm_to_minutes(hhmm):
@@ -299,8 +303,6 @@ def unique_preserve(seq):
     return result
 
 
-
-
 def get_selected_count_from_text(selection_text):
     return len(selection_items(selection_text))
 
@@ -343,7 +345,6 @@ def get_existing_race_map_by_date(race_date):
         if key not in race_map:
             race_map[key] = row
     return race_map
-
 
 
 def parse_exhibition_rank_map(rank_text):
@@ -410,6 +411,54 @@ def render_exhibition_time_chips(exhibition_list):
     return f'<div class="ex-chip-wrap">{chips}</div>'
 
 
+def format_weather_num(value, suffix=""):
+    try:
+        if value is None or str(value).strip() == "":
+            return ""
+        v = float(value)
+        if v.is_integer():
+            return f"{int(v)}{suffix}"
+        return f"{v:.1f}{suffix}"
+    except Exception:
+        return ""
+
+
+def render_weather_summary_html(weather, wind_speed, wave_height, wind_type, wind_dir, water_state_score=None):
+    items = []
+
+    weather_text = str(weather or "").strip()
+    wind_type_text = str(wind_type or "").strip()
+    wind_dir_text = str(wind_dir or "").strip()
+    wind_speed_text = format_weather_num(wind_speed, "m")
+    wave_height_text = format_weather_num(wave_height, "cm")
+
+    if weather_text:
+        items.append(("weather-chip", weather_text))
+    if wind_type_text:
+        items.append(("weather-chip weather-chip-windtype", wind_type_text))
+    if wind_dir_text:
+        items.append(("weather-chip weather-chip-dir", f"風向 {wind_dir_text}"))
+    if wind_speed_text:
+        items.append(("weather-chip weather-chip-num", f"風速 {wind_speed_text}"))
+    if wave_height_text:
+        items.append(("weather-chip weather-chip-num", f"波高 {wave_height_text}"))
+
+    try:
+        ws = float(water_state_score)
+        if ws > 0.08:
+            items.append(("weather-chip weather-chip-good", "水面やや安定"))
+        elif ws < -0.08:
+            items.append(("weather-chip weather-chip-bad", "水面やや荒れ"))
+    except Exception:
+        pass
+
+    if not items:
+        return '<div class="detail-chip-empty">未取得</div>'
+
+    chips = "".join([f'<div class="{cls}">{label}</div>' for cls, label in items])
+    return f'<div class="weather-chip-wrap">{chips}</div>'
+
+
 def parse_player_names_map(player_names_text):
     result = {}
     s = str(player_names_text or "").strip()
@@ -430,15 +479,12 @@ def parse_player_names_map(player_names_text):
     return result
 
 
-
-
 def lane_score_tone_class(score):
     if score >= 0.7:
         return "player-info-chip player-info-chip-good"
     if score <= -0.4:
         return "player-info-chip player-info-chip-bad"
     return "player-info-chip"
-
 
 
 def parse_exhibition_time_float(value):
@@ -451,7 +497,6 @@ def parse_exhibition_time_float(value):
         return None
 
 
-
 def build_exhibition_time_rank_map(exhibition_list):
     valid = []
     for lane, value in enumerate(exhibition_list or [], start=1):
@@ -460,7 +505,6 @@ def build_exhibition_time_rank_map(exhibition_list):
             valid.append((lane, t))
     valid.sort(key=lambda x: (x[1], x[0]))
     return {lane: idx for idx, (lane, _t) in enumerate(valid, start=1)}
-
 
 
 def parse_lane_chip_text_map(raw_text):
@@ -486,12 +530,37 @@ def parse_lane_chip_text_map(raw_text):
     return result
 
 
+def normalize_reason_tag(text):
+    s = str(text or "").strip()
+    if not s:
+        return ""
+
+    tag_rules = [
+        (["地力", "全国勝率", "全国2連率", "全国3連率"], "勝率系"),
+        (["当地", "当地勝率", "当地2連率", "当地3連率"], "当地"),
+        (["モーター", "機力"], "モーター"),
+        (["ST", "スタート"], "ST"),
+        (["コース", "進入率"], "コース"),
+        (["近況", "最近"], "近況"),
+        (["級別", "A1", "A2", "B1", "B2"], "級別"),
+        (["展示"], "展示"),
+        (["進入", "前づけ", "イン外し"], "進入"),
+    ]
+
+    for keywords, label in tag_rules:
+        if any(k in s for k in keywords):
+            return label
+
+    return s
+
+
 def parse_signed_chip_items(raw_items):
     parsed = []
     for raw in raw_items or []:
         text = str(raw or "").strip()
         if not text:
             continue
+
         tone = "neutral"
         if text[:1] in {"+", "＋"}:
             tone = "plus"
@@ -499,8 +568,11 @@ def parse_signed_chip_items(raw_items):
         elif text[:1] in {"-", "－", "▲"}:
             tone = "minus"
             text = text[1:].strip()
-        if text:
-            parsed.append((tone, text))
+
+        tag = normalize_reason_tag(text)
+        if tag:
+            parsed.append((tone, tag))
+
     return parsed
 
 
@@ -508,19 +580,17 @@ def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_li
     items = []
 
     rank = exhibition_rank_map.get(lane)
-    if rank == 1:
-        items.append(("plus", "展示1位"))
-    elif rank == 2:
-        items.append(("plus", "展示上位"))
+    if rank == 1 or rank == 2:
+        items.append(("plus", "展示"))
     elif rank is not None and rank >= 5:
-        items.append(("minus", "展示下位"))
+        items.append(("minus", "展示"))
 
     lane_score = lane_score_map.get(lane)
     if lane_score is not None:
         if lane_score >= 0.25:
-            items.append(("plus", "補正"))
+            items.append(("plus", "展示"))
         elif lane_score <= -0.15:
-            items.append(("minus", "補正"))
+            items.append(("minus", "展示"))
 
     latest_text = str(latest_reason_text or "")
     if lane == 1 and ("イン外し" in latest_text):
@@ -536,17 +606,27 @@ def render_player_evidence_chips(reason_items, default_items):
     seen = set()
 
     for tone, item in list(reason_items) + list(default_items):
-        key = (tone, item)
-        if not item or key in seen:
+        if not item:
+            continue
+
+        key = item
+        if key in seen:
             continue
         seen.add(key)
-        chips.append(f'<span class="player-evidence-chip player-evidence-chip-{tone}">{item}</span>')
+
+        if tone == "plus":
+            cls = "player-evidence-chip player-evidence-chip-plus"
+        elif tone == "minus":
+            cls = "player-evidence-chip player-evidence-chip-minus"
+        else:
+            cls = "player-evidence-chip player-evidence-chip-neutral"
+
+        chips.append(f'<span class="{cls}">{item}</span>')
 
     if not chips:
         return '<div class="player-rank-empty">未取得</div>'
 
     return f'<div class="player-evidence-wrap">{"".join(chips)}</div>'
-
 
 
 def render_player_rank_summary_html(
@@ -615,15 +695,15 @@ def render_player_rank_summary_html(
         evidence_html = render_player_evidence_chips(reason_items, default_items)
 
         rows_html += f"""
-        <div class="player-rank-row">
-          <div class="player-rank-main-wrap">
-            <div class="player-rank-main">
-              <span class="player-rank-lane">{render_lane_badge(lane)}</span>
-              <span class="player-rank-name">{name}</span>
+        <div class=\"player-rank-row\">
+          <div class=\"player-rank-main-wrap\">
+            <div class=\"player-rank-main\">
+              <span class=\"player-rank-lane\">{render_lane_badge(lane)}</span>
+              <span class=\"player-rank-name\">{name}</span>
             </div>
-            <div class="player-rank-class-row">{class_chips}</div>
+            <div class=\"player-rank-class-row\">{class_chips}</div>
           </div>
-          <div class="player-rank-evidence">{evidence_html}</div>
+          <div class=\"player-rank-evidence\">{evidence_html}</div>
         </div>
         """
 
@@ -655,8 +735,6 @@ def parse_class_history_rows(class_history_text):
     if current:
         rows.append(current)
     return rows
-
-
 
 
 def parse_lane_score_items(lane_score_text):
@@ -764,7 +842,6 @@ def build_selection_compare_data(official_text, ai_text):
     }
 
 
-
 def render_selection_column(
     own_items,
     overlap_items,
@@ -820,7 +897,6 @@ def render_selection_column(
         '''
 
     return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
-
 
 
 def render_selection_compare_html(r, race_id_key):
@@ -892,7 +968,6 @@ def get_races_by_date(race_date):
     return rows
 
 
-
 def get_race_by_id(race_id):
     ensure_db_initialized()
     conn = db_connect()
@@ -909,7 +984,6 @@ def get_race_by_id(race_id):
     cur.close()
     conn.close()
     return row
-
 
 
 def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
@@ -957,8 +1031,6 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     cur.close()
     conn.close()
     return rows
-
-
 
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
@@ -1014,7 +1086,6 @@ def delete_races_bulk(race_ids):
     return deleted
 
 
-
 def get_summary_by_date(race_date):
     ensure_db_initialized()
     conn = db_connect()
@@ -1061,7 +1132,6 @@ def get_summary_by_date(race_date):
         "roi": roi,
         "last_imported_at": str(row.get("last_imported_at") or "").strip(),
     }
-
 
 
 def get_group_summary(race_date, group_key):
@@ -1120,7 +1190,6 @@ def get_group_summary(race_date, group_key):
     return results
 
 
-
 def get_history_dates():
     ensure_db_initialized()
     conn = db_connect()
@@ -1132,7 +1201,6 @@ def get_history_dates():
     cur.close()
     conn.close()
     return [row[0] for row in rows]
-
 
 
 def get_history_date_summaries():
@@ -1188,7 +1256,6 @@ def get_history_date_summaries():
             }
         )
     return results
-
 
 
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
@@ -1264,11 +1331,19 @@ def build_card_html(r, is_history=False, race_date=""):
 
     exhibition_time_html = render_exhibition_time_chips(exhibition)
     exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
+    weather_summary_html = render_weather_summary_html(
+        r.get("weather", ""),
+        r.get("wind_speed"),
+        r.get("wave_height"),
+        r.get("wind_type", ""),
+        r.get("wind_dir", ""),
+        r.get("water_state_score"),
+    )
     display_ai_rating = (
-    display_text(r.get("final_ai_rating"), "")
-    or display_text(r.get("base_ai_rating"), "")
-    or "AI評価なし"
-)
+        display_text(r.get("final_ai_rating"), "")
+        or display_text(r.get("base_ai_rating"), "")
+        or "AI評価なし"
+    )
     display_ai_selection = (
         str(r.get("final_ai_selection") or "").strip()
         or str(r.get("base_ai_selection") or "").strip()
@@ -1280,7 +1355,6 @@ def build_card_html(r, is_history=False, race_date=""):
     selection_compare_html = render_selection_compare_html(render_r, race_id_key)
     ai_detail_text = display_ai_detail_text or normalize_ai_detail(r.get("ai_detail"), exhibition)
     ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
-    ai_confidence_value = ""
     player_rank_summary_html = render_player_rank_summary_html(
         r.get("player_names_text", ""),
         r.get("class_history_text", ""),
@@ -1291,8 +1365,6 @@ def build_card_html(r, is_history=False, race_date=""):
         r.get("player_reason_text", ""),
         r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
-    lane_score_html = render_lane_score_chips(r.get("ai_lane_score_text", ""))
-    detail_material_html = render_detail_material_chips(ai_detail_text)
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
@@ -1355,14 +1427,13 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+        <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
         <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
-        <div class="row"><span class="label">AI信頼度</span><span class="value">{ai_confidence_value}</span></div>
         <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
-        <div class="row"><span class="label">AI補正詳細</span><span class="value">{lane_score_html}</span></div>
         {ai_reason_html}
       </div>
 
@@ -1395,7 +1466,6 @@ def build_card_html(r, is_history=False, race_date=""):
     '''
 
 
-
 def build_safe_card_html(r, is_history=False, race_date=""):
     try:
         return build_card_html(r, is_history=is_history, race_date=race_date)
@@ -1415,6 +1485,7 @@ def build_safe_card_html(r, is_history=False, race_date=""):
           </div>
         </div>
         '''
+
 
 def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
@@ -1495,7 +1566,6 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     </div>
     '''
     return render_layout("今日の買い候補", content)
-
 
 
 def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
@@ -1682,29 +1752,9 @@ def render_layout(title, body_html):
       .brand-logo{font-size:28px;flex:0 0 auto}
       .brand-title{font-weight:700}
       .brand-sub,.sub{font-size:13px;color:#667085}
-      .topbar{
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:10px;
-      }
-      .topbar-status{
-        min-width:0;
-        display:flex;
-        justify-content:flex-end;
-      }
-      .top-pill{
-        background:#eef4ff;
-        color:#2f5bd2;
-        padding:6px 10px;
-        border-radius:999px;
-        font-size:12px;
-        display:inline-block;
-        max-width:100%;
-        white-space:normal;
-        word-break:break-word;
-        line-height:1.4;
-      }
+      .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
+      .topbar-status{min-width:0;display:flex;justify-content:flex-end}
+      .top-pill{background:#eef4ff;color:#2f5bd2;padding:6px 10px;border-radius:999px;font-size:12px;display:inline-block;max-width:100%;white-space:normal;word-break:break-word;line-height:1.4}
       .title{font-size:24px;font-weight:800;margin-bottom:4px}
       .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
       .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
@@ -1763,37 +1813,13 @@ def render_layout(title, body_html):
       .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
       .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
       .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
-      .selection-choice-chip{
-        display:inline-block;
-        cursor:pointer;
-        user-select:none;
-        -webkit-tap-highlight-color:transparent;
-      }
+      .selection-choice-chip{display:inline-block;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
       .selection-view-chip{display:inline-block}
       .selection-choice-body-view{cursor:default}
       .selection-view-chip .selection-choice-body{border-style:solid}
       .selection-view-chip.is-selected-view .selection-choice-body{box-shadow:0 0 0 2px rgba(5,96,58,.08) inset}
-      .selection-choice-input{
-        position:absolute;
-        opacity:0;
-        pointer-events:none;
-        width:1px;
-        height:1px;
-      }
-      .selection-choice-body{
-        display:inline-flex;
-        align-items:center;
-        justify-content:center;
-        padding:8px 10px;
-        border-radius:999px;
-        font-weight:700;
-        border:2px solid #d0d5dd;
-        background:#fff;
-        color:#344054;
-        white-space:nowrap;
-        line-height:1.2;
-        transition:all .15s ease;
-      }
+      .selection-choice-input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
+      .selection-choice-body{display:inline-flex;align-items:center;justify-content:center;padding:8px 10px;border-radius:999px;font-weight:700;border:2px solid #d0d5dd;background:#fff;color:#344054;white-space:nowrap;line-height:1.2;transition:all .15s ease}
       .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
       .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
       .selection-choice-body-overlap{background:#f3fbf6;border-color:#bfe7cc;color:#5f7a68}
@@ -1816,10 +1842,6 @@ def render_layout(title, body_html):
       .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
       .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
       .pick-plain{font-weight:800;color:#344054}
-      .player-chip-wrap{display:flex;flex-direction:column;gap:6px}
-      .player-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-      .player-chip-lane{flex:0 0 auto}
-      .player-chip-name{font-weight:700;color:#172033}
       .row-player-rank .label,.row-exhibition-rank .label{padding-top:4px}
       .row-player-rank .value{width:100%}
       .player-rank-wrap{display:flex;flex-direction:column;gap:10px;padding:4px 0}
@@ -1836,24 +1858,15 @@ def render_layout(title, body_html):
       .player-evidence-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
       .player-evidence-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
       .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
-      .player-rank-sub{display:flex;flex-wrap:wrap;gap:6px;padding-left:34px}
-      .player-info-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;background:#f2f4f7;border:1px solid #d0d5dd;color:#475467;font-size:12px;font-weight:700;line-height:1.25}
-      .player-info-chip-good{background:#ecfdf3;border-color:#b7e6c2;color:#067647}
-      .player-info-chip-bad{background:#fef3f2;border-color:#f3c0bb;color:#b42318}
-      .player-reason-mini-wrap{display:flex;flex-direction:column;gap:6px;padding-left:34px}
-      .player-reason-mini-row{display:grid;grid-template-columns:58px 1fr;gap:8px;align-items:start}
-      .player-reason-mini-label{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;line-height:1.2}
-      .player-reason-mini-row-plus .player-reason-mini-label{background:#ecfdf3;color:#027a48}
-      .player-reason-mini-row-minus .player-reason-mini-label{background:#fef3f2;color:#b42318}
-      .player-reason-mini-chips{display:flex;flex-wrap:wrap;gap:6px}
-      .player-reason-mini-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;border:1px solid;font-size:12px;font-weight:700;line-height:1.2}
-      .player-reason-mini-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
-      .player-reason-mini-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
-      .player-rank-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start}
-      .player-rank-chips .class-chip{min-width:56px;padding:5px 8px;border-radius:8px}
-      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
-      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap,.weather-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip,.weather-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
+      .weather-chip{font-weight:700;color:#344054}
+      .weather-chip-windtype{background:#eef4ff;color:#175cd3;border-color:#cfe0ff}
+      .weather-chip-dir{background:#f4ebff;color:#6941c6;border-color:#e0d2ff}
+      .weather-chip-num{background:#fff6e5;color:#b54708;border-color:#f5deb3}
+      .weather-chip-good{background:#ecfdf3;color:#027a48;border-color:#abefc6}
+      .weather-chip-bad{background:#fef3f2;color:#b42318;border-color:#fecdca}
       .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
       .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
@@ -1866,10 +1879,6 @@ def render_layout(title, body_html):
       .ex-rank-3{background:#fff6e5}
       .ex-rank-low{background:#fef3f2}
       .ex-rank{font-size:14px;font-weight:800;line-height:1.1}
-      .class-history-wrap{display:flex;flex-direction:column;gap:8px}
-      .class-history-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center}
-      .class-history-lane{font-weight:800;display:flex;align-items:center}
-      .class-history-chips{display:flex;gap:5px;flex-wrap:wrap}
       .class-chip{display:inline-flex;gap:5px;align-items:center;border-radius:10px;padding:6px 8px;border:1px solid #d0d5dd;background:#fff}
       .class-chip-a1{background:#ecfdf3}
       .class-chip-a2{background:#eef4ff}
@@ -1931,38 +1940,17 @@ def render_layout(title, body_html):
         .ex-rank{font-size:13px}
         .card-top-main{flex-direction:column;align-items:flex-start}
         .status-wrap{margin-top:2px}
-        .class-history-row{grid-template-columns:1fr;gap:10px;align-items:start;}
-        .class-history-lane{font-size:15px;line-height:1.2;margin-bottom:2px;}
-        .class-history-chips{gap:8px}
-        .class-chip{padding:6px 8px;min-height:36px;border-radius:10px}
-        .class-chip-sub{font-size:12px;font-weight:700;color:#667085;min-width:auto;text-align:center;background:none;padding:0}
-        .class-chip-main{font-size:15px;font-weight:900}
-        .class-history-row .class-history-chips .class-chip:first-child{padding-left:10px;padding-right:10px;border-width:2px}
-        .class-history-row .class-history-chips .class-chip:first-child .class-chip-main{font-size:18px;font-weight:900;letter-spacing:.01em}
         .history-filter-meta{flex-direction:column;align-items:flex-start}
         .jump-wrap{width:100%}
         .jump-chip{min-width:48px;padding:8px 11px}
         .bulk-toolbar{flex-direction:column;align-items:stretch}
         .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
-        .player-chip{align-items:flex-start}
-        .player-chip-name{font-size:14px;line-height:1.45}
         .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:8px 0}
         .player-rank-main{gap:8px}
         .player-rank-name{font-size:14px;line-height:1.4}
         .player-rank-evidence{width:100%}
         .player-evidence-wrap{gap:5px}
         .player-evidence-chip{font-size:11px;padding:5px 8px}
-        .player-rank-sub{padding-left:32px;gap:5px}
-        .player-info-chip{font-size:11px;padding:4px 7px}
-        .player-reason-mini-wrap{padding-left:32px;gap:5px}
-        .player-reason-mini-row{grid-template-columns:52px 1fr;gap:6px}
-        .player-reason-mini-label{min-height:26px;font-size:10px;padding:4px 7px}
-        .player-reason-mini-chips{gap:5px}
-        .player-reason-mini-chip{font-size:11px;padding:5px 7px}
-        .player-rank-chips{gap:5px;flex-wrap:wrap}
-        .player-rank-chips .class-chip{min-width:0;padding:5px 7px}
-        .class-chip-main{font-size:12px}
-        .current-class-chip .class-chip-main{font-size:14px}
         .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
         .pick-inline{gap:5px}
         .pick-sep{font-size:13px}
@@ -1978,37 +1966,26 @@ def render_layout(title, body_html):
       function getCardRootByRaceId(raceId){
         return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
       }
-
       function parseSelectionText(text){
-        return String(text || '')
-          .split(' / ')
-          .map(x => String(x || '').replace(/\\s+/g, '').trim())
-          .filter(Boolean);
+        return String(text || '').split(' / ').map(x => String(x || '').replace(/\s+/g, '').trim()).filter(Boolean);
       }
-
       function getRaceCheckboxes(raceId){
         return Array.from(document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]'));
       }
-
       function getCheckedValues(raceId){
-        return getRaceCheckboxes(raceId)
-          .filter(x => x.checked)
-          .map(x => (x.getAttribute('data-pick-value') || '').trim())
-          .filter(Boolean);
+        return getRaceCheckboxes(raceId).filter(x => x.checked).map(x => (x.getAttribute('data-pick-value') || '').trim()).filter(Boolean);
       }
-
       function renderColoredPickHtml(value){
-        const s = String(value || '').replace(/\\s+/g, '').trim();
+        const s = String(value || '').replace(/\s+/g, '').trim();
         if(!s){ return ''; }
         return '<span class="pick-inline">' + s.split('-').map((part, idx) => {
           const sep = idx > 0 ? '<span class="pick-sep">-</span>' : '';
-          if(/^\\d+$/.test(part)){
+          if(/^\d+$/.test(part)){
             return sep + '<span class="lane-color lane-color-' + part + '">' + part + '</span>';
           }
           return sep + '<span class="pick-plain">' + part + '</span>';
         }).join('') + '</span>';
       }
-
       function setCheckedValuesFromHidden(raceId){
         const hidden = document.getElementById('selected-hidden-' + raceId);
         if(!hidden){ return []; }
@@ -2020,7 +1997,6 @@ def render_layout(title, body_html):
         });
         return values;
       }
-
       function syncSelectionValue(el, raceId){
         const hidden = document.getElementById('selected-hidden-' + raceId);
         if(!hidden){ return true; }
@@ -2028,23 +2004,19 @@ def render_layout(title, body_html):
         hidden.value = values.join(' / ');
         return true;
       }
-
       function updateSelectionSummary(raceId, preserveHiddenWhenEmpty=true){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return; }
-
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
         const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
         const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
         const hidden = document.getElementById('selected-hidden-' + raceId);
-
         let values = getCheckedValues(raceId);
         if(values.length === 0 && hidden && preserveHiddenWhenEmpty){
           values = setCheckedValuesFromHidden(raceId);
         }
-
         if(summaryEl){
           if(values.length === 0){
             summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
@@ -2052,56 +2024,31 @@ def render_layout(title, body_html):
             summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + renderColoredPickHtml(v) + '</div>').join('') + '</div>';
           }
         }
-
-        if(countEl){
-          countEl.textContent = values.length + '点';
-        }
-
-        if(totalEl){
-          totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円';
-        }
-
-        if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){
-          hidden.value = values.join(' / ');
-        }
+        if(countEl){ countEl.textContent = values.length + '点'; }
+        if(totalEl){ totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円'; }
+        if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){ hidden.value = values.join(' / '); }
       }
-
-      function toggleFormState(raceId){
-        return true;
-      }
-
+      function toggleFormState(raceId){ return true; }
       function updateBulkDeleteCount(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
         const el = document.getElementById('bulk-delete-count');
-        if(el){
-          el.textContent = count + '件選択中';
-        }
+        if(el){ el.textContent = count + '件選択中'; }
       }
-
       function toggleAllBulk(checked){
-        document.querySelectorAll('.bulk-checkbox').forEach(el => {
-          el.checked = checked;
-        });
+        document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
         updateBulkDeleteCount();
       }
-
       function confirmBulkDelete(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
-        if(count <= 0){
-          alert('削除するデータを選んでください');
-          return false;
-        }
+        if(count <= 0){ alert('削除するデータを選んでください'); return false; }
         return confirm(count + '件を削除しますか？');
       }
-
       document.addEventListener('DOMContentLoaded', function(){
         document.querySelectorAll('form[data-race-id]').forEach(form => {
           const raceId = form.getAttribute('data-race-id');
           setCheckedValuesFromHidden(raceId);
           updateSelectionSummary(raceId, true);
-          form.addEventListener('submit', function(){
-            syncSelectionValue(null, raceId);
-          });
+          form.addEventListener('submit', function(){ syncSelectionValue(null, raceId); });
         });
         updateBulkDeleteCount();
       });
@@ -2115,7 +2062,7 @@ def render_layout(title, body_html):
       <a href="/history" class="bottom-nav-item {history_active}"><span class="bottom-nav-icon">🗂️</span><span class="bottom-nav-label">過去</span></a>
     </nav>
     '''
-    return """<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>{}</title>{}</head><body><div class="container">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
+    return """<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\"><title>{}</title>{}</head><body><div class=\"container\">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
 
 
 def is_valid_import_token(req):
@@ -2128,8 +2075,8 @@ def is_valid_read_token(req):
     return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
 
 
-
 _db_initialized = False
+
 
 def ensure_db_initialized():
     global _db_initialized
@@ -2165,6 +2112,12 @@ def init_db():
             ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
             exhibition JSONB NOT NULL DEFAULT '[]'::jsonb,
             exhibition_rank TEXT NOT NULL DEFAULT '',
+            weather TEXT NOT NULL DEFAULT '',
+            wind_speed DOUBLE PRECISION NOT NULL DEFAULT 0,
+            wave_height DOUBLE PRECISION NOT NULL DEFAULT 0,
+            wind_type TEXT NOT NULL DEFAULT '',
+            wind_dir TEXT NOT NULL DEFAULT '',
+            water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0,
             motor_rank TEXT NOT NULL DEFAULT '',
             ai_detail TEXT NOT NULL DEFAULT '',
             ai_selection TEXT NOT NULL DEFAULT '',
@@ -2215,6 +2168,12 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS weather TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_speed DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wave_height DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_type TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_dir TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT NOT NULL DEFAULT ''",
@@ -2224,19 +2183,16 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_stat_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_reason_text TEXT NOT NULL DEFAULT ''",
-
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_selection TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_reason_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_updated_at TEXT NOT NULL DEFAULT ''",
-
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_selection TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS latest_reason_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS latest_updated_at TEXT NOT NULL DEFAULT ''",
-
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
@@ -2267,36 +2223,25 @@ def init_db():
     _db_initialized = True
 
 
-
-
 def upsert_base_candidates(cleaned):
     ensure_db_initialized()
-
     if not cleaned:
         return {'inserted': 0, 'updated': 0}
-
     race_date = str(cleaned[0]['race_date']).strip()
     existing_map = get_existing_race_map_by_date(race_date)
-
     conn = db_connect()
     cur = conn.cursor()
-
     inserted = 0
     updated = 0
-
     for r in cleaned:
         key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
         existing = existing_map.get(key)
-
         if existing:
             cur.execute(
                 '''
                 UPDATE races
                 SET
-                    time = CASE
-                        WHEN COALESCE(%s, '') <> '' THEN %s
-                        ELSE time
-                    END,
+                    time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
                     race_no_num = %s,
                     rating = %s,
                     bet_type = %s,
@@ -2304,14 +2249,8 @@ def upsert_base_candidates(cleaned):
                     amount = %s,
                     player_names_text = %s,
                     class_history_text = %s,
-                    player_stat_text = CASE
-                        WHEN COALESCE(%s, '') <> '' THEN %s
-                        ELSE player_stat_text
-                    END,
-                    player_reason_text = CASE
-                        WHEN COALESCE(%s, '') <> '' THEN %s
-                        ELSE player_reason_text
-                    END,
+                    player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
+                    player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
                     base_ai_score = %s,
                     base_ai_rating = %s,
                     base_ai_selection = %s,
@@ -2394,53 +2333,42 @@ def upsert_base_candidates(cleaned):
     conn.commit()
     cur.close()
     conn.close()
-
     log(f'upsert_base_candidates inserted={inserted} updated={updated}')
     return {'inserted': inserted, 'updated': updated}
 
 
 def upsert_latest_candidates(cleaned):
     ensure_db_initialized()
-
     if not cleaned:
         return {'updated': 0, 'skipped': 0}
-
     race_date = str(cleaned[0]['race_date']).strip()
     existing_map = get_existing_race_map_by_date(race_date)
-
     conn = db_connect()
     cur = conn.cursor()
-
     updated = 0
     skipped = 0
-
     for r in cleaned:
         key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
         existing = existing_map.get(key)
-
         if not existing:
             skipped += 1
             continue
-
         cur.execute(
             '''
             UPDATE races
             SET
-                time = CASE
-                    WHEN COALESCE(%s, '') <> '' THEN %s
-                    ELSE time
-                END,
+                time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
                 exhibition = %s,
                 exhibition_rank = %s,
+                weather = %s,
+                wind_speed = %s,
+                wave_height = %s,
+                wind_type = %s,
+                wind_dir = %s,
+                water_state_score = %s,
                 ai_lane_score_text = %s,
-                player_stat_text = CASE
-                    WHEN COALESCE(%s, '') <> '' THEN %s
-                    ELSE player_stat_text
-                END,
-                player_reason_text = CASE
-                    WHEN COALESCE(%s, '') <> '' THEN %s
-                    ELSE player_reason_text
-                END,
+                player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
+                player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
                 final_ai_score = %s,
                 final_ai_rating = %s,
                 final_ai_selection = %s,
@@ -2455,6 +2383,12 @@ def upsert_latest_candidates(cleaned):
                 str(r.get('time') or '').strip(),
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
                 str(r.get('exhibition_rank') or '').strip(),
+                str(r.get('weather') or '').strip(),
+                safe_float(r.get('wind_speed'), 0),
+                safe_float(r.get('wave_height'), 0),
+                str(r.get('wind_type') or '').strip(),
+                str(r.get('wind_dir') or '').strip(),
+                safe_float(r.get('water_state_score'), 0),
                 str(r.get('ai_lane_score_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
@@ -2475,7 +2409,6 @@ def upsert_latest_candidates(cleaned):
     conn.commit()
     cur.close()
     conn.close()
-
     log(f'upsert_latest_candidates updated={updated} skipped={skipped}')
     return {'updated': updated, 'skipped': skipped}
 
@@ -2483,7 +2416,6 @@ def upsert_latest_candidates(cleaned):
 @app.route("/healthz")
 def healthz():
     return "ok", 200
-
 
 
 @app.route("/")
@@ -2512,18 +2444,14 @@ def index():
     )
 
 
-
 def parse_selected_from_request():
     raw_selected_text = request.form.get("selected_text", "")
     selected_items = [normalize_pick_text(x) for x in selection_items(raw_selected_text)]
     selected_items = [x for x in selected_items if x]
-
     if selected_items:
         return " / ".join(unique_preserve(selected_items))
-
     ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
     ai = [x for x in ai if x]
-
     return " / ".join(unique_preserve(ai))
 
 
@@ -2533,25 +2461,20 @@ def save():
     race = get_race_by_id(race_id)
     if not race:
         return redirect("/?type=error&msg=" + quote("データが見つかりません"))
-
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
     hit = 1 if request.form.get("hit") == "1" else 0
     payout_raw = request.form.get("payout", "").strip()
     payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
-
     if purchased == 0:
         hit = 0
         payout = 0
-
     if purchased == 1 and hit == 1 and payout <= 0:
         redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
         sep = "&" if "?" in redirect_base else "?"
         return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
-
     update_race_result(race_id, selected_text, hit, payout, memo)
-
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
     return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
@@ -2641,26 +2564,18 @@ def history_detail(race_date):
 def import_base_candidates():
     if not is_valid_import_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     data = request.get_json(silent=True) or {}
     races = data.get("races", [])
     if not isinstance(races, list):
         return jsonify({"ok": False, "error": "races must be a list"}), 400
-
-    required_keys = {
-        "race_date", "venue", "race_no", "race_no_num",
-        "rating", "bet_type", "selection", "amount"
-    }
-
+    required_keys = {"race_date", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
     cleaned = []
     for i, r in enumerate(races):
         if not isinstance(r, dict):
             return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
-
         missing = required_keys - set(r.keys())
         if missing:
             return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
-
         cleaned.append(
             {
                 "race_date": str(r.get("race_date") or "").strip(),
@@ -2683,35 +2598,20 @@ def import_base_candidates():
                 "base_updated_at": str(r.get("base_updated_at") or "").strip(),
             }
         )
-
     if not cleaned:
         return jsonify({"ok": False, "error": "races is empty"}), 400
-
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-
     result = upsert_base_candidates(cleaned)
-
-    return jsonify(
-        {
-            "ok": True,
-            "received": len(cleaned),
-            "inserted": result["inserted"],
-            "updated": result["updated"],
-            "imported_at": jst_now_str(),
-        }
-    )
-
+    return jsonify({"ok": True, "received": len(cleaned), "inserted": result["inserted"], "updated": result["updated"], "imported_at": jst_now_str()})
 
 
 @app.route("/api/base_map_today", methods=["GET"])
 def api_base_map_today():
     if not is_valid_read_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     race_date = request.args.get("race_date", "").strip() or today_text()
-
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2721,6 +2621,7 @@ def api_base_map_today():
             race_date,
             venue,
             race_no,
+            rating,
             base_ai_score,
             base_ai_rating,
             base_ai_selection,
@@ -2743,6 +2644,7 @@ def api_base_map_today():
     for row in rows:
         key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
         base_map[key] = {
+            "rating": str(row.get("rating") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
             "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
@@ -2752,36 +2654,25 @@ def api_base_map_today():
             "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
             "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
         }
-
-    return jsonify({
-        "ok": True,
-        "race_date": race_date,
-        "count": len(base_map),
-        "base_map": base_map,
-    })
+    return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
 
 
 @app.route("/api/import_latest_candidates", methods=["POST"])
 def import_latest_candidates():
     if not is_valid_import_token(request):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     data = request.get_json(silent=True) or {}
     races = data.get("races", [])
     if not isinstance(races, list):
         return jsonify({"ok": False, "error": "races must be a list"}), 400
-
     required_keys = {"race_date", "venue", "race_no"}
-
     cleaned = []
     for i, r in enumerate(races):
         if not isinstance(r, dict):
             return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
-
         missing = required_keys - set(r.keys())
         if missing:
             return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
-
         cleaned.append(
             {
                 "race_date": str(r.get("race_date") or "").strip(),
@@ -2790,6 +2681,12 @@ def import_latest_candidates():
                 "time": str(r.get("time") or "").strip(),
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
+                "weather": str(r.get("weather") or "").strip(),
+                "wind_speed": safe_float(r.get("wind_speed"), 0),
+                "wave_height": safe_float(r.get("wave_height"), 0),
+                "wind_type": str(r.get("wind_type") or "").strip(),
+                "wind_dir": str(r.get("wind_dir") or "").strip(),
+                "water_state_score": safe_float(r.get("water_state_score"), 0),
                 "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
                 "player_stat_text": str(r.get("player_stat_text") or "").strip(),
                 "player_reason_text": str(r.get("player_reason_text") or "").strip(),
@@ -2801,27 +2698,13 @@ def import_latest_candidates():
                 "latest_updated_at": str(r.get("latest_updated_at") or "").strip(),
             }
         )
-
     if not cleaned:
         return jsonify({"ok": False, "error": "races is empty"}), 400
-
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-
     result = upsert_latest_candidates(cleaned)
-
-    return jsonify(
-        {
-            "ok": True,
-            "received": len(cleaned),
-            "updated": result["updated"],
-            "skipped": result["skipped"],
-            "imported_at": jst_now_str(),
-        }
-    )
-
-
+    return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
 
 
 init_db()
