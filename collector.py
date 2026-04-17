@@ -153,6 +153,10 @@ def build_result_url(jcd, race_no):
     return f"https://boatrace.jp/owpc/pc/race/raceresult?rno={race_no}&jcd={jcd}&hd={today_str()}"
 
 
+def build_resultlist_url(jcd):
+    return f"https://boatrace.jp/owpc/pc/race/resultlist?hd={today_str()}&jcd={jcd}"
+
+
 def row_cells(tr):
     return tr.find_all(["td", "th"], recursive=False)
 
@@ -1009,57 +1013,89 @@ def parse_kimarite_from_text(text):
     return ""
 
 
-def parse_raceresult_for_key(jcd, race_no):
-    race_no = normalize_race_no_value(race_no)
-    url = build_result_url(jcd, race_no)
+def parse_resultlist_for_jcd(jcd):
+    url = build_resultlist_url(jcd)
     try:
-        html = fetch_html(url, timeout=(5, 10), max_retries=2)
-    except Exception:
-        return (jcd, race_no), {}
+        html = fetch_html(url, timeout=(6, 12), max_retries=2)
+    except Exception as e:
+        log(f"[resultlist_error] jcd={jcd} err={e}")
+        return jcd, {}
 
     soup = BeautifulSoup(html, "html.parser")
     lines = normalize_lines_from_soup(soup)
-    joined = " ".join(lines)
-    triplet = parse_result_triplet_from_text(joined)
-    if not triplet:
-        return (jcd, race_no), {}
 
-    kimarite = parse_kimarite_from_text(joined)
-    try:
-        a, b, c = [int(x) for x in triplet.split("-")]
-    except Exception:
-        return (jcd, race_no), {}
+    results = {}
 
-    return (jcd, race_no), {
-        "triplet": triplet,
-        "head": a,
-        "second": b,
-        "third": c,
-        "kimarite": kimarite,
-    }
+    in_pay_section = False
+    pending_race = None
+    for line in lines:
+        if "勝式・払戻金・結果" in line:
+            in_pay_section = True
+            pending_race = None
+            continue
+        if in_pay_section and "着順 結果" in line:
+            break
+
+        m_race = re.search(r"(\d{1,2})R", line)
+        if in_pay_section and m_race:
+            pending_race = int(m_race.group(1))
+            continue
+
+        if in_pay_section and pending_race is not None:
+            tri = parse_result_triplet_from_text(line)
+            if tri and pending_race not in results:
+                try:
+                    a, b, c = [int(x) for x in tri.split("-")]
+                except Exception:
+                    pending_race = None
+                    continue
+                results[pending_race] = {
+                    "triplet": tri,
+                    "head": a,
+                    "second": b,
+                    "third": c,
+                    "kimarite": "",
+                }
+                pending_race = None
+
+    in_rank_section = False
+    for line in lines:
+        if "着順 結果" in line:
+            in_rank_section = True
+            continue
+        if in_rank_section and "進入コース別 結果" in line:
+            break
+        if not in_rank_section:
+            continue
+
+        m = re.search(r"(\d{1,2})R.*?(まくり差し|まくり|差し|抜き|恵まれ|逃げ)", line)
+        if m:
+            race_no = int(m.group(1))
+            kimarite = m.group(2)
+            if race_no in results:
+                results[race_no]["kimarite"] = kimarite
+
+    log(f"[resultlist_ok] jcd={jcd} count={len(results)}")
+    return jcd, results
 
 
 def fetch_day_results_parallel(venue_targets):
     results = {}
-    keys = []
-    for jcd, max_race_no in sorted(venue_targets.items()):
-        upper = max(1, int(max_race_no) - 1)
-        for race_no in range(1, upper + 1):
-            keys.append((jcd, race_no))
-
-    if not keys:
+    jcds = sorted(set(venue_targets.keys()))
+    if not jcds:
         return results
 
     with ThreadPoolExecutor(max_workers=RESULT_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_raceresult_for_key, jcd, race_no) for (jcd, race_no) in keys]
+        futures = [ex.submit(parse_resultlist_for_jcd, jcd) for jcd in jcds]
         for future in as_completed(futures):
-            key, info = future.result()
-            if info:
-                results[key] = info
+            jcd, venue_results = future.result()
+            for race_no, info in (venue_results or {}).items():
+                results[(jcd, race_no)] = info
     return results
 
 
 def build_day_trend_bias(jcd, target_race_no, result_cache):
+
     target_race_no = normalize_race_no_value(target_race_no)
     prior = []
     for race_no in range(1, target_race_no):
@@ -2634,7 +2670,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_daytrend_v10_8")
+    log("[collector_version] collector_latest_daytrend_v10_9_resultlist_light")
     log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
