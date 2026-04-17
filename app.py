@@ -1486,17 +1486,7 @@ def build_card_html(r, is_history=False, race_date=""):
         <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
-        <div id="detail-{race_id_key}" class="detail-box">
-          <label class="checkline">
-            <input type="checkbox" id="hit-{race_id_key}" name="hit" value="1" {checked_hit} onchange="toggleFormState('{race_id_key}')">
-            的中した
-          </label>
-
-          <div class="input-row">
-            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
-            <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
-          </div>
-
+        <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
           <div class="input-row">
             <label>メモ</label>
             <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
@@ -2654,17 +2644,12 @@ def save():
         return redirect("/?type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
-    hit = 1 if request.form.get("hit") == "1" else 0
-    payout_raw = request.form.get("payout", "").strip()
-    payout = int(payout_raw) if payout_raw else 0
+    hit = 0
+    payout = 0
     memo = request.form.get("memo", "").strip()
     if purchased == 0:
         hit = 0
         payout = 0
-    if purchased == 1 and hit == 1 and payout <= 0:
-        redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
-        sep = "&" if "?" in redirect_base else "?"
-        return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
     update_race_result(race_id, selected_text, hit, payout, memo)
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
@@ -2680,15 +2665,12 @@ def update_record():
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
-    hit = 1 if request.form.get("hit") == "1" else 0
-    payout_raw = request.form.get("payout", "").strip()
-    payout = int(payout_raw) if payout_raw else 0
+    hit = 0
+    payout = 0
     memo = request.form.get("memo", "").strip()
     if purchased == 0:
         hit = 0
         payout = 0
-    if purchased == 1 and hit == 1 and payout <= 0:
-        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
     update_race_result(race_id, selected_text, hit, payout, memo)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
