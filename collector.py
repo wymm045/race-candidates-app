@@ -1,66 +1,130 @@
 from datetime import datetime, timezone, timedelta
 import os
 import re
-import time
-from urllib.parse import urlencode
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+import csv
+import io
+from urllib.parse import quote
 
-import requests
-from bs4 import BeautifulSoup
+import psycopg2
+import psycopg2.extras
+from flask import Flask, request, redirect, jsonify, Response
+
+app = Flask(__name__)
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "").strip()
+IMPORT_TOKEN = os.environ.get("IMPORT_TOKEN", "").strip()
 
 JST = timezone(timedelta(hours=9))
 
-RENDER_IMPORT_URL = os.environ.get(
-    "RENDER_IMPORT_URL",
-    "https://race-candidates-app.onrender.com/api/import_latest_candidates",
-).strip()
-IMPORT_TOKEN = os.environ.get(
-    "IMPORT_TOKEN",
-    "race-token-2026",
-).strip()
+AI_RATING_OPTIONS = [
+    "",
+    "AI★★★★★",
+    "AI★★★★☆",
+    "AI★★★☆☆",
+    "AI★★☆☆☆",
+    "AI★☆☆☆☆",
+]
 
-BASE_MAP_URL = os.environ.get(
-    "BASE_MAP_URL",
-    "https://race-candidates-app.onrender.com/api/base_map_today",
-).strip()
+OFFICIAL_RATING_FILTER_OPTIONS = [
+    ("pickup", "公式★5+★4"),
+    ("★★★★★", "公式★5のみ"),
+    ("★★★★☆", "公式★4のみ"),
+]
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+CARD_SELECT_COLUMNS = '''
+    id,
+    race_date,
+    time,
+    venue,
+    race_no,
+    race_no_num,
+    rating,
+    bet_type,
+    selection,
+    amount,
+    ai_reasons,
+    exhibition,
+    exhibition_rank,
+    weather,
+    wind_speed,
+    wave_height,
+    wind_type,
+    wind_dir,
+    water_state_score,
+    ai_lane_score_text,
+    class_history_text,
+    player_names_text,
+    player_stat_text,
+    player_reason_text,
+    ai_score,
+    ai_rating,
+    ai_selection,
+    ai_detail,
+    ai_confidence,
+    base_ai_score,
+    base_ai_rating,
+    base_ai_selection,
+    base_reason_text,
+    base_updated_at,
+    final_ai_score,
+    final_ai_rating,
+    final_ai_selection,
+    final_rank,
+    latest_reason_text,
+    latest_updated_at,
+    purchased,
+    purchased_selection_text,
+    hit,
+    payout,
+    memo,
+    result_trifecta_text,
+    result_trifecta_payout,
+    result_exacta_text,
+    result_exacta_payout,
+    result_trio_text,
+    result_trio_payout,
+    settled_flag,
+    settled_at,
+    result_source_url,
+    imported_at
+'''
+
+POINT_COUNT_SQL = """
+CASE
+    WHEN COALESCE(BTRIM(purchased_selection_text), '') = '' THEN 0
+    ELSE COALESCE(array_length(string_to_array(purchased_selection_text, ' / '), 1), 0)
+END
+"""
+
+AUTO_HIT_SQL = """
+CASE
+    WHEN COALESCE(BTRIM(result_trifecta_text), '') <> ''
+     AND COALESCE(BTRIM(purchased_selection_text), '') <> ''
+     AND REPLACE(result_trifecta_text, ' ', '') = ANY(string_to_array(REPLACE(purchased_selection_text, ' ', ''), '/'))
+    THEN 1
+    ELSE 0
+END
+"""
+
+AUTO_PAYOUT_SQL = f"""
+CASE
+    WHEN {AUTO_HIT_SQL} = 1 THEN COALESCE(result_trifecta_payout, 0)
+    ELSE 0
+END
+"""
+
+ALLOWED_GROUP_COLUMNS = {
+    "rating": "rating",
+    "venue": "venue",
+    "ai_rating": "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, ''), '')",
+    "final_rank": "final_rank",
 }
-
-REQUEST_TIMEOUT = (8, 16)
-POST_TIMEOUT = 35
-MAX_RETRIES = 2
-RETRY_SLEEP_SEC = 0.8
-
-OFFICIAL_MAX_WORKERS = 3
-BEFOREINFO_MAX_WORKERS = 4
-RESULT_MAX_WORKERS = 4
-RESULT_PAGE_MAX_WORKERS = 4
-
-ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "2"))
-SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
-
-JCD_NAME_MAP = {
-    "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島", "05": "多摩川",
-    "06": "浜名湖", "07": "蒲郡", "08": "常滑", "09": "津", "10": "三国",
-    "11": "びわこ", "12": "住之江", "13": "尼崎", "14": "鳴門", "15": "丸亀",
-    "16": "児島", "17": "宮島", "20": "若松", "21": "芦屋", "22": "福岡",
-    "23": "唐津", "24": "大村",
-}
-NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
-RATING_PAGE_MAP = {"★★★★★": "s5", "★★★★☆": "s4"}
 
 
 def log(msg):
-    print(msg, flush=True)
+    print(f"[DEBUG][{jst_now_str()}] {msg}", flush=True)
 
 
 def jst_now():
@@ -71,10 +135,6 @@ def jst_now_str():
     return jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
 
 
-def today_str():
-    return jst_now().strftime("%Y%m%d")
-
-
 def today_text():
     return jst_now().strftime("%Y-%m-%d")
 
@@ -83,4055 +143,2786 @@ def current_hhmm():
     return jst_now().strftime("%H:%M")
 
 
-def to_minutes(hhmm):
+def hhmm_to_minutes(hhmm):
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
 
 
-def is_target_deadline(hhmm):
-    if not hhmm:
-        return False
+def is_not_started(time_str):
     try:
-        now_min = to_minutes(current_hhmm())
-        target_min = to_minutes(hhmm)
-        diff = target_min - now_min
-        if SKIP_PAST_RACES and diff < 0:
-            return False
-        return diff <= ONLY_UPCOMING_HOURS * 60
+        return hhmm_to_minutes(time_str) >= hhmm_to_minutes(current_hhmm())
     except Exception:
-        return False
-
-
-def clamp(v, low, high):
-    return max(low, min(high, v))
-
-
-def is_past_race(time_str):
-    if not time_str:
-        return False
-    try:
-        return to_minutes(time_str) < to_minutes(current_hhmm())
-    except Exception:
-        return False
-
-
-# 結果・払戻の自動反映用。
-# 1Rなど古いレースの「結果は入ったが払戻だけ未反映」も拾えるように長め。
-# 実際の取得件数は RESULT_PENDING_LIMIT で絞るので重くなりすぎない。
-RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "480"))
-RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
-
-# DBに誤った公式結果/払戻が入った時だけ使う修復モード。
-# 通常CronではデフォルトOFF。誤データ修復だけ PC実行や一時Cron で RESULT_REPAIR_MODE=1 にする。
-RESULT_REPAIR_MODE = os.environ.get("RESULT_REPAIR_MODE", "0").strip() == "1"
-RESULT_REPAIR_LOOKBACK_MINUTES = int(os.environ.get("RESULT_REPAIR_LOOKBACK_MINUTES", "720"))
-RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "48"))
-
-
-def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
-    if not hhmm:
-        return False
-    try:
-        now_min = to_minutes(current_hhmm())
-        target_min = to_minutes(hhmm)
-        diff = now_min - target_min
-        return 0 <= diff <= lookback_minutes
-    except Exception:
-        return False
-
-
-def is_settle_pending(base_info):
-    if not base_info:
-        return False
-
-    result_text = str(base_info.get("result_trifecta_text") or "").strip()
-    result_payout = int(base_info.get("result_trifecta_payout") or 0)
-
-    # 3連単の払戻がまだ無いものは、結果文言が入っていても再取得対象に残す。
-    # これで「公式結果は入ったが公式払戻だけ未反映」の取りこぼしを次回回収できる。
-    if result_payout <= 0:
         return True
 
-    # 結果文言も払戻も入っていれば取得済みとみなす。
-    if result_text:
-        return False
 
-    return False
-
-
-def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
-    last_err = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=timeout)
-            res.raise_for_status()
-            res.encoding = res.apparent_encoding
-            return res.text
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries:
-                log(f"[fetch_retry] attempt={attempt}/{max_retries} url={url} err={e}")
-                time.sleep(RETRY_SLEEP_SEC * attempt)
-            else:
-                log(f"[fetch_failed] url={url} err={e}")
-    raise last_err
-
-
-def fetch_soup(url):
-    html = fetch_html(url)
-    return BeautifulSoup(html, "html.parser"), html
-
-
-def normalize_lines(html):
-    soup = BeautifulSoup(html, "html.parser")
-    return normalize_lines_from_soup(soup)
-
-
-def normalize_lines_from_soup(soup):
-    text = soup.get_text("\n")
-    lines = [line.strip() for line in text.splitlines()]
-    return [line for line in lines if line]
-
-
-def build_official_url(jcd, race_no=1):
-    return f"https://boatrace.jp/owpc/pc/race/pcexpect?rno={race_no}&jcd={jcd}&hd={today_str()}"
-
-
-def build_beforeinfo_url(jcd, race_no):
-    qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
-    return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
-
-
-def build_result_url(jcd, race_no):
-    return f"https://boatrace.jp/owpc/pc/race/raceresult?rno={race_no}&jcd={jcd}&hd={today_str()}"
-
-
-def build_resultlist_url(jcd):
-    return f"https://boatrace.jp/owpc/pc/race/resultlist?hd={today_str()}&jcd={jcd}"
-
-
-def row_cells(tr):
-    return tr.find_all(["td", "th"], recursive=False)
-
-
-def parse_race_identity_from_text(text):
-    m = re.search(r"(\d{2})\s*([^\s]+)\s*(\d{1,2})R", text)
-    if not m:
+def minutes_until_start(time_str):
+    try:
+        return hhmm_to_minutes(time_str) - hhmm_to_minutes(current_hhmm())
+    except Exception:
         return None
-    return {"jcd": m.group(1), "venue": m.group(2).strip(), "race_no": int(m.group(3))}
 
 
-def extract_digits_from_cell(cell):
-    digits = []
-    for el in cell.find_all(True):
-        txt = el.get_text(strip=True)
-        if re.fullmatch(r"[1-6]", txt):
-            digits.append(txt)
-    if len(digits) < 18:
-        full_text = cell.get_text(" ", strip=True)
-        digits.extend(re.findall(r"\b([1-6])\b", full_text))
-    return [d for d in digits if d in {"1", "2", "3", "4", "5", "6"}]
+def render_countdown_badge(time_str):
+    diff = minutes_until_start(time_str)
+    if diff is None:
+        return '<span class="countdown-badge countdown-normal">時刻不明</span>'
+    if diff < 0:
+        return '<span class="countdown-badge countdown-closed">締切後</span>'
+    if diff <= 10:
+        return '<span class="countdown-badge countdown-soon">まもなく締切</span>'
+    if diff <= 30:
+        return f'<span class="countdown-badge countdown-warning">あと{diff}分</span>'
+    return f'<span class="countdown-badge countdown-normal">あと{diff}分</span>'
 
 
-def normalize_triplet(a, b, c):
-    if a == b or a == c or b == c:
-        return ""
-    return f"{a}-{b}-{c}"
+def db_connect():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL が設定されていません")
+    return psycopg2.connect(DATABASE_URL)
 
 
-def triplets_from_digit_sequence(digits):
-    triplets = []
-    for i in range(0, len(digits) - 2, 3):
-        t = normalize_triplet(digits[i], digits[i + 1], digits[i + 2])
-        if t and t not in triplets:
-            triplets.append(t)
-        if len(triplets) >= 6:
-            break
-    return triplets
-
-
-def parse_rating_page_dom(rating_text):
-    page = RATING_PAGE_MAP[rating_text]
-    url = f"https://demedas.kyotei.club/{page}/{today_str()}.html"
-    try:
-        soup, _html = fetch_soup(url)
-    except Exception as e:
-        log(f"[rating_page_dom_error] rating={rating_text} url={url} err={e}")
+def parse_json_array_text(value):
+    if not value:
         return []
-    rows = []
-    header_idx = {}
-    header_found = False
-    for tr in soup.find_all("tr"):
-        cells = row_cells(tr)
-        if not cells:
-            continue
-        cell_texts = [c.get_text(" ", strip=True) for c in cells]
-        joined = " | ".join(cell_texts)
-        if (not header_found) and ("会場" in joined and "3連単" in joined and "2連単" in joined):
-            for idx, txt in enumerate(cell_texts):
-                if "会場" in txt:
-                    header_idx["race"] = idx
-                elif txt == "3連単" or "3連単" in txt:
-                    header_idx["trifecta"] = idx
-            if "race" in header_idx and "trifecta" in header_idx:
-                header_found = True
-            continue
-        if not header_found:
-            continue
-        if len(cells) <= max(header_idx["race"], header_idx["trifecta"]):
-            continue
-        race_text = cells[header_idx["race"]].get_text(" ", strip=True)
-        info = parse_race_identity_from_text(race_text) or parse_race_identity_from_text(tr.get_text(" ", strip=True))
-        if not info:
-            continue
-        triplets = triplets_from_digit_sequence(extract_digits_from_cell(cells[header_idx["trifecta"]]))
-        rows.append({
-            "venue": info["venue"],
-            "jcd": info["jcd"],
-            "race_no": info["race_no"],
-            "selection": " / ".join(triplets[:6]),
-        })
-    dedup = {}
-    for r in rows:
-        key = (r["venue"], r["race_no"])
-        if key not in dedup:
-            dedup[key] = r
-    return list(dedup.values())
-
-
-def parse_rating_page():
-    rows = []
-    for rating_text in ["★★★★★", "★★★★☆"]:
-        rows.extend(parse_rating_page_dom(rating_text))
-    dedup = {}
-    for r in rows:
-        key = (r["venue"], r["race_no"])
-        if key not in dedup:
-            dedup[key] = r
-    merged = list(dedup.values())
-    log(f"[rating_page_summary] count={len(merged)}")
-    return merged
-
-
-def parse_official_deadlines_from_html(html):
-    lines = normalize_lines(html)
-    deadlines = {}
-    for i, line in enumerate(lines):
-        if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 80])
-            times = re.findall(r"\d{2}:\d{2}", block)
-            if times:
-                for idx, t in enumerate(times[:12], start=1):
-                    deadlines[idx] = t
-                return deadlines
-    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
-    if len(all_times) >= 12:
-        for idx, t in enumerate(all_times[:12], start=1):
-            deadlines[idx] = t
-    return deadlines
-
-
-def parse_official_deadlines_for_jcd(jcd):
+    if isinstance(value, list):
+        return value
     try:
-        html = fetch_html(build_official_url(jcd, race_no=1))
-    except Exception as e:
-        log(f"[official_deadlines_error] jcd={jcd} err={e}")
-        return jcd, {}
-    return jcd, parse_official_deadlines_from_html(html)
-
-
-def parse_single_race_deadline(jcd, race_no):
-    url = build_official_url(jcd, race_no=race_no)
-    try:
-        html = fetch_html(url)
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
     except Exception:
+        pass
+    return []
+
+
+def display_text(value, empty_text="未取得"):
+    if value is None:
+        return empty_text
+    s = str(value).strip()
+    if s == "" or s == "-":
+        return empty_text
+    return s
+
+
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return float(default)
+        s = str(value).strip()
+        if s == "":
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
+
+def normalize_ai_detail(raw_detail, exhibition_list):
+    detail = (raw_detail or "").strip()
+    has_exhibition = bool(exhibition_list)
+    if has_exhibition and not detail:
+        return "展示反映"
+    if not detail:
+        return "基本補正のみ"
+    if detail in ["モーター反映", "展示反映"]:
+        return "展示補正なし"
+    return detail
+
+
+def yen(n):
+    try:
+        return f"{int(n):,}円"
+    except Exception:
+        return "0円"
+
+
+def signed_yen(n):
+    try:
+        v = int(n)
+    except Exception:
+        return "0円"
+    if v > 0:
+        return f"+{v:,}円"
+    return f"{v:,}円"
+
+
+def lane_color_class(lane):
+    try:
+        lane_num = int(lane)
+    except Exception:
+        lane_num = 0
+    return f"lane-color lane-color-{lane_num}"
+
+
+def render_lane_badge(lane, suffix=""):
+    label = f"{lane}{suffix}" if suffix else str(lane)
+    return f'<span class="{lane_color_class(lane)}">{label}</span>'
+
+
+def render_colored_pick_html(pick_text):
+    s = normalize_pick_text(pick_text)
+    if not s:
         return ""
-    lines = normalize_lines(html)
-    for i, line in enumerate(lines):
-        if "締切予定時刻" in line:
-            block = " ".join(lines[i:i + 30])
-            times = re.findall(r"\d{2}:\d{2}", block)
-            if times:
-                return times[0]
-    all_times = re.findall(r"\b\d{2}:\d{2}\b", " ".join(lines))
-    return all_times[0] if all_times else ""
-
-
-def fill_missing_deadlines(rows, deadlines_cache):
-    for row in rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if not jcd:
-            continue
-        if deadlines_cache.get(jcd, {}).get(row["race_no"], ""):
-            continue
-        single_deadline = parse_single_race_deadline(jcd, row["race_no"])
-        if single_deadline:
-            deadlines_cache.setdefault(jcd, {})[row["race_no"]] = single_deadline
-    return deadlines_cache
-
-
-def fetch_deadlines_parallel(jcds):
-    results = {}
-    with ThreadPoolExecutor(max_workers=OFFICIAL_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_official_deadlines_for_jcd, jcd) for jcd in sorted(jcds)]
-        for future in as_completed(futures):
-            jcd, deadlines = future.result()
-            results[jcd] = deadlines
-    return results
-
-
-def normalize_race_no_value(race_no):
-    try:
-        return int(str(race_no).replace("R", "").replace("r", "").strip())
-    except Exception:
-        m = re.search(r"(\d{1,2})", str(race_no or ""))
-        return int(m.group(1)) if m else 0
-
-
-def is_exhibition_time_value(val):
-    return isinstance(val, (int, float)) and 6.2 <= float(val) <= 8.5
-
-
-def extract_exhibition_times_from_table(soup):
-    lane_times = {}
-    for tr in soup.find_all("tr"):
-        cells = tr.find_all(["td", "th"])
-        if not cells:
-            continue
-        texts = [c.get_text(" ", strip=True) for c in cells]
-        if not texts:
-            continue
-        lane = None
-        first = texts[0].strip()
-        if re.fullmatch(r"[1-6]", first):
-            lane = int(first)
+    parts = s.split("-")
+    html_parts = []
+    for idx, part in enumerate(parts):
+        if idx > 0:
+            html_parts.append('<span class="pick-sep">-</span>')
+        lane_text = str(part).strip()
+        if lane_text.isdigit():
+            html_parts.append(render_lane_badge(int(lane_text)))
         else:
-            full = " ".join(texts[:2])
-            m_lane = re.search(r"\b([1-6])\b", full)
-            if m_lane:
-                lane = int(m_lane.group(1))
-        if lane is None:
-            continue
-
-        vals = []
-        for txt in texts:
-            for x in re.findall(r"\b\d\.\d{2}\b", txt):
-                try:
-                    vals.append(float(x))
-                except Exception:
-                    pass
-        vals = [v for v in vals if is_exhibition_time_value(v)]
-        if vals:
-            lane_times[lane] = min(vals)
-
-    if len(lane_times) == 6:
-        return [f"{lane_times[lane]:.2f}" for lane in range(1, 7)]
-    return []
+            html_parts.append(f'<span class="pick-plain">{lane_text}</span>')
+    return f'<span class="pick-inline">{"".join(html_parts)}</span>'
 
 
-def extract_exhibition_times_from_lines(lines):
-    lane_times = {}
-    lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
-    for idx, lane in lane_positions:
-        seg = lines[idx: idx + 20]
-        vals = []
-        for txt in seg:
-            for x in re.findall(r"\b\d\.\d{2}\b", txt):
-                try:
-                    vals.append(float(x))
-                except Exception:
-                    pass
-        vals = [v for v in vals if is_exhibition_time_value(v)]
-        if vals:
-            lane_times[lane] = min(vals)
-
-    if len(lane_times) == 6:
-        return [f"{lane_times[lane]:.2f}" for lane in range(1, 7)]
-    return []
+def percent(n):
+    try:
+        return f"{float(n):.1f}%"
+    except Exception:
+        return "0%"
 
 
-def build_exhibition_ranks_from_times(times):
-    ranks = {}
-    if len(times) != 6:
-        return ranks
-    float_pairs = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            v = float(t)
-        except Exception:
-            return {}
-        if not is_exhibition_time_value(v):
-            return {}
-        float_pairs.append((lane, v))
-    sorted_pairs = sorted(float_pairs, key=lambda x: x[1])
-    current_rank = 1
-    prev_time = None
-    for idx, (lane, t) in enumerate(sorted_pairs, start=1):
-        if prev_time is None or t != prev_time:
-            current_rank = idx
-        ranks[lane] = current_rank
-        prev_time = t
-    return ranks
+def profit_class(value):
+    try:
+        v = int(value)
+    except Exception:
+        v = 0
+    if v > 0:
+        return "profit-plus"
+    if v < 0:
+        return "profit-minus"
+    return "profit-zero"
 
 
-def extract_wind_direction_from_text(text):
-    s = str(text or "")
+def normalize_pick_text(value):
+    return str(value or "").replace(" ", "").replace("\n", "").replace("\r", "").strip()
+
+
+def selection_items(selection_text):
+    s = str(selection_text or "").strip()
     if not s:
-        return ""
-
-    directions = [
-        "北北西", "西北西", "西南西", "南南西",
-        "南南東", "東南東", "東北東", "北北東",
-        "北西", "南西", "南東", "北東",
-        "北", "西", "南", "東",
-        "無風",
-    ]
-
-    compact = re.sub(r"\s+", "", s)
-
-    label_patterns = [
-        r"風向[:：]?([北西南東無風]{1,3})",
-        r"風向き[:：]?([北西南東無風]{1,3})",
-        r"([北西南東無風]{1,3})の風",
-        r"([北西南東無風]{1,3})\s*([0-9]+(?:\.[0-9]+)?)\s*m",
-    ]
-
-    for pat in label_patterns:
-        m = re.search(pat, compact)
-        if m:
-            cand = m.group(1)
-            if cand in directions:
-                return cand
-
-    for direction in directions:
-        if direction in compact:
-            return direction
-        if direction in s:
-            return direction
-    return ""
-
-
-
-def parse_weather_info_from_lines(lines):
-    joined = " ".join(lines)
-    compact = re.sub(r"\s+", "", joined)
-
-    weather = {
-        "weather": "",
-        "wind_speed": None,
-        "wave_height": None,
-        "wind_type": "",
-        "wind_dir": "",
-        "water_state_score": 0.0,
-    }
-
-    for word in ["晴", "曇", "雨", "雪"]:
-        if word in compact:
-            weather["weather"] = word
-            break
-
-    weather["wind_dir"] = extract_wind_direction_from_text(compact or joined)
-
-    # 風速はラベル付きだけ拾う。競走水面の 1800m などを誤取得しないようにする。
-    wind_patterns = [
-        r"風速[:：]?([0-9]+(?:\.[0-9]+)?)",
-        r"風速([0-9]+(?:\.[0-9]+)?)m",
-        r"風速([0-9]+(?:\.[0-9]+)?)m/s",
-        r"風速([0-9]+(?:\.[0-9]+)?)メートル",
-    ]
-    for pat in wind_patterns:
-        m_wind = re.search(pat, compact, re.I)
-        if m_wind:
-            try:
-                v = float(m_wind.group(1))
-                if 0 <= v <= 20:
-                    weather["wind_speed"] = v
-                    break
-            except Exception:
-                pass
-
-    # 波高もラベル付きだけ拾う。
-    wave_patterns = [
-        r"波高[:：]?([0-9]+(?:\.[0-9]+)?)",
-        r"波高([0-9]+(?:\.[0-9]+)?)cm",
-        r"波高([0-9]+(?:\.[0-9]+)?)センチ",
-    ]
-    for pat in wave_patterns:
-        m_wave = re.search(pat, compact, re.I)
-        if m_wave:
-            try:
-                v = float(m_wave.group(1))
-                if 0 <= v <= 50:
-                    weather["wave_height"] = v
-                    break
-            except Exception:
-                pass
-
-    if any(x in compact for x in ["向い風", "向かい風", "向風", "ホーム向い", "ホーム向かい"]):
-        weather["wind_type"] = "向い風"
-    elif any(x in compact for x in ["追い風", "追風", "ホーム追い"]):
-        weather["wind_type"] = "追い風"
-    elif any(x in compact for x in ["横風", "左横風", "右横風", "左横", "右横"]):
-        weather["wind_type"] = "横風"
-
-    wind = weather["wind_speed"]
-    wave = weather["wave_height"]
-    score = 0.0
-
-    if isinstance(wind, (int, float)):
-        if wind >= 7:
-            score -= 0.18
-        elif wind >= 5:
-            score -= 0.10
-        elif wind <= 1:
-            score += 0.05
-        elif wind <= 2:
-            score += 0.04
-
-    if isinstance(wave, (int, float)):
-        if wave >= 7:
-            score -= 0.18
-        elif wave >= 5:
-            score -= 0.10
-        elif wave <= 1:
-            score += 0.05
-        elif wave <= 2:
-            score += 0.04
-
-    if weather["wind_type"] == "向い風":
-        score -= 0.04
-    elif weather["wind_type"] == "追い風":
-        score += 0.03
-    elif weather["wind_type"] == "横風":
-        score -= 0.03
-
-    if weather["wind_dir"] == "無風":
-        score += 0.03
-
-    weather["water_state_score"] = round(score, 2)
-    return weather
-
-
-
-def get_wind_level(weather_info):
-    """
-    風補正の強さを 0.0〜1.0 で返す。
-    風速が取れない時は 0。
-    """
-    try:
-        wind = float((weather_info or {}).get("wind_speed") or 0)
-    except Exception:
-        wind = 0.0
-
-    if wind >= 8:
-        return 1.0
-    if wind >= 6:
-        return 0.8
-    if wind >= 5:
-        return 0.65
-    if wind >= 4:
-        return 0.45
-    if wind >= 3:
-        return 0.25
-    return 0.0
-
-def parse_st_value(text):
-    if text is None:
-        return None
-    s = str(text).strip().upper()
-    if not s:
-        return None
-
-    s = s.replace("ＳＴ", "").replace("ST", "").strip().replace(" ", "")
-
-    m = re.search(r"[FL]?\s*(\d?\.\d{2})", s)
-    if m:
-        try:
-            v = float(m.group(1))
-            if 0.0 <= v <= 1.0:
-                return v
-        except Exception:
-            pass
-
-    m = re.search(r"[FL]?\.(\d{2})", s)
-    if m:
-        try:
-            v = float(f"0.{m.group(1)}")
-            if 0.0 <= v <= 1.0:
-                return v
-        except Exception:
-            pass
-    return None
-
-
-def parse_start_display_from_lines(lines):
-    empty = {
-        "course_order": [],
-        "course_map": {},
-        "st_map": {},
-        "entry_change": False,
-        "entry_text": "",
-        "pre_move_lanes": [],
-        "pulled_back_lanes": [],
-        "entry_severity": 0.0,
-        "entry_reason_text": "",
-    }
-
-    start_idx = None
-    for idx, line in enumerate(lines):
-        if "スタート展示" in line:
-            start_idx = idx
-            break
-    if start_idx is None:
-        return empty
-
-    end_idx = len(lines)
-    for idx in range(start_idx + 1, len(lines)):
-        if any(marker in lines[idx] for marker in ["水面気象情報", "スタンド", "スマートフォン版へ", "PAGE TOP"]):
-            end_idx = idx
-            break
-
-    segment_lines = lines[start_idx:end_idx]
-    segment = " ".join(segment_lines)
-
-    pairs = []
-    pattern = re.compile(r"\b([1-6])\b\s*(?:Image)?\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
-    for m in pattern.finditer(segment):
-        try:
-            lane = int(m.group(1))
-        except Exception:
-            continue
-        st = parse_st_value(m.group(2))
-        if st is None:
-            continue
-        pairs.append((lane, st))
-
-    if len(pairs) < 6:
-        for idx, line in enumerate(segment_lines):
-            s = str(line).strip()
-            lane = None
-            if re.fullmatch(r"[1-6]", s):
-                lane = int(s)
-            else:
-                m = re.match(r"^([1-6])(?:\s+Image)?\s+([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})$", s)
-                if m:
-                    lane = int(m.group(1))
-                    st = parse_st_value(m.group(2))
-                    if st is not None:
-                        pairs.append((lane, st))
-                        continue
-            if lane is None:
-                continue
-            for look in segment_lines[idx + 1: idx + 4]:
-                st = parse_st_value(look)
-                if st is not None:
-                    pairs.append((lane, st))
-                    break
-
-    order = []
-    st_map = {}
-    seen = set()
-    for lane, st in pairs:
-        if lane in seen:
-            continue
-        seen.add(lane)
-        order.append(lane)
-        st_map[lane] = st
-        if len(order) >= 6:
-            break
-
-    course_map = {lane: idx + 1 for idx, lane in enumerate(order)} if order else {}
-    entry_change = bool(order and order != [1, 2, 3, 4, 5, 6])
-    pre_move_lanes = sorted([lane for lane, course in course_map.items() if course < lane])
-    pulled_back_lanes = sorted([lane for lane, course in course_map.items() if course > lane])
-
-    entry_severity = 0.0
-    if entry_change:
-        entry_severity += 0.16
-    if course_map.get(1, 1) > 1:
-        entry_severity += 0.11 * min(3, course_map.get(1, 1) - 1)
-    for lane in pre_move_lanes:
-        gain = max(1, lane - course_map.get(lane, lane))
-        entry_severity += 0.05 * min(3, gain)
-        if lane >= 4 and course_map.get(lane, lane) <= 3:
-            entry_severity += 0.06
-        elif lane >= 5 and course_map.get(lane, lane) <= 4:
-            entry_severity += 0.03
-    if len(pre_move_lanes) >= 2:
-        entry_severity += 0.05
-    entry_severity = round(clamp(entry_severity, 0.0, 0.68), 2)
-
-    entry_text = "-".join([str(x) for x in order]) if order else ""
-    reason_parts = []
-    if entry_change and entry_text:
-        reason_parts.append(f"進入:{entry_text}")
-    if course_map.get(1, 1) > 1:
-        reason_parts.append("1がイン外し")
-    for lane in pre_move_lanes[:2]:
-        if lane != 1:
-            reason_parts.append(f"{lane}前づけ")
-
-    return {
-        "course_order": order,
-        "course_map": course_map,
-        "st_map": st_map,
-        "entry_change": entry_change,
-        "entry_text": entry_text,
-        "pre_move_lanes": pre_move_lanes,
-        "pulled_back_lanes": pulled_back_lanes,
-        "entry_severity": entry_severity,
-        "entry_reason_text": " / ".join(reason_parts[:3]),
-    }
-
-
-def parse_start_info_from_lines(lines):
-    start_display = parse_start_display_from_lines(lines)
-    st_map = dict(start_display.get("st_map") or {})
-
-    if len(st_map) < 4:
-        lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
-        for idx, lane in lane_positions:
-            seg = lines[idx: idx + 12]
-            for txt in seg:
-                v = parse_st_value(txt)
-                if v is not None:
-                    st_map[lane] = v
-                    break
-
-        if len(st_map) < 6:
-            joined = " ".join(lines)
-            pattern = re.compile(r"([1-6])\s*([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})")
-            for m in pattern.finditer(joined):
-                try:
-                    lane = int(m.group(1))
-                except Exception:
-                    continue
-                v = parse_st_value(m.group(2))
-                if v is not None and lane not in st_map:
-                    st_map[lane] = v
-
-    return {
-        "st_map": st_map,
-        "course_order": start_display.get("course_order", []),
-        "course_map": start_display.get("course_map", {}),
-        "entry_change": bool(start_display.get("entry_change")),
-        "entry_text": str(start_display.get("entry_text") or ""),
-        "pre_move_lanes": list(start_display.get("pre_move_lanes", [])),
-        "pulled_back_lanes": list(start_display.get("pulled_back_lanes", [])),
-        "entry_severity": float(start_display.get("entry_severity", 0) or 0),
-        "entry_reason_text": str(start_display.get("entry_reason_text") or ""),
-    }
-
-
-def build_foot_material(exhibition_info, start_info, weather_info=None):
-    weather_info = weather_info or {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    st_map = start_info.get("st_map", {}) if start_info else {}
-    course_order = list(start_info.get("course_order", []) or []) if start_info else []
-    course_map = dict(start_info.get("course_map", {}) or {}) if start_info else {}
-    entry_change = bool(start_info.get("entry_change")) if start_info else False
-    pre_move_lanes = list(start_info.get("pre_move_lanes", []) or []) if start_info else []
-    pulled_back_lanes = list(start_info.get("pulled_back_lanes", []) or []) if start_info else []
-    entry_severity = float(start_info.get("entry_severity", 0) or 0) if start_info else 0.0
-    entry_reason_text = str(start_info.get("entry_reason_text") or "").strip() if start_info else ""
-
-    lane_scores = {lane: 0.0 for lane in range(1, 7)}
-    reasons = []
-    top_lane_reasons = []
-
-    float_times = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            v = float(t)
-            if is_exhibition_time_value(v):
-                float_times.append((lane, v))
-        except Exception:
-            pass
-
-    if len(float_times) == 6:
-        sorted_times = sorted(float_times, key=lambda x: x[1])
-        fastest_lane, fastest_time = sorted_times[0]
-        second_lane, second_time = sorted_times[1]
-        slowest_lane, slowest_time = sorted_times[-1]
-        spread = slowest_time - fastest_time
-        gap12 = second_time - fastest_time
-
-        if spread >= 0.18:
-            reasons.append("足:足差あり")
-            lane_scores[fastest_lane] += 0.34
-            lane_scores[second_lane] += 0.12
-            lane_scores[slowest_lane] -= 0.20
-        elif spread >= 0.12:
-            reasons.append("足:足差ややあり")
-            lane_scores[fastest_lane] += 0.24
-            lane_scores[second_lane] += 0.08
-            lane_scores[slowest_lane] -= 0.14
-        elif spread >= 0.08:
-            lane_scores[fastest_lane] += 0.14
-            lane_scores[slowest_lane] -= 0.08
-
-        if gap12 >= 0.05:
-            lane_scores[fastest_lane] += 0.08
-
-        if ranks.get(fastest_lane) == 1:
-            lane_scores[fastest_lane] += 0.10
-
-    if len(st_map) >= 4:
-        sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
-        if len(sorted_st) >= 2:
-            best_lane, best_st = sorted_st[0]
-            second_lane, second_st = sorted_st[1]
-            worst_lane, worst_st = sorted_st[-1]
-            st_spread = worst_st - best_st
-
-            if best_st <= 0.10:
-                lane_scores[best_lane] += 0.18
-                top_lane_reasons.append(f"足:{best_lane}号艇足色良さげ")
-            elif best_st <= 0.12:
-                lane_scores[best_lane] += 0.12
-
-            if st_spread >= 0.10:
-                reasons.append("足:ST気配あり")
-                lane_scores[best_lane] += 0.10
-                lane_scores[second_lane] += 0.05
-                lane_scores[worst_lane] -= 0.12
-            elif st_spread >= 0.06:
-                lane_scores[best_lane] += 0.06
-                lane_scores[worst_lane] -= 0.06
-
-    if ranks:
-        for lane in range(1, 7):
-            rank = ranks.get(lane)
-            if rank == 1:
-                lane_scores[lane] += 0.08
-            elif rank == 6:
-                lane_scores[lane] -= 0.06
-
-    if entry_change and course_map:
-        reasons.append("足:進入変化")
-        lane1_course = course_map.get(1, 1)
-        if lane1_course == 2:
-            lane_scores[1] -= 0.18
-        elif lane1_course >= 3:
-            lane_scores[1] -= 0.28
-
-        course1_lane = course_order[0] if course_order else None
-        if course1_lane and course1_lane != 1:
-            lane_scores[course1_lane] += 0.12
-
-        for lane in pre_move_lanes:
-            course = course_map.get(lane, lane)
-            gain = max(1, lane - course)
-            bonus = min(0.08 + 0.05 * gain, 0.22)
-            lane_scores[lane] += bonus
-            if lane >= 4 and course <= 3:
-                lane_scores[lane] += 0.05
-            if lane != 1 and f"足:{lane}前づけ注意" not in top_lane_reasons:
-                top_lane_reasons.append(f"足:{lane}前づけ注意")
-
-        for lane in pulled_back_lanes:
-            course = course_map.get(lane, lane)
-            loss = max(1, course - lane)
-            lane_scores[lane] -= min(0.06 + 0.03 * loss, 0.16)
-
-    water_state_score = float(weather_info.get("water_state_score") or 0)
-    if water_state_score < 0:
-        if 1 in lane_scores:
-            lane_scores[1] += abs(water_state_score) * 0.25
-        for lane in [5, 6]:
-            lane_scores[lane] -= abs(water_state_score) * 0.18
-
-    sorted_lane_scores = sorted(lane_scores.items(), key=lambda x: x[1], reverse=True)
-    best_lane, best_score = sorted_lane_scores[0]
-    second_score = sorted_lane_scores[1][1] if len(sorted_lane_scores) >= 2 else 0.0
-
-    if best_score >= 0.22 and (best_score - second_score) >= 0.08:
-        if f"足:{best_lane}号艇足色良さげ" not in top_lane_reasons:
-            top_lane_reasons.append(f"足:{best_lane}号艇足色良さげ")
-
-    positive_scores = [v for v in lane_scores.values() if v > 0]
-    negative_scores = [v for v in lane_scores.values() if v < 0]
-
-    foot_bonus = 0.0
-    if positive_scores:
-        foot_bonus += min(max(positive_scores), 0.40) * 0.65
-    if negative_scores:
-        foot_bonus += max(min(negative_scores), -0.20) * 0.25
-
-    if len(float_times) == 6:
-        spread = max(v for _, v in float_times) - min(v for _, v in float_times)
-        if spread >= 0.12:
-            foot_bonus += 0.10
-        elif spread >= 0.08:
-            foot_bonus += 0.05
-
-    if entry_change:
-        foot_bonus += min(0.10, entry_severity * 0.18)
-
-    foot_bonus = round(foot_bonus, 2)
-    merged_reasons = reasons[:]
-    if entry_reason_text:
-        merged_reasons.append(entry_reason_text)
-    merged_reasons.extend(top_lane_reasons)
-    unique_reasons = list(dict.fromkeys([x for x in merged_reasons if x]))
-    reason_text = " / ".join(unique_reasons[:4])
-
-    return {
-        "lane_scores": lane_scores,
-        "foot_bonus": foot_bonus,
-        "reason_text": reason_text,
-        "st_map": st_map,
-        "course_order": course_order,
-        "course_map": course_map,
-        "entry_change": entry_change,
-        "entry_text": str(start_info.get("entry_text") or "") if start_info else "",
-        "pre_move_lanes": pre_move_lanes,
-        "pulled_back_lanes": pulled_back_lanes,
-        "entry_severity": entry_severity,
-        "entry_reason_text": entry_reason_text,
-    }
-
-
-def parse_beforeinfo_for_key(jcd, race_no):
-    race_no = normalize_race_no_value(race_no)
-    beforeinfo_url = build_beforeinfo_url(jcd, race_no)
-    empty_info = {
-        "exhibition": {"times": [], "ranks": {}},
-        "weather": {
-            "weather": "",
-            "wind_speed": None,
-            "wave_height": None,
-            "wind_type": "",
-            "wind_dir": "",
-            "water_state_score": 0.0,
-        },
-        "start_info": {
-            "st_map": {},
-            "course_order": [],
-            "course_map": {},
-            "entry_change": False,
-            "entry_text": "",
-            "pre_move_lanes": [],
-            "pulled_back_lanes": [],
-            "entry_severity": 0.0,
-            "entry_reason_text": "",
-        },
-    }
-    try:
-        html = fetch_html(beforeinfo_url)
-    except Exception as e:
-        log(f"[beforeinfo_error] jcd={jcd} race_no={race_no} err={e}")
-        return (jcd, race_no), empty_info
-
-    soup = BeautifulSoup(html, "html.parser")
-    lines = normalize_lines_from_soup(soup)
-
-    exhibition_times = extract_exhibition_times_from_table(soup)
-    if len(exhibition_times) != 6:
-        exhibition_times = extract_exhibition_times_from_lines(lines)
-    exhibition_ranks = build_exhibition_ranks_from_times(exhibition_times) if exhibition_times else {}
-
-    weather_info = parse_weather_info_from_lines(lines)
-    start_info = parse_start_info_from_lines(lines)
-
-    return (jcd, race_no), {
-        "exhibition": {
-            "times": exhibition_times,
-            "ranks": exhibition_ranks,
-        },
-        "weather": weather_info,
-        "start_info": start_info,
-    }
-
-
-def parse_result_triplet_from_text(text):
-    s = str(text or "")
-    compact = re.sub(r"\s+", "", s)
-    patterns = [
-        r"3連単[^0-9]*([1-6])[-=]([1-6])[-=]([1-6])",
-        r"組番[^0-9]*([1-6])[-=]([1-6])[-=]([1-6])",
-        r"\b([1-6])-([1-6])-([1-6])\b",
-    ]
-    for pat in patterns:
-        m = re.search(pat, compact)
-        if m:
-            a, b, c = m.group(1), m.group(2), m.group(3)
-            if len({a, b, c}) == 3:
-                return f"{a}-{b}-{c}"
-    return ""
-
-
-def parse_kimarite_from_text(text):
-    s = str(text or "")
-    words = ["まくり差し", "まくり", "差し", "抜き", "恵まれ", "逃げ"]
-    for w in words:
-        if w in s:
-            return w
-    return ""
-
-
-def parse_payout_from_text(text):
-    """
-    3連単の払戻を安全寄りに拾う。
-    空白除去で「¥660 1人気」→「6601」のように連結する誤取得を避ける。
-    """
-    s = str(text or "")
-    if not s:
-        return 0
-
-    normalized = re.sub(r"[ \t\r\f\v]+", " ", s)
-    compact = re.sub(r"\s+", "", s)
-
-    def to_int(num_text):
-        try:
-            return int(str(num_text).replace(",", "").replace(" ", ""))
-        except Exception:
-            return 0
-
-    def valid_money(val):
-        return 100 <= int(val or 0) <= 5000000
-
-    def split_money_and_popularity(digits):
-        digits = re.sub(r"\D", "", str(digits or ""))
-        if len(digits) < 4:
-            return 0
-        candidates = []
-        for pop_len in (1, 2, 3):
-            if len(digits) <= pop_len:
-                continue
-            money = int(digits[:-pop_len])
-            pop = int(digits[-pop_len:])
-            if 1 <= pop <= 120 and valid_money(money):
-                candidates.append((pop_len, money))
-        if not candidates:
-            return 0
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1]
-
-    # compactで「¥6601人気」になったケースだけ救済
-    for m in re.finditer(r"[¥￥]([0-9]{4,9})人気", compact):
-        val = split_money_and_popularity(m.group(1))
-        if valid_money(val):
-            return val
-
-    # 通貨記号/円つきは空白を残した文字列で見る
-    for pat in [
-        r"[¥￥]\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?![0-9])",
-        r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\s*円(?![0-9])",
-    ]:
-        for m in re.finditer(pat, normalized):
-            val = to_int(m.group(1))
-            if valid_money(val):
-                return val
-
-    # 3連単の行・セルだけを対象にする
-    line_candidates = []
-    for raw_line in s.splitlines():
-        line = re.sub(r"[ \t\r\f\v]+", " ", raw_line).strip()
-        if not line:
-            continue
-        has_context = (
-            "3連単" in line
-            or "三連単" in line
-            or "組番" in line
-            or bool(parse_result_triplet_from_text(line))
-        )
-        if not has_context:
-            continue
-
-        for pat in [
-            r"[¥￥]\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?![0-9])",
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\s*円(?![0-9])",
-        ]:
-            for m in re.finditer(pat, line):
-                val = to_int(m.group(1))
-                if valid_money(val):
-                    line_candidates.append(val)
-
-        tri_match = re.search(r"[1-6]\s*[-=]\s*[1-6]\s*[-=]\s*[1-6](.*)$", line)
-        if tri_match:
-            tail = tri_match.group(1)
-            for m in re.finditer(r"(?:[¥￥]\s*)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?:\s*円)?(?!\s*人気)(?![0-9])", tail):
-                val = to_int(m.group(1))
-                if valid_money(val):
-                    line_candidates.append(val)
-
-    if line_candidates:
-        return line_candidates[0]
-
-    # 表セル結合の「3連単 1-2-3 660 1人気」型
-    if ("3連単" in normalized or "三連単" in normalized or "組番" in normalized or parse_result_triplet_from_text(normalized)):
-        m = re.search(
-            r"[1-6]\s*[-=]\s*[1-6]\s*[-=]\s*[1-6]\s+(?:[¥￥]\s*)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?:\s*円)?(?:\s+[0-9]{1,3}\s*人気)?",
-            normalized,
-        )
-        if m:
-            val = to_int(m.group(1))
-            if valid_money(val):
-                return val
-
-    # 裸の4桁以上は誤取得しやすいので拾わない
-    return 0
-
-
-def parse_result_triplet_from_cells(cell_texts):
-    """
-    公式結果ページの table cell から3連単を拾う補助。
-    例: ["3連単", "1", "4", "2", "780", "2人気"] のように
-    号艇が別セルになっている場合に対応する。
-    """
-    texts = [str(x or "").strip() for x in (cell_texts or [])]
-    joined = " ".join(texts)
-
-    tri = parse_result_triplet_from_text(joined)
-    if tri:
-        return tri
-
-    start_idx = 0
-    for i, txt in enumerate(texts):
-        if "3連単" in txt or "三連単" in txt:
-            start_idx = i + 1
-            break
-
-    digits = []
-    for txt in texts[start_idx:]:
-        found = re.findall(r"\b([1-6])\b", txt)
-        for d in found:
-            digits.append(d)
-            if len(digits) >= 3:
-                break
-        if len(digits) >= 3:
-            break
-
-    if len(digits) >= 3:
-        return normalize_triplet(digits[0], digits[1], digits[2])
-    return ""
-
-
-def parse_payout_from_cells(cell_texts):
-    """
-    公式結果ページの table cell から3連単払戻を拾う補助。
-    780円のような3桁払戻や、円表記なしの別セルに対応する。
-    人気・艇番・R番号は除外し、3連単行だけを対象にする。
-    """
-    texts = [str(x or "").strip() for x in (cell_texts or [])]
-    if not texts:
-        return 0
-
-    joined = " ".join(texts)
-    if ("3連単" not in joined) and ("三連単" not in joined) and not parse_result_triplet_from_cells(texts):
-        return 0
-
-    candidates = []
-    for txt in texts:
-        s = str(txt or "").strip()
-        if not s:
-            continue
-        if "人気" in s:
-            continue
-        s = s.replace("円", "").replace("¥", "").replace("￥", "").replace(",", "").strip()
-        if not re.fullmatch(r"\d{3,7}", s):
-            continue
-        try:
-            val = int(s)
-        except Exception:
-            continue
-        if 100 <= val <= 5000000:
-            candidates.append(val)
-
-    if candidates:
-        return max(candidates)
-
-    return parse_payout_from_text(joined)
-
-
-def parse_resultlist_for_jcd(jcd):
-    url = build_resultlist_url(jcd)
-    try:
-        html = fetch_html(url, timeout=(6, 12), max_retries=2)
-    except Exception as e:
-        log(f"[resultlist_error] jcd={jcd} err={e}")
-        return jcd, {}
-
-    soup = BeautifulSoup(html, "html.parser")
-    lines = normalize_lines_from_soup(soup)
-    compact_html = re.sub(r"\s+", "", soup.get_text(" "))
-
-    results = {}
-
-    # 1) まず table/tr 単位で拾う
-    current_race_no = None
-    for tr in soup.find_all("tr"):
-        cells = tr.find_all(["td", "th"])
-        if not cells:
-            continue
-
-        cell_texts = [c.get_text(" ", strip=True) for c in cells]
-        row_text = " ".join(cell_texts)
-        compact_row = re.sub(r"\s+", "", row_text)
-
-        m_race = re.search(r"(\d{1,2})R", compact_row)
-        if m_race:
-            current_race_no = int(m_race.group(1))
-
-        tri = parse_result_triplet_from_cells(cell_texts) or parse_result_triplet_from_text(compact_row)
-        if tri and current_race_no:
-            try:
-                a, b, c = [int(x) for x in tri.split("-")]
-            except Exception:
-                a = b = c = None
-            if a is not None and current_race_no not in results:
-                cell_pay = parse_payout_from_cells(cell_texts)
-                results[current_race_no] = {
-                    "triplet": tri,
-                    "head": a,
-                    "second": b,
-                    "third": c,
-                    "kimarite": parse_kimarite_from_text(compact_row),
-                    "trifecta_payout": cell_pay or parse_payout_from_text(row_text),
-                }
-            elif current_race_no in results:
-                kim = parse_kimarite_from_text(compact_row)
-                if kim and not results[current_race_no].get("kimarite"):
-                    results[current_race_no]["kimarite"] = kim
-
-                pay = parse_payout_from_cells(cell_texts) or parse_payout_from_text(row_text)
-                if pay and pay > int(results[current_race_no].get("trifecta_payout") or 0):
-                    results[current_race_no]["trifecta_payout"] = pay
-
-    # 2) lines ベースで不足分を補完
-    current_race_no = None
-    for line in lines:
-        compact_line = re.sub(r"\s+", "", str(line or ""))
-        m_race = re.search(r"(\d{1,2})R", compact_line)
-        if m_race:
-            current_race_no = int(m_race.group(1))
-
-        tri = parse_result_triplet_from_text(compact_line)
-        if tri and current_race_no and current_race_no not in results:
-            try:
-                a, b, c = [int(x) for x in tri.split("-")]
-            except Exception:
-                continue
-            results[current_race_no] = {
-                "triplet": tri,
-                "head": a,
-                "second": b,
-                "third": c,
-                "kimarite": parse_kimarite_from_text(compact_line),
-                "trifecta_payout": parse_payout_from_text(line),
-            }
-
-        kim = parse_kimarite_from_text(compact_line)
-        if kim and current_race_no in results and not results[current_race_no].get("kimarite"):
-            results[current_race_no]["kimarite"] = kim
-
-        pay = parse_payout_from_text(line)
-        if pay and current_race_no in results and pay > int(results[current_race_no].get("trifecta_payout") or 0):
-            results[current_race_no]["trifecta_payout"] = pay
-
-    # 3) それでも不足なら HTML 全体からレースごとにざっくり拾う
-    for race_no in range(1, 13):
-        m = re.search(
-            rf"{race_no}R(.*?)(?:{race_no + 1}R|締切予定時刻|進入コース別結果|艇番別結果|$)",
-            compact_html,
-        )
-        if not m:
-            continue
-        chunk = m.group(1)
-        tri = parse_result_triplet_from_text(chunk)
-        pay = 0
-        kim = parse_kimarite_from_text(chunk)
-
-        if race_no in results:
-            if pay and pay > int(results[race_no].get("trifecta_payout") or 0):
-                results[race_no]["trifecta_payout"] = pay
-            if kim and not results[race_no].get("kimarite"):
-                results[race_no]["kimarite"] = kim
-            continue
-
-        if not tri:
-            continue
-        try:
-            a, b, c = [int(x) for x in tri.split("-")]
-        except Exception:
-            continue
-        results[race_no] = {
-            "triplet": tri,
-            "head": a,
-            "second": b,
-            "third": c,
-            "kimarite": kim,
-            "trifecta_payout": pay,
-        }
-
-    log(f"[resultlist_ok] jcd={jcd} count={len(results)}")
-    return jcd, results
-
-
-def fetch_day_results_parallel(venue_targets):
-    results = {}
-    jcds = sorted(set(venue_targets.keys()))
-    if not jcds:
-        return results
-
-    with ThreadPoolExecutor(max_workers=RESULT_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_resultlist_for_jcd, jcd) for jcd in jcds]
-        for future in as_completed(futures):
-            jcd, venue_results = future.result()
-            for race_no, info in (venue_results or {}).items():
-                results[(jcd, race_no)] = info
-    return results
-
-
-def parse_raceresult_for_key(jcd, race_no):
-    url = build_result_url(jcd, race_no)
-    try:
-        html = fetch_html(url, timeout=(6, 12), max_retries=2)
-    except Exception as e:
-        log(f"[raceresult_error] jcd={jcd} race_no={race_no} err={e}")
-        return (jcd, race_no), {}
-
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
-    lines = normalize_lines_from_soup(soup)
-
-    tri = parse_result_triplet_from_text(text)
-    pay = parse_payout_from_text(text)
-    kim = parse_kimarite_from_text(text)
-
-    # table cell が分かれている3連単行を優先して確認。
-    # 3桁払戻や円なし表記でも拾えるようにする。
-    for tr in soup.find_all("tr"):
-        cells = tr.find_all(["td", "th"])
-        if not cells:
-            continue
-        cell_texts = [c.get_text(" ", strip=True) for c in cells]
-        row_text = " ".join(cell_texts)
-        if "3連単" not in row_text and "三連単" not in row_text:
-            continue
-        cell_tri = parse_result_triplet_from_cells(cell_texts)
-        cell_pay = parse_payout_from_cells(cell_texts)
-        cell_kim = parse_kimarite_from_text(row_text)
-        if cell_tri:
-            tri = cell_tri
-        if cell_pay > 0:
-            pay = cell_pay
-        if cell_kim and not kim:
-            kim = cell_kim
-        if tri and pay > 0:
-            break
-
-    if not tri:
-        for line in lines:
-            tri = parse_result_triplet_from_text(line)
-            if tri:
-                break
-
-    if pay <= 0:
-        for line in lines:
-            pay = parse_payout_from_text(line)
-            if pay > 0:
-                break
-
-    if not kim:
-        for line in lines:
-            kim = parse_kimarite_from_text(line)
-            if kim:
-                break
-
-    if not tri and pay <= 0:
-        log(f"[raceresult_empty] jcd={jcd} race_no={race_no}")
-        return (jcd, race_no), {}
-
-    out = {
-        "triplet": tri,
-        "kimarite": kim,
-        "trifecta_payout": int(pay or 0),
-    }
-    log(f"[raceresult_ok] jcd={jcd} race_no={race_no} triplet={tri} payout={int(pay or 0)}")
-    return (jcd, race_no), out
-
-
-def fetch_raceresult_parallel(keys):
-    results = {}
-    keys = sorted(set(keys))
-    if not keys:
-        return results
-
-    with ThreadPoolExecutor(max_workers=RESULT_PAGE_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_raceresult_for_key, jcd, race_no) for (jcd, race_no) in keys]
-        for future in as_completed(futures):
-            key, info = future.result()
-            if info:
-                results[key] = info
-    return results
-
-
-def build_day_trend_bias(jcd, target_race_no, result_cache):
-
-    def empty_bias(sample_size, phase="observe", observe_text=""):
-        return {
-            "head": {lane: 0.0 for lane in range(1, 7)},
-            "second": {lane: 0.0 for lane in range(1, 7)},
-            "third": {lane: 0.0 for lane in range(1, 7)},
-            "notes": [],
-            "trend_text": "",
-            "sample_size": sample_size,
-            "active": False,
-            "phase": phase,
-            "observe_text": observe_text,
-        }
-
-    target_race_no = normalize_race_no_value(target_race_no)
-    prior = []
-    for race_no in range(1, target_race_no):
-        info = result_cache.get((jcd, race_no))
-        if info and info.get("triplet"):
-            prior.append(info)
-
-    n = len(prior)
-    if n < 5:
-        observe_text = f"当日傾向はまだ観察のみ({n}R)" if n > 0 else ""
-        return empty_bias(n, phase="observe", observe_text=observe_text)
-
-    head_counts = {lane: 0 for lane in range(1, 7)}
-    second_counts = {lane: 0 for lane in range(1, 7)}
-    third_counts = {lane: 0 for lane in range(1, 7)}
-    kimarite_counts = {}
-
-    for info in prior:
-        head_counts[info["head"]] += 1
-        second_counts[info["second"]] += 1
-        third_counts[info["third"]] += 1
-        k = str(info.get("kimarite") or "")
-        if k:
-            kimarite_counts[k] = kimarite_counts.get(k, 0) + 1
-
-    head1_rate = head_counts[1] / n
-    head23_rate = (head_counts[2] + head_counts[3]) / n
-    outer_head_rate = (head_counts[4] + head_counts[5] + head_counts[6]) / n
-    second2_rate = second_counts[2] / n
-    third456_rate = (third_counts[4] + third_counts[5] + third_counts[6]) / n
-
-    kim_total = sum(kimarite_counts.values())
-    nige_rate = kimarite_counts.get("逃げ", 0) / kim_total if kim_total else 0.0
-    sashi_rate = (kimarite_counts.get("差し", 0) + kimarite_counts.get("まくり差し", 0)) / kim_total if kim_total else 0.0
-    makuri_rate = kimarite_counts.get("まくり", 0) / kim_total if kim_total else 0.0
-
-    strong_inside = head1_rate >= 0.64
-    strong_inside_confirm = strong_inside and nige_rate >= 0.58
-
-    inside_weak = head1_rate <= 0.30
-    attack_style = head23_rate >= 0.38 or sashi_rate >= 0.36
-    outer_style = outer_head_rate >= 0.26 or makuri_rate >= 0.24
-    inside_weak_confirm = inside_weak and (attack_style or outer_style)
-
-    second2_confirm = second2_rate >= 0.38
-    outer3weak_confirm = n >= 6 and third456_rate <= 0.20
-
-    confirm_flags = []
-    if strong_inside_confirm:
-        confirm_flags.append("inside")
-    if inside_weak_confirm:
-        confirm_flags.append("anti_inside")
-    if attack_style and sashi_rate >= 0.34:
-        confirm_flags.append("sashi")
-    if outer_style and makuri_rate >= 0.22:
-        confirm_flags.append("makuri")
-    if outer3weak_confirm:
-        confirm_flags.append("outer3weak")
-
-    if n < 8:
-        active = len(confirm_flags) >= 2
-        phase = "early_guard"
-        scale = clamp(0.24 + (n - 5) * 0.08, 0.24, 0.42)
-    else:
-        active = bool(confirm_flags)
-        phase = "active"
-        scale = clamp(0.42 + (n - 8) * 0.08, 0.42, 0.82)
-
-    if not active:
-        hint_parts = []
-        if strong_inside:
-            hint_parts.append("1頭気味")
-        if inside_weak:
-            hint_parts.append("イン弱め気味")
-        if attack_style:
-            hint_parts.append("差し寄り気味")
-        if outer_style:
-            hint_parts.append("外注意気味")
-        observe_text = f"当日傾向は保留({n}R: {' / '.join(hint_parts[:2])})" if hint_parts else f"当日傾向は保留({n}R)"
-        return empty_bias(n, phase=phase, observe_text=observe_text)
-
-    bias = {
-        "head": {lane: 0.0 for lane in range(1, 7)},
-        "second": {lane: 0.0 for lane in range(1, 7)},
-        "third": {lane: 0.0 for lane in range(1, 7)},
-        "notes": [],
-        "trend_text": "",
-        "sample_size": n,
-        "active": True,
-        "phase": phase,
-        "observe_text": "",
-    }
-
-    if strong_inside_confirm:
-        bias["head"][1] += 0.10 * scale
-        bias["second"][1] += 0.03 * scale
-        bias["notes"].append("当日1頭寄り")
-    elif inside_weak_confirm:
-        bias["head"][1] -= 0.08 * scale
-        bias["notes"].append("当日イン弱め")
-
-    if attack_style:
-        bias["head"][2] += 0.04 * scale
-        bias["head"][3] += 0.04 * scale
-        bias["second"][2] += 0.03 * scale
-        bias["second"][3] += 0.02 * scale
-        bias["notes"].append("当日差し/まくり寄り")
-
-    if outer_style:
-        for lane in [4, 5, 6]:
-            bias["head"][lane] += 0.03 * scale
-        bias["head"][1] -= 0.03 * scale
-        bias["notes"].append("当日外伸び注意")
-
-    if second2_confirm:
-        bias["second"][2] += 0.04 * scale
-
-    if outer3weak_confirm:
-        bias["third"][5] -= 0.03 * scale
-        bias["third"][6] -= 0.04 * scale
-        bias["notes"].append("当日外3着弱め")
-
-    if strong_inside_confirm and nige_rate >= 0.62:
-        bias["head"][1] += 0.04 * scale
-        bias["notes"].append("決まり手逃げ多め")
-    if attack_style and sashi_rate >= 0.36:
-        bias["head"][2] += 0.03 * scale
-        bias["head"][3] += 0.02 * scale
-        bias["second"][2] += 0.02 * scale
-        bias["notes"].append("決まり手差し寄り")
-    if outer_style and makuri_rate >= 0.24:
-        bias["head"][3] += 0.03 * scale
-        bias["head"][4] += 0.03 * scale
-        bias["third"][1] -= 0.02 * scale
-        bias["notes"].append("決まり手まくり寄り")
-
-    bias["notes"] = list(dict.fromkeys(bias["notes"]))[:3]
-    bias["trend_text"] = " / ".join(bias["notes"])
-    return bias
-
-
-def fetch_beforeinfo_parallel(keys):
-    results = {}
-    with ThreadPoolExecutor(max_workers=BEFOREINFO_MAX_WORKERS) as ex:
-        futures = [ex.submit(parse_beforeinfo_for_key, jcd, race_no) for (jcd, race_no) in sorted(keys)]
-        for future in as_completed(futures):
-            key, info = future.result()
-            results[key] = info
-    return results
-
-
-def score_to_ai_rating(score):
-    try:
-        s = float(score or 0)
-    except Exception:
-        s = 0.0
-
-    if s >= 4.2:
-        return "AI★★★★★"
-    if s >= 3.0:
-        return "AI★★★★☆"
-    if s >= 1.9:
-        return "AI★★★☆☆"
-    if s >= 0.8:
-        return "AI★★☆☆☆"
-    return "AI★☆☆☆☆"
-
-def score_to_final_rank(score):
-    try:
-        s = float(score or 0)
-    except Exception:
-        s = 0.0
-
-    if s >= 3.8:
-        return "買い強め"
-    if s >= 2.4:
-        return "買い"
-    if s >= 1.0:
-        return "様子見"
-    return "見送り寄り"
-
-
-def count_rank_signals(signal_metrics=None, foot_material=None):
-    signal_metrics = signal_metrics or {}
-    foot_material = foot_material or {}
-
-    foot_reason_text = str(foot_material.get("reason_text") or "")
-    course_map = foot_material.get("course_map", {}) or {}
-    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
-
-    exp_spread = float(signal_metrics.get("exp_spread", 0) or 0)
-    st_spread = float(signal_metrics.get("st_spread", 0) or 0)
-    lane1_time_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
-    lane1_st = signal_metrics.get("lane1_st")
-
-    has_display_gap = exp_spread >= 0.12
-    has_foot_gap = ("足差あり" in foot_reason_text) or ("足差ややあり" in foot_reason_text)
-    has_st_sign = ("ST気配あり" in foot_reason_text) or st_spread >= 0.06
-    has_entry_change = bool(foot_material.get("entry_change")) and entry_severity >= 0.12
-
-    lane1_weak = False
-    if course_map.get(1, 1) > 1:
-        lane1_weak = True
-    if lane1_time_gap >= 0.07:
-        lane1_weak = True
-    if isinstance(lane1_st, (int, float)) and float(lane1_st) >= 0.18:
-        lane1_weak = True
-
-    direct_count = sum(1 for x in [has_display_gap, has_foot_gap, has_st_sign, has_entry_change] if x)
-    return {
-        "has_display_gap": has_display_gap,
-        "has_foot_gap": has_foot_gap,
-        "has_st_sign": has_st_sign,
-        "has_entry_change": has_entry_change,
-        "lane1_weak": lane1_weak,
-        "direct_count": direct_count,
-    }
-
-
-def determine_final_rank(
-    base_info,
-    final_ai_score,
-    signal_metrics=None,
-    foot_material=None,
-    role_maps=None,
-    scenario_material=None,
-    base_hold_strength=0.0,
-    phase_material=None,
-):
-    base_info = base_info or {}
-    signal_metrics = signal_metrics or {}
-    foot_material = foot_material or {}
-    role_maps = role_maps or {}
-    scenario_material = scenario_material or {}
-    phase_material = phase_material or {}
-
-    try:
-        score = float(final_ai_score or 0)
-    except Exception:
-        score = 0.0
-
-    rating = str(base_info.get("rating") or "").strip()
-    head_score = role_maps.get("head", {}) or {}
-    head_ranked = list(scenario_material.get("head_ranked") or [])
-    if not head_ranked and head_score:
-        head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
-    if not head_ranked:
-        return score_to_final_rank(score)
-
-    top_head_lane = int(head_ranked[0])
-    second_head_lane = int(head_ranked[1]) if len(head_ranked) >= 2 else top_head_lane
-    top_head_score = float(head_score.get(top_head_lane, 0) or 0)
-    second_head_score = float(head_score.get(second_head_lane, 0) or 0)
-    head_gap = top_head_score - second_head_score
-
-    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
-    morning_priority = float(base_hold_strength or 0) >= 0.18 and signal_strength < 0.35
-    flags = count_rank_signals(signal_metrics=signal_metrics, foot_material=foot_material)
-    direct_count = int(flags["direct_count"])
-
-    top_head_inner = top_head_lane in {1, 2}
-    top_head_safe = top_head_lane in {1, 2, 3}
-    outer_head_risky = top_head_lane in {4, 5, 6} and head_gap < 0.16
-    extreme_outer_head = top_head_lane in {5, 6}
-
-    race_phase = normalize_race_phase_label(
-        phase_material.get("race_phase") or base_info.get("race_phase") or ""
-    )
-    phase_bonus = 0.0
-    if race_phase == "準優勝戦":
-        phase_bonus = 0.14
-    elif race_phase in {"優勝戦", "ドリーム戦"}:
-        phase_bonus = 0.10
-
-    strong_score_threshold = 3.35 - phase_bonus
-    buy_score_threshold = 2.25 - phase_bonus * 0.5
-    watch_score_threshold = 1.00
-
-    # 星4はかなり厳選
-    if rating == "★★★★☆":
-        if (
-            score >= (3.55 - phase_bonus)
-            and direct_count >= 3
-            and top_head_inner
-            and head_gap >= 0.12
-            and not morning_priority
-            and not outer_head_risky
-            and not extreme_outer_head
-        ):
-            return "買い強め"
-        if (
-            score >= (2.45 - phase_bonus * 0.4)
-            and direct_count >= 2
-            and top_head_safe
-            and not morning_priority
-            and not extreme_outer_head
-        ):
-            return "買い"
-        if (
-            score >= 1.35
-            and direct_count >= 1
-            and top_head_safe
-            and not extreme_outer_head
-        ):
-            return "様子見"
-        return "見送り寄り"
-
-    # 星5は直前材料と頭の読みを合わせて判定
-    if (
-        score >= strong_score_threshold
-        and direct_count >= 2
-        and top_head_inner
-        and head_gap >= 0.10
-        and not morning_priority
-        and not outer_head_risky
-    ):
-        return "買い強め"
-
-    if (
-        score >= buy_score_threshold
-        and (direct_count >= 1 or signal_strength >= 0.42 or flags["lane1_weak"])
-        and top_head_safe
-        and not (morning_priority and direct_count == 0)
-        and not extreme_outer_head
-    ):
-        return "買い"
-
-    if (
-        score >= watch_score_threshold
-        and (direct_count >= 1 or top_head_safe or signal_strength >= 0.30)
-    ):
-        return "様子見"
-
-    return "見送り寄り"
-
-def exhibition_rank_text_from_map(rank_map):
-    if not rank_map:
-        return ""
-    return " / ".join([f"{lane}:{rank_map.get(lane, '-')}" for lane in range(1, 7)])
-
-
-def fetch_base_map_today():
-    if not BASE_MAP_URL:
-        raise RuntimeError("BASE_MAP_URL が未設定です")
-    if not IMPORT_TOKEN:
-        raise RuntimeError("IMPORT_TOKEN が未設定です")
-
-    headers = {"X-IMPORT-TOKEN": IMPORT_TOKEN}
-    params = {"race_date": today_text()}
-
-    last_err = None
-    for attempt in range(1, 4):
-        try:
-            log(f"[base_map_try] attempt={attempt} url={BASE_MAP_URL}")
-            res = requests.get(BASE_MAP_URL, headers=headers, params=params, timeout=(8, 20))
-            res.raise_for_status()
-            data = res.json()
-            if not data.get("ok"):
-                raise RuntimeError(f"base_map api error: {data}")
-            base_map = data.get("base_map", {}) or {}
-            log(f"[base_map_ok] count={len(base_map)}")
-            return base_map
-        except Exception as e:
-            last_err = e
-            log(f"[base_map_retry] attempt={attempt} err={e}")
-            if attempt < 3:
-                time.sleep(1.5 * attempt)
-    raise last_err
-
-
-def build_venue_bias_map(venue, day_trend_bias=None):
-    """
-    latest 側では静的な会場傾向は持たせず、
-    後半レースではその日の前半結果から作る当日傾向だけを微補正で使う。
-    """
-    if day_trend_bias:
-        return {
-            "head": dict(day_trend_bias.get("head", {}) or {lane: 0.0 for lane in range(1, 7)}),
-            "second": dict(day_trend_bias.get("second", {}) or {lane: 0.0 for lane in range(1, 7)}),
-            "third": dict(day_trend_bias.get("third", {}) or {lane: 0.0 for lane in range(1, 7)}),
-            "notes": list(day_trend_bias.get("notes", []) or []),
-        }
-    return {
-        "head": {lane: 0.0 for lane in range(1, 7)},
-        "second": {lane: 0.0 for lane in range(1, 7)},
-        "third": {lane: 0.0 for lane in range(1, 7)},
-        "notes": [],
-    }
-
-
-def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=None):
-    weather_info = weather_info or {}
-    foot_material = foot_material or {}
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-
-    lane_scores = {lane: 0.0 for lane in range(1, 7)}
-
-    # 展示順位は使うが、以前より弱めにする
-    if ranks:
-        for lane in range(1, 7):
-            rank = ranks.get(lane)
-            if rank is None:
-                continue
-            if rank == 1:
-                lane_scores[lane] += 0.18
-            elif rank == 2:
-                lane_scores[lane] += 0.10
-            elif rank == 3:
-                lane_scores[lane] += 0.03
-            elif rank == 4:
-                lane_scores[lane] -= 0.01
-            elif rank == 5:
-                lane_scores[lane] -= 0.05
-            elif rank == 6:
-                lane_scores[lane] -= 0.10
-
-        r1 = ranks.get(1)
-        if r1 == 1:
-            lane_scores[1] += 0.05
-        elif r1 is not None and r1 >= 5:
-            lane_scores[1] -= 0.06
-
-    # 展示タイム差を主役にする
-    float_times = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_times.append((lane, float(t)))
-        except Exception:
-            pass
-
-    if len(float_times) == 6:
-        min_time = min(v for _, v in float_times)
-        avg_time = sum(v for _, v in float_times) / 6.0
-        sorted_times = sorted(float_times, key=lambda x: x[1])
-        spread = max(v for _, v in float_times) - min_time
-        gap12 = sorted_times[1][1] - sorted_times[0][1]
-
-        for lane, v in float_times:
-            diff_from_min = v - min_time
-            diff_from_avg = v - avg_time
-            if diff_from_min <= 0.00:
-                lane_scores[lane] += 0.18
-            elif diff_from_min <= 0.03:
-                lane_scores[lane] += 0.10
-            elif diff_from_min >= 0.10:
-                lane_scores[lane] -= 0.14
-            elif diff_from_min >= 0.06:
-                lane_scores[lane] -= 0.08
-
-            if diff_from_avg <= -0.05:
-                lane_scores[lane] += 0.06
-            elif diff_from_avg >= 0.05:
-                lane_scores[lane] -= 0.06
-
-        if spread >= 0.18:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.08
-        elif spread >= 0.12:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.05
-
-        if gap12 >= 0.05:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.04
-
-    water_state_score = float(weather_info.get("water_state_score") or 0)
-    if water_state_score != 0:
-        lane_scores[1] += water_state_score * 0.8
-        for lane in [4, 5, 6]:
-            lane_scores[lane] -= water_state_score * 0.25
-
-    wind_type = str(weather_info.get("wind_type") or "")
-    wind_level = get_wind_level(weather_info)
-    try:
-        wind_speed = float(weather_info.get("wind_speed") or 0)
-    except Exception:
-        wind_speed = 0.0
-
-    if wind_level > 0:
-        if wind_type == "向い風":
-            lane_scores[1] -= 0.06 * wind_level
-            lane_scores[2] += 0.05 * wind_level
-            lane_scores[3] += 0.03 * wind_level
-            lane_scores[5] += 0.01 * wind_level
-            lane_scores[6] += 0.02 * wind_level
-        elif wind_type == "追い風":
-            lane_scores[1] += 0.08 * wind_level
-            lane_scores[2] += 0.02 * wind_level
-            lane_scores[4] -= 0.02 * wind_level
-            lane_scores[5] -= 0.04 * wind_level
-            lane_scores[6] -= 0.06 * wind_level
-        elif wind_type == "横風":
-            lane_scores[1] -= 0.01 * wind_level
-            lane_scores[2] += 0.02 * wind_level
-            lane_scores[3] += 0.02 * wind_level
-            lane_scores[4] -= 0.03 * wind_level
-            lane_scores[5] -= 0.05 * wind_level
-            lane_scores[6] -= 0.06 * wind_level
-
-    if wind_speed >= 7:
-        lane_scores[2] += 0.02
-        lane_scores[3] += 0.02
-        lane_scores[5] -= 0.03
-        lane_scores[6] -= 0.05
-
-    foot_lane_scores = foot_material.get("lane_scores", {})
-    if foot_lane_scores:
-        for lane in range(1, 7):
-            lane_scores[lane] += float(foot_lane_scores.get(lane, 0) or 0) * 0.90
-
-    return lane_scores
-
-def build_lane_score_text(exhibition_info, weather_info=None, foot_material=None):
-    lane_scores = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
-    return " / ".join([f"{lane}:{lane_scores[lane]:.2f}" for lane in range(1, 7)])
-
-
-def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
-    foot_material = foot_material or {}
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    st_map = foot_material.get("st_map", {}) or {}
-    entry_change = bool(foot_material.get("entry_change"))
-    entry_text = str(foot_material.get("entry_text") or "")
-    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
-    course_map = foot_material.get("course_map", {}) or {}
-
-    exp_spread = 0.0
-    exp_gap12 = 0.0
-    lane1_time_gap = 0.0
-    st_spread = 0.0
-    st_gap12 = 0.0
-    lane1_st = None
-
-    float_times = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            v = float(t)
-        except Exception:
-            continue
-        if is_exhibition_time_value(v):
-            float_times.append((lane, v))
-
-    if len(float_times) == 6:
-        sorted_times = sorted(float_times, key=lambda x: x[1])
-        exp_spread = round(sorted_times[-1][1] - sorted_times[0][1], 3)
-        exp_gap12 = round(sorted_times[1][1] - sorted_times[0][1], 3)
-        lane1_time = next((v for lane, v in float_times if lane == 1), None)
-        if lane1_time is not None:
-            lane1_time_gap = round(lane1_time - sorted_times[0][1], 3)
-
-    valid_st = sorted(
-        [(lane, float(v)) for lane, v in st_map.items() if isinstance(v, (int, float))],
-        key=lambda x: x[1],
-    )
-    if len(valid_st) >= 4:
-        st_spread = round(valid_st[-1][1] - valid_st[0][1], 3)
-        if len(valid_st) >= 2:
-            st_gap12 = round(valid_st[1][1] - valid_st[0][1], 3)
-        lane1_st = st_map.get(1)
-
-    signal_strength = 0.0
-    if exp_spread >= 0.18:
-        signal_strength += 0.34
-    elif exp_spread >= 0.14:
-        signal_strength += 0.26
-    elif exp_spread >= 0.10:
-        signal_strength += 0.18
-    elif exp_spread >= 0.07:
-        signal_strength += 0.08
-
-    if exp_gap12 >= 0.05:
-        signal_strength += 0.10
-    elif exp_gap12 >= 0.03:
-        signal_strength += 0.05
-
-    if lane1_time_gap >= 0.10:
-        signal_strength += 0.09
-    elif lane1_time_gap >= 0.07:
-        signal_strength += 0.05
-
-    if st_spread >= 0.12:
-        signal_strength += 0.30
-    elif st_spread >= 0.09:
-        signal_strength += 0.22
-    elif st_spread >= 0.06:
-        signal_strength += 0.12
-    elif st_spread >= 0.04:
-        signal_strength += 0.06
-
-    if st_gap12 >= 0.04:
-        signal_strength += 0.08
-    elif st_gap12 >= 0.02:
-        signal_strength += 0.04
-
-    rank1 = ranks.get(1)
-    if rank1 in {1, 6}:
-        signal_strength += 0.05
-    elif rank1 in {2, 5}:
-        signal_strength += 0.02
-
-    if entry_change:
-        signal_strength += min(0.42, entry_severity * 0.82)
-        if course_map.get(1, 1) > 1:
-            signal_strength += 0.06
-
-    signal_strength = round(clamp(signal_strength, 0.0, 0.98), 2)
-    latest_push = round(clamp(0.30 + signal_strength * 0.78, 0.28, 1.0), 2)
-
-    if entry_change and signal_strength >= 0.62:
-        signal_text = "進入変化ありで直前重視"
-    elif entry_change and signal_strength >= 0.34:
-        signal_text = "進入変化ありで少し動かす"
-    elif signal_strength >= 0.62:
-        signal_text = "直前差大で直前重視"
-    elif signal_strength >= 0.34:
-        signal_text = "直前差中で少し動かす"
-    else:
-        signal_text = "直前差小で朝寄り"
-
-    return {
-        "exp_spread": exp_spread,
-        "exp_gap12": exp_gap12,
-        "lane1_time_gap": lane1_time_gap,
-        "st_spread": st_spread,
-        "st_gap12": st_gap12,
-        "lane1_st": lane1_st,
-        "entry_change": entry_change,
-        "entry_text": entry_text,
-        "entry_severity": entry_severity,
-        "signal_strength": signal_strength,
-        "latest_push": latest_push,
-        "signal_text": signal_text,
-    }
-
-
-def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_material=None, signal_metrics=None):
-    score = float(base_ai_score or 0)
-    reasons = []
-    weather_info = weather_info or {}
-    foot_material = foot_material or {}
-    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    latest_push = float(signal_metrics.get("latest_push", 0.5) or 0.5)
-    course_map = foot_material.get("course_map", {}) or {}
-    entry_change = bool(foot_material.get("entry_change"))
-    entry_text = str(foot_material.get("entry_text") or "")
-    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
-
-    # 順位は補助、タイム差を主役にする
-    if ranks and 1 in ranks:
-        r1 = ranks[1]
-        if r1 == 1:
-            score += 0.24 * latest_push
-            reasons.append("1号艇の展示順位が1位")
-        elif r1 <= 2:
-            score += 0.12 * latest_push
-            reasons.append("1号艇の展示順位が上位")
-        elif r1 >= 5:
-            score -= 0.18 * latest_push
-            reasons.append("1号艇の展示順位が下位")
-
-    if times:
-        float_times = []
-        for t in times:
-            try:
-                float_times.append(float(t))
-            except Exception:
-                pass
-        if len(float_times) == 6:
-            sorted_times = sorted(float_times)
-            spread = max(float_times) - min(float_times)
-            gap12 = sorted_times[1] - sorted_times[0]
-            lane1_time = float_times[0]
-            lane1_gap = lane1_time - sorted_times[0]
-
-            if spread >= 0.18:
-                score += 0.18 * latest_push
-                reasons.append("展示差あり")
-            elif spread >= 0.14:
-                score += 0.12 * latest_push
-                reasons.append("展示差あり")
-            elif spread >= 0.10:
-                score += 0.08 * latest_push
-                reasons.append("展示差ややあり")
-
-            if gap12 >= 0.05:
-                score += 0.04 * latest_push
-
-            if lane1_gap <= 0.02:
-                score += 0.10 * latest_push
-            elif lane1_gap <= 0.05:
-                score += 0.05 * latest_push
-            elif lane1_gap >= 0.12:
-                score -= 0.16 * latest_push
-            elif lane1_gap >= 0.08:
-                score -= 0.10 * latest_push
-
-            if spread >= 0.10:
-                reasons.append("展示タイム差を反映")
-
-    if entry_change:
-        reasons.append(f"進入:{entry_text}") if entry_text else reasons.append("進入変化あり")
-        lane1_course = course_map.get(1, 1)
-        if lane1_course == 2:
-            score -= 0.12 * (0.70 + latest_push * 0.40)
-            reasons.append("1がイン外し")
-        elif lane1_course >= 3:
-            score -= 0.22 * (0.72 + latest_push * 0.42)
-            reasons.append("1が大きくイン外し")
-        if len(pre_move_lanes) >= 2 or any(lane >= 5 for lane in pre_move_lanes):
-            score -= 0.05 * latest_push
-            reasons.append("前づけで波乱含み")
-
-    wind = weather_info.get("wind_speed")
-    wave = weather_info.get("wave_height")
-    wind_dir = str(weather_info.get("wind_dir") or "")
-    water_state_score = float(weather_info.get("water_state_score") or 0)
-    if water_state_score != 0:
-        score += water_state_score * (0.62 + latest_push * 0.28)
-        reasons.append("気象安定" if water_state_score > 0 else "気象荒れ気味")
-    if weather_info.get("wind_type") == "向い風":
-        reasons.append("向い風")
-    elif weather_info.get("wind_type") == "追い風":
-        reasons.append("追い風")
-    elif weather_info.get("wind_type") == "横風":
-        reasons.append("横風")
-    if wind_dir:
-        reasons.append(f"風向{wind_dir}")
-    if isinstance(wind, (int, float)) and wind >= 7:
-        reasons.append(f"風速{wind:g}m")
-    if isinstance(wave, (int, float)) and wave >= 5:
-        reasons.append(f"波高{wave:g}cm")
-
-    foot_bonus = float(foot_material.get("foot_bonus", 0) or 0)
-    if foot_bonus != 0:
-        score += foot_bonus * (0.58 + latest_push * 0.42)
-
-    foot_reason_text = str(foot_material.get("reason_text") or "").strip()
-    if foot_reason_text:
-        reasons.extend([x.strip() for x in foot_reason_text.split(" / ") if x.strip()])
-
-    return {
-        "raw_final_ai_score": round(score, 2),
-        "final_ai_score": round(score, 2),
-        "final_ai_rating": score_to_ai_rating(score),
-        "latest_reason_text": " / ".join(dict.fromkeys(reasons[:10])),
-    }
-
-def selection_triplets(selection):
-    if not selection:
         return []
-    return [x.strip() for x in str(selection).split(" / ") if x.strip()]
+
+    parts = [x for x in re.split(r"\s*/\s*", s) if x.strip()]
+    items = []
+    for part in parts:
+        item = normalize_pick_text(part)
+        if item:
+            items.append(item)
+    return items
 
 
-def parse_selection_weight_map(base_selection):
-    triplets = selection_triplets(base_selection)
-    weight_map = {}
-    for idx, tri in enumerate(triplets):
-        weight_map[tri] = max(0.35, 1.0 - idx * 0.09)
-    return weight_map
+def unique_preserve(seq):
+    result = []
+    seen = set()
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
 
 
-def calc_base_hold_strength(base_info):
-    base_info = base_info or {}
-    strength = 0.0
+def get_selected_count_from_text(selection_text):
+    return len(selection_items(selection_text))
+
+
+def get_selected_total_amount(race):
+    return int(race.get("amount") or 0) * get_selected_count_from_text(
+        race.get("purchased_selection_text", "")
+    )
+
+
+def make_race_key(race_date, venue, race_no):
+    return (
+        str(race_date or "").strip(),
+        str(venue or "").strip(),
+        str(race_no or "").strip(),
+    )
+
+
+def get_existing_race_map_by_date(race_date):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT
+            id, race_date, venue, race_no, time,
+            final_ai_score, final_ai_rating, final_ai_selection, final_rank,
+            latest_reason_text, latest_updated_at
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY id DESC
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    race_map = {}
+    for row in rows:
+        key = make_race_key(row['race_date'], row['venue'], row['race_no'])
+        if key not in race_map:
+            race_map[key] = row
+    return race_map
+
+
+def parse_exhibition_rank_map(rank_text):
+    result = {}
+    s = (rank_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        a, b = part.split(":", 1)
+        try:
+            result[int(a.strip())] = int(b.strip())
+        except Exception:
+            continue
+    return result
+
+
+def exhibition_rank_class(rank):
     try:
-        base_score = float(base_info.get("base_ai_score", 0) or 0)
+        r = int(rank)
     except Exception:
-        base_score = 0.0
-
-    rating = str(base_info.get("rating") or "").strip()
-    reason_text = str(base_info.get("base_reason_text") or "").strip()
-
-    if base_score >= 2.8:
-        strength += 0.24
-    elif base_score >= 2.4:
-        strength += 0.18
-    elif base_score >= 2.0:
-        strength += 0.12
-    elif base_score >= 1.6:
-        strength += 0.06
+        return "ex-rank-box"
+    if r == 1:
+        return "ex-rank-box ex-rank-1"
+    if r == 2:
+        return "ex-rank-box ex-rank-2"
+    if r == 3:
+        return "ex-rank-box ex-rank-3"
+    if r >= 5:
+        return "ex-rank-box ex-rank-low"
+    return "ex-rank-box"
 
 
-    reason_bonus = 0.0
-    for word, bonus in [
-        ("B2でも地力上位", 0.10),
-        ("地力上位", 0.08),
-        ("当地巧者", 0.07),
-        ("地元水面", 0.05),
-        ("選手力上位", 0.04),
-        ("級別傾向強い", 0.03),
-    ]:
-        if word in reason_text:
-            reason_bonus += bonus
-    strength += min(0.20, reason_bonus)
+def render_exhibition_rank_boxes(rank_text):
+    rank_map = parse_exhibition_rank_map(rank_text)
+    if not rank_map:
+        return '<div class="ex-rank-empty">未取得</div>'
+    boxes = ""
+    for lane in range(1, 7):
+        rank = rank_map.get(lane)
+        rank_display = "-" if rank is None else str(rank)
+        boxes += f'''
+        <div class="{exhibition_rank_class(rank)}">
+          <div class="ex-lane">{render_lane_badge(lane)}</div>
+          <div class="ex-rank">{rank_display}</div>
+        </div>
+        '''
+    return f'<div class="ex-rank-grid">{boxes}</div>'
 
-    return round(clamp(strength, 0.0, 0.52), 2)
+
+def render_exhibition_time_chips(exhibition_list):
+    if not exhibition_list:
+        return '<div class="ex-chip-empty">未取得</div>'
+    chips = ""
+    for i, t in enumerate(exhibition_list, start=1):
+        chips += f'''
+        <div class="ex-chip">
+          <span class="ex-chip-lane">{render_lane_badge(i)}</span>
+          <span class="ex-chip-time">{t}</span>
+        </div>
+        '''
+    return f'<div class="ex-chip-wrap">{chips}</div>'
 
 
-def normalize_race_phase_label(text):
+def format_weather_num(value, suffix=""):
+    try:
+        if value is None or str(value).strip() == "":
+            return ""
+        v = float(value)
+        if v.is_integer():
+            return f"{int(v)}{suffix}"
+        return f"{v:.1f}{suffix}"
+    except Exception:
+        return ""
+
+
+def render_weather_summary_html(weather, wind_speed, wave_height, wind_type, wind_dir, water_state_score=None):
+    items = []
+
+    weather_text = str(weather or "").strip()
+    wind_type_text = str(wind_type or "").strip()
+    wind_dir_text = str(wind_dir or "").strip()
+    wind_speed_text = format_weather_num(wind_speed, "m")
+    wave_height_text = format_weather_num(wave_height, "cm")
+
+    if weather_text:
+        items.append(("weather-chip", weather_text))
+    if wind_type_text:
+        items.append(("weather-chip weather-chip-windtype", wind_type_text))
+    if wind_dir_text:
+        items.append(("weather-chip weather-chip-dir", f"風向 {wind_dir_text}"))
+    if wind_speed_text:
+        items.append(("weather-chip weather-chip-num", f"風速 {wind_speed_text}"))
+    if wave_height_text:
+        items.append(("weather-chip weather-chip-num", f"波高 {wave_height_text}"))
+
+    try:
+        ws = float(water_state_score)
+        if ws > 0.08:
+            items.append(("weather-chip weather-chip-good", "水面やや安定"))
+        elif ws < -0.08:
+            items.append(("weather-chip weather-chip-bad", "水面やや荒れ"))
+    except Exception:
+        pass
+
+    if not items:
+        return '<div class="detail-chip-empty">未取得</div>'
+
+    chips = "".join([f'<div class="{cls}">{label}</div>' for cls, label in items])
+    return f'<div class="weather-chip-wrap">{chips}</div>'
+
+
+def parse_player_names_map(player_names_text):
+    result = {}
+    s = str(player_names_text or "").strip()
+    if not s:
+        return result
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        lane_part, name = part.split(":", 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        player_name = str(name).strip()
+        if player_name:
+            result[lane] = player_name
+    return result
+
+
+def lane_score_tone_class(score):
+    if score >= 0.7:
+        return "player-info-chip player-info-chip-good"
+    if score <= -0.4:
+        return "player-info-chip player-info-chip-bad"
+    return "player-info-chip"
+
+
+def parse_exhibition_time_float(value):
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def build_exhibition_time_rank_map(exhibition_list):
+    valid = []
+    for lane, value in enumerate(exhibition_list or [], start=1):
+        t = parse_exhibition_time_float(value)
+        if t is not None:
+            valid.append((lane, t))
+    valid.sort(key=lambda x: (x[1], x[0]))
+    return {lane: idx for idx, (lane, _t) in enumerate(valid, start=1)}
+
+
+def parse_lane_chip_text_map(raw_text):
+    result = {}
+    s = str(raw_text or "").strip()
+    if not s:
+        return result
+    for part in [x.strip() for x in s.split('/') if x.strip()]:
+        if ':' not in part:
+            continue
+        lane_part, body = part.split(':', 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        items = []
+        for token in re.split(r'[|｜]', body):
+            chip = str(token).strip()
+            if chip:
+                items.append(chip)
+        if items:
+            result[lane] = items
+    return result
+
+
+def normalize_reason_tag(text):
     s = str(text or "").strip()
     if not s:
         return ""
-    if "優勝戦" in s:
-        return "優勝戦"
-    if "準優勝戦" in s or "準優" in s:
-        return "準優勝戦"
-    if "ドリーム戦" in s or "ドリーム" in s:
-        return "ドリーム戦"
-    if "予選" in s:
-        return "予選"
-    if "一般戦" in s:
-        return "一般戦"
-    return ""
+
+    tag_rules = [
+        (["地力", "全国勝率", "全国2連率", "全国3連率"], "勝率系"),
+        (["当地", "当地勝率", "当地2連率", "当地3連率"], "当地"),
+        (["モーター", "機力"], "モーター"),
+        (["ST", "スタート"], "ST"),
+        (["コース", "進入率"], "コース"),
+        (["近況", "最近"], "近況"),
+        (["級別", "A1", "A2", "B1", "B2"], "級別"),
+        (["展示"], "展示"),
+        (["進入", "前づけ", "イン外し"], "進入"),
+    ]
+
+    for keywords, label in tag_rules:
+        if any(k in s for k in keywords):
+            return label
+
+    return s
 
 
-def build_phase_material(base_info, race_no=0):
-    base_info = base_info or {}
-    series_day = int(base_info.get("series_day") or 0)
-    race_phase = normalize_race_phase_label(base_info.get("race_phase") or "")
-    material = {
-        "series_day": series_day,
-        "race_phase": race_phase,
-        "head": {lane: 0.0 for lane in range(1, 7)},
-        "second": {lane: 0.0 for lane in range(1, 7)},
-        "third": {lane: 0.0 for lane in range(1, 7)},
-        "score_adjust": 0.0,
-        "reason_text": "",
-    }
+def parse_signed_chip_items(raw_items):
+    parsed = []
+    for raw in raw_items or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
 
-    if race_phase == "準優勝戦":
-        material["head"].update({1: 0.16, 2: 0.05, 3: 0.02, 4: -0.04, 5: -0.08, 6: -0.10})
-        material["second"].update({2: 0.05, 3: 0.03, 4: 0.01})
-        material["third"].update({4: 0.02, 5: 0.03, 6: 0.03})
-        material["score_adjust"] = 0.10
-        material["reason_text"] = "準優で1頭やや重視"
-    elif race_phase == "優勝戦":
-        material["head"].update({1: 0.12, 2: 0.04, 3: 0.02, 4: -0.03, 5: -0.06, 6: -0.08})
-        material["second"].update({2: 0.04, 3: 0.03, 4: 0.01})
-        material["third"].update({4: 0.01, 5: 0.02, 6: 0.02})
-        material["score_adjust"] = 0.08
-        material["reason_text"] = "優勝戦でやや堅め"
-    elif race_phase == "ドリーム戦":
-        material["head"].update({1: 0.08, 2: 0.03, 3: 0.01, 5: -0.02, 6: -0.03})
-        material["second"].update({2: 0.03, 3: 0.02})
-        material["third"].update({4: 0.01, 5: 0.01, 6: 0.01})
-        material["score_adjust"] = 0.04
-        material["reason_text"] = "ドリームでやや堅め"
-    elif series_day == 1:
-        material["head"].update({1: -0.03, 2: 0.01, 3: 0.02, 4: 0.01})
-        material["second"].update({2: 0.02, 3: 0.01, 4: 0.02})
-        material["third"].update({4: 0.03, 5: 0.04, 6: 0.04})
-        material["score_adjust"] = -0.04
-        material["reason_text"] = "初日で少し波乱寄り"
-    elif series_day == 2:
-        material["head"].update({1: 0.03, 2: 0.01, 5: -0.01, 6: -0.02})
-        material["second"].update({2: 0.02, 3: 0.01})
-        material["third"].update({5: -0.01, 6: -0.02})
-        material["score_adjust"] = 0.03
-        material["reason_text"] = "2日目でやや本命寄り"
+        tone = "neutral"
+        if text[:1] in {"+", "＋"}:
+            tone = "plus"
+            text = text[1:].strip()
+        elif text[:1] in {"-", "－", "▲"}:
+            tone = "minus"
+            text = text[1:].strip()
 
-    return material
+        tag = normalize_reason_tag(text)
+        if tag:
+            parsed.append((tone, tag))
+
+    return parsed
 
 
-def apply_phase_material_to_role_maps(role_maps, phase_material=None):
-    phase_material = phase_material or {}
-    if not role_maps:
-        return role_maps
+def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_list, lane_score_map, latest_reason_text=""):
+    items = []
 
-    adjusted = {
-        "head": dict(role_maps.get("head", {}) or {}),
-        "second": dict(role_maps.get("second", {}) or {}),
-        "third": dict(role_maps.get("third", {}) or {}),
-        "lane": dict(role_maps.get("lane", {}) or {}),
-        "venue_notes": list(role_maps.get("venue_notes", []) or []),
-    }
+    rank = exhibition_rank_map.get(lane)
+    if rank == 1 or rank == 2:
+        items.append(("plus", "展示"))
+    elif rank is not None and rank >= 5:
+        items.append(("minus", "展示"))
 
-    for lane in range(1, 7):
-        adjusted["head"][lane] = float(adjusted["head"].get(lane, 0) or 0) + float(phase_material.get("head", {}).get(lane, 0) or 0)
-        adjusted["second"][lane] = float(adjusted["second"].get(lane, 0) or 0) + float(phase_material.get("second", {}).get(lane, 0) or 0)
-        adjusted["third"][lane] = float(adjusted["third"].get(lane, 0) or 0) + float(phase_material.get("third", {}).get(lane, 0) or 0)
+    lane_score = lane_score_map.get(lane)
+    if lane_score is not None:
+        if lane_score >= 0.25:
+            items.append(("plus", "展示"))
+        elif lane_score <= -0.15:
+            items.append(("minus", "展示"))
 
-    reason_text = str(phase_material.get("reason_text") or "").strip()
-    if reason_text and reason_text not in adjusted["venue_notes"]:
-        adjusted["venue_notes"].append(reason_text)
-    return adjusted
+    latest_text = str(latest_reason_text or "")
+    if lane == 1 and ("イン外し" in latest_text):
+        items.append(("minus", "進入"))
+    elif "前づけ" in latest_text and lane in {3, 4, 5, 6}:
+        items.append(("plus", "進入"))
 
-
-def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor, signal_metrics=None):
-    try:
-        base_ai_score = float(base_ai_score or 0)
-    except Exception:
-        base_ai_score = 0.0
-    try:
-        raw_final_ai_score = float(raw_final_ai_score or 0)
-    except Exception:
-        raw_final_ai_score = base_ai_score
-
-    signal_strength = float((signal_metrics or {}).get("signal_strength", 0) or 0)
-    delta = raw_final_ai_score - base_ai_score
-    reflect_factor = 0.36 + signal_strength * 0.46 + (float(scenario_factor or 1.0) - 0.45) * 0.16 - float(base_hold_strength or 0) * 0.26
-    reflect_factor = clamp(reflect_factor, 0.26, 0.84)
-
-    up_cap = 0.48 + signal_strength * 0.82 - float(base_hold_strength or 0) * 0.12 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.12
-    down_cap_mag = 0.52 + signal_strength * 0.86 - float(base_hold_strength or 0) * 0.10 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.10
-    delta = clamp(delta * reflect_factor, -down_cap_mag, up_cap)
-    return round(base_ai_score + delta, 2)
+    return items
 
 
-def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None, day_trend_bias=None):
-    lane_score_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    st_map = (foot_material or {}).get("st_map", {}) or {}
+def render_player_evidence_chips(reason_items, default_items):
+    chips = []
+    seen = set()
 
-    head_score = {lane: float(lane_score_map.get(lane, 0) or 0) for lane in range(1, 7)}
-    second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.90 for lane in range(1, 7)}
-    third_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.78 for lane in range(1, 7)}
+    for tone, item in list(reason_items) + list(default_items):
+        if not item:
+            continue
 
-    # v10.2: 1号艇頭残し / 2号艇2着残しを少し戻す
-    head_score[1] += 0.24
-    second_score[1] += 0.07
-    third_score[1] -= 0.01
+        key = item
+        if key in seen:
+            continue
+        seen.add(key)
 
-    head_score[2] += 0.07
-    second_score[2] += 0.16
-    third_score[2] += 0.04
+        if tone == "plus":
+            cls = "player-evidence-chip player-evidence-chip-plus"
+        elif tone == "minus":
+            cls = "player-evidence-chip player-evidence-chip-minus"
+        else:
+            cls = "player-evidence-chip player-evidence-chip-neutral"
 
-    head_score[3] += 0.10
-    second_score[3] += 0.08
-    third_score[3] += 0.06
-    head_score[4] += 0.00
-    second_score[4] += 0.02
-    third_score[4] += 0.06
-    head_score[5] -= 0.04
-    second_score[5] -= 0.01
-    third_score[5] += 0.06
-    head_score[6] -= 0.06
-    second_score[6] -= 0.01
-    third_score[6] += 0.08
+        chips.append(f'<span class="{cls}">{item}</span>')
 
-    venue_bias = build_venue_bias_map(venue, day_trend_bias=day_trend_bias)
-    for lane in range(1, 7):
-        head_score[lane] += float(venue_bias["head"].get(lane, 0) or 0)
-        second_score[lane] += float(venue_bias["second"].get(lane, 0) or 0)
-        third_score[lane] += float(venue_bias["third"].get(lane, 0) or 0)
+    if not chips:
+        return '<div class="player-rank-empty">未取得</div>'
 
-    course_order = (foot_material or {}).get("course_order", []) or []
-    course_map = (foot_material or {}).get("course_map", {}) or {}
-    pre_move_lanes = (foot_material or {}).get("pre_move_lanes", []) or []
-    pulled_back_lanes = (foot_material or {}).get("pulled_back_lanes", []) or []
-    if course_map:
-        course1_lane = course_order[0] if course_order else None
-        if course1_lane and course1_lane != 1:
-            head_score[course1_lane] += 0.18
-            second_score[course1_lane] += 0.08
-            third_score[course1_lane] += 0.03
-
-        if course_map.get(1, 1) > 1:
-            lane1_course = course_map.get(1, 1)
-            head_score[1] -= 0.16 if lane1_course == 2 else 0.28
-            second_score[1] -= 0.06 if lane1_course == 2 else 0.12
-            third_score[1] += 0.02
-
-        for lane in pre_move_lanes:
-            course = course_map.get(lane, lane)
-            gain = max(1, lane - course)
-            if lane != 1:
-                head_score[lane] += min(0.10 + 0.05 * gain, 0.24)
-                second_score[lane] += min(0.08 + 0.04 * gain, 0.18)
-                third_score[lane] += min(0.04 + 0.03 * gain, 0.12)
-            if lane >= 4 and course <= 3:
-                head_score[lane] += 0.06
-                second_score[lane] += 0.04
-
-        for lane in pulled_back_lanes:
-            course = course_map.get(lane, lane)
-            loss = max(1, course - lane)
-            head_score[lane] -= min(0.06 + 0.04 * loss, 0.18)
-            second_score[lane] -= min(0.03 + 0.03 * loss, 0.10)
-
-    if ranks:
-        for lane in range(1, 7):
-            rank = ranks.get(lane)
-            if rank is None:
-                continue
-            if rank == 1:
-                head_score[lane] += 0.09
-                second_score[lane] += 0.05
-            elif rank == 2:
-                head_score[lane] += 0.05
-                second_score[lane] += 0.05
-                third_score[lane] += 0.02
-            elif rank == 3:
-                head_score[lane] += 0.02
-                second_score[lane] += 0.03
-                third_score[lane] += 0.03
-            elif rank == 4:
-                third_score[lane] += 0.01
-            elif rank == 5:
-                head_score[lane] -= 0.04
-                second_score[lane] -= 0.015
-            elif rank == 6:
-                head_score[lane] -= 0.07
-                second_score[lane] -= 0.03
-                third_score[lane] -= 0.02
-
-        # 順位だけでは頭を強くしすぎない
-        rank1 = ranks.get(1)
-        if rank1 is not None:
-            if rank1 <= 3:
-                head_score[1] += 0.02
-                second_score[1] += 0.01
-            elif rank1 == 4:
-                head_score[1] += 0.005
-
-        rank2 = ranks.get(2)
-        if rank2 is not None:
-            if rank2 <= 3:
-                second_score[2] += 0.025
-            elif rank2 == 4:
-                second_score[2] += 0.01
-
-    float_times = []
-    for lane, t in enumerate(times, start=1):
-        try:
-            float_times.append((lane, float(t)))
-        except Exception:
-            pass
-
-    if len(float_times) == 6:
-        min_time = min(v for _, v in float_times)
-        avg_time = sum(v for _, v in float_times) / 6.0
-        spread = max(v for _, v in float_times) - min_time
-        sorted_times = sorted(float_times, key=lambda x: x[1])
-        gap12 = sorted_times[1][1] - sorted_times[0][1]
-
-        for lane, v in float_times:
-            diff_min = v - min_time
-            diff_avg = v - avg_time
-
-            if diff_min <= 0.00:
-                head_score[lane] += 0.13
-                second_score[lane] += 0.07
-            elif diff_min <= 0.03:
-                head_score[lane] += 0.07
-                second_score[lane] += 0.04
-                third_score[lane] += 0.02
-            elif diff_min >= 0.10:
-                head_score[lane] -= 0.12
-                second_score[lane] -= 0.05
-            elif diff_min >= 0.06:
-                head_score[lane] -= 0.06
-                second_score[lane] -= 0.025
-
-            if diff_avg <= -0.04:
-                third_score[lane] += 0.03
-            elif diff_avg >= 0.05:
-                third_score[lane] -= 0.03
-
-        if spread >= 0.18:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.05
-        elif spread >= 0.12:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.03
-
-        if gap12 >= 0.05:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.03
-            second_score[fastest_lane] += 0.02
-
-        lane1_time = next((v for lane, v in float_times if lane == 1), None)
-        if lane1_time is not None:
-            diff1 = lane1_time - min_time
-            if diff1 <= 0.03:
-                head_score[1] += 0.04
-            elif diff1 <= 0.05:
-                head_score[1] += 0.02
-            elif diff1 >= 0.12:
-                head_score[1] -= 0.06
-            elif diff1 >= 0.08:
-                head_score[1] -= 0.03
-
-        lane2_time = next((v for lane, v in float_times if lane == 2), None)
-        if lane2_time is not None:
-            diff2 = lane2_time - min_time
-            if diff2 <= 0.03:
-                second_score[2] += 0.04
-            elif diff2 <= 0.05:
-                second_score[2] += 0.02
-            elif diff2 >= 0.12:
-                second_score[2] -= 0.04
-
-    if len(st_map) >= 4:
-        sorted_st = sorted(
-            [(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))],
-            key=lambda x: x[1]
-        )
-        best_lane = sorted_st[0][0]
-        second_lane = sorted_st[1][0]
-        worst_lane = sorted_st[-1][0]
-        best_st = sorted_st[0][1]
-        worst_st = sorted_st[-1][1]
-        spread = worst_st - best_st
-
-        if best_st <= 0.10:
-            head_score[best_lane] += 0.16
-            second_score[best_lane] += 0.08
-        elif best_st <= 0.12:
-            head_score[best_lane] += 0.10
-            second_score[best_lane] += 0.06
-
-        if spread >= 0.10:
-            head_score[best_lane] += 0.06
-            second_score[second_lane] += 0.06
-            third_score[second_lane] += 0.03
-            head_score[worst_lane] -= 0.06
-
-        # v10.2: 1のSTが極端に悪くなければ頭残し
-        st1 = st_map.get(1)
-        if isinstance(st1, (int, float)):
-            if st1 <= 0.14:
-                head_score[1] += 0.05
-            elif st1 <= 0.17:
-                head_score[1] += 0.02
-
-        st2 = st_map.get(2)
-        if isinstance(st2, (int, float)):
-            if st2 <= 0.14:
-                second_score[2] += 0.05
-            elif st2 <= 0.17:
-                second_score[2] += 0.02
-
-    wind_type = str((weather_info or {}).get("wind_type") or "")
-    wind_level = get_wind_level(weather_info or {})
-    try:
-        wind_speed = float((weather_info or {}).get("wind_speed") or 0)
-    except Exception:
-        wind_speed = 0.0
-
-    if wind_level > 0:
-        if wind_type == "向い風":
-            head_score[1] -= 0.08 * wind_level
-            head_score[2] += 0.05 * wind_level
-            head_score[3] += 0.04 * wind_level
-            second_score[2] += 0.06 * wind_level
-            second_score[3] += 0.04 * wind_level
-            third_score[5] += 0.03 * wind_level
-            third_score[6] += 0.04 * wind_level
-        elif wind_type == "追い風":
-            head_score[1] += 0.10 * wind_level
-            second_score[1] += 0.03 * wind_level
-            second_score[2] += 0.03 * wind_level
-            head_score[4] -= 0.02 * wind_level
-            head_score[5] -= 0.05 * wind_level
-            head_score[6] -= 0.08 * wind_level
-        elif wind_type == "横風":
-            head_score[4] -= 0.04 * wind_level
-            head_score[5] -= 0.07 * wind_level
-            head_score[6] -= 0.10 * wind_level
-            second_score[2] += 0.04 * wind_level
-            second_score[3] += 0.04 * wind_level
-            third_score[1] += 0.02 * wind_level
-            third_score[2] += 0.03 * wind_level
-
-    if wind_speed >= 7:
-        head_score[2] += 0.03
-        head_score[3] += 0.03
-        second_score[2] += 0.03
-        second_score[3] += 0.02
-        head_score[5] -= 0.04
-        head_score[6] -= 0.07
-        second_score[5] -= 0.03
-        second_score[6] -= 0.04
-        third_score[5] -= 0.01
-        third_score[6] -= 0.02
-
-    for lane in [3, 4, 5, 6]:
-        if lane_score_map.get(lane, 0) >= 0.12:
-            head_score[lane] += 0.05
-            third_score[lane] += 0.03
-
-    return {
-        "lane": lane_score_map,
-        "head": head_score,
-        "second": second_score,
-        "third": third_score,
-        "venue_notes": venue_bias.get("notes", []),
-    }
+    return f'<div class="player-evidence-wrap">{"".join(chips)}</div>'
 
 
-def build_pref_bonus_map(lanes, values):
-    out = {}
-    for lane, val in zip(lanes, values):
+def render_player_rank_summary_html(
+    player_names_text,
+    class_history_text,
+    lane_score_text="",
+    exhibition_rank_text="",
+    exhibition_list=None,
+    player_stat_text="",
+    player_reason_text="",
+    latest_reason_text="",
+):
+    player_map = parse_player_names_map(player_names_text)
+    class_rows = parse_class_history_rows(class_history_text)
+    class_map = {}
+    for row in class_rows:
+        lane = row.get("lane")
         if lane is None:
             continue
-        out[int(lane)] = float(val)
-    return out
+        values = list(row.get("classes", []) or [])[:4]
+        while len(values) < 4:
+            values.append("")
+        class_map[lane] = values
+
+    lane_score_map = {lane: score for lane, score in parse_lane_score_items(lane_score_text)}
+    exhibition_rank_map = parse_exhibition_rank_map(exhibition_rank_text)
+    exhibition_list = exhibition_list or []
+    player_stat_map = parse_lane_chip_text_map(player_stat_text)
+    player_reason_map = parse_lane_chip_text_map(player_reason_text)
+
+    has_any = (
+        bool(player_map)
+        or bool(class_map)
+        or bool(player_stat_map)
+        or bool(player_reason_map)
+        or bool(lane_score_map)
+        or bool(exhibition_rank_map)
+        or bool(exhibition_list)
+    )
+    if not has_any:
+        return '<div class="player-rank-empty">未取得</div>'
+
+    rows_html = ""
+    for lane in range(1, 7):
+        name = player_map.get(lane, "未取得")
+        class_values = class_map.get(lane, ["", "", "", ""])
+        class_labels = ["現", "-1", "-2", "-3"]
+        class_chips = ""
+        for idx, cls in enumerate(class_values):
+            cls_text = cls or "-"
+            cls_safe = (cls or "blank").lower()
+            current_cls = " current-class-chip" if idx == 0 else ""
+            blank_cls = " class-chip-blank" if cls_text == "-" else ""
+            class_chips += f'<div class="class-chip class-chip-{cls_safe}{current_cls}{blank_cls}"><span class="class-chip-sub">{class_labels[idx]}</span><span class="class-chip-main">{cls_text}</span></div>'
+
+        stat_items = player_stat_map.get(lane, [])
+        reason_items = parse_signed_chip_items(player_reason_map.get(lane, []))
+        reason_items.extend(parse_signed_chip_items(stat_items))
+        default_items = build_default_player_evidence_items(
+            lane,
+            exhibition_rank_map,
+            exhibition_list,
+            lane_score_map,
+            latest_reason_text=latest_reason_text,
+        )
+        evidence_html = render_player_evidence_chips(reason_items, default_items)
+
+        rows_html += f"""
+        <div class=\"player-rank-row\">
+          <div class=\"player-rank-main-wrap\">
+            <div class=\"player-rank-main\">
+              <span class=\"player-rank-lane\">{render_lane_badge(lane)}</span>
+              <span class=\"player-rank-name\">{name}</span>
+            </div>
+            <div class=\"player-rank-class-row\">{class_chips}</div>
+          </div>
+          <div class=\"player-rank-evidence\">{evidence_html}</div>
+        </div>
+        """
+
+    return f'<div class="player-rank-wrap">{rows_html}</div>'
 
 
-def get_exhibition_time_by_lane(exhibition_info, lane):
-    times = (exhibition_info or {}).get("times", []) or []
-    idx = int(lane) - 1
-    if idx < 0 or idx >= len(times):
-        return None
-    try:
-        v = float(times[idx])
-    except Exception:
-        return None
-    return v if is_exhibition_time_value(v) else None
+def parse_class_history_rows(class_history_text):
+    rows = []
+    s = str(class_history_text or "").strip()
+    if not s:
+        return rows
+    parts = [x.strip() for x in s.split("/") if x.strip()]
+    current = None
+    classes = []
+    for part in parts:
+        if ":" in part:
+            if current:
+                rows.append(current)
+            lane_part, cls = part.split(":", 1)
+            try:
+                lane = int(lane_part.strip())
+            except Exception:
+                lane = None
+            classes = [cls.strip()] if cls.strip() else []
+            current = {"lane": lane, "classes": classes}
+        else:
+            if current and part:
+                current["classes"].append(part)
+    if current:
+        rows.append(current)
+    return rows
 
 
-def calc_fastest_gap_by_lane(exhibition_info, lane):
-    target = get_exhibition_time_by_lane(exhibition_info, lane)
-    if target is None:
-        return None
-
-    float_times = []
-    for i, raw in enumerate((exhibition_info or {}).get("times", []) or [], start=1):
+def parse_lane_score_items(lane_score_text):
+    items = []
+    s = str(lane_score_text or "").strip()
+    if not s:
+        return items
+    for part in [x.strip() for x in s.split("/") if x.strip()]:
+        if ":" not in part:
+            continue
+        lane, score = part.split(":", 1)
         try:
-            v = float(raw)
+            lane_num = int(lane.strip())
+            score_val = float(score.strip())
         except Exception:
             continue
-        if is_exhibition_time_value(v):
-            float_times.append((i, v))
-
-    if len(float_times) < 2:
-        return None
-
-    sorted_times = sorted(float_times, key=lambda x: x[1])
-    if sorted_times[0][0] != int(lane):
-        return None
-    return round(sorted_times[1][1] - sorted_times[0][1], 3)
+        items.append((lane_num, score_val))
+    return items
 
 
-def should_guard_center_head_shift(exhibition_info, foot_material=None, center_lane=3, escape_weight=0.0):
-    foot_material = foot_material or {}
-    course_map = foot_material.get("course_map", {}) or {}
-    entry_change = bool(foot_material.get("entry_change"))
-    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
-    st_map = foot_material.get("st_map", {}) or {}
-
-    if int(center_lane) != 3:
-        return False
-    if float(escape_weight or 0) < 0.42:
-        return False
-    if course_map.get(1, 1) != 1:
-        return False
-    if entry_change or entry_severity >= 0.12:
-        return False
-
-    lane1_time = get_exhibition_time_by_lane(exhibition_info, 1)
-    lane3_time = get_exhibition_time_by_lane(exhibition_info, 3)
-    if lane1_time is None or lane3_time is None:
-        return False
-
-    ex_diff = abs(lane1_time - lane3_time)
-    if ex_diff > 0.05:
-        return False
-
-    st1 = st_map.get(1)
-    st3 = st_map.get(3)
-    if isinstance(st1, (int, float)) and isinstance(st3, (int, float)):
-        # 1 がそこまで悪くないなら、3 はまず相手側へ寄せる
-        if (float(st1) - float(st3)) > 0.03:
-            return False
-
-    return True
+def lane_score_class(score):
+    if score >= 1.5:
+        return "lane-score-chip lane-score-verygood"
+    if score >= 0.7:
+        return "lane-score-chip lane-score-good"
+    if score <= -0.4:
+        return "lane-score-chip lane-score-bad"
+    return "lane-score-chip"
 
 
-def should_loosen_outer_head_attack(exhibition_info, foot_material=None, outer_lane=6):
-    foot_material = foot_material or {}
-    st_map = foot_material.get("st_map", {}) or {}
-    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
-    entry_change = bool(foot_material.get("entry_change"))
-    course_map = foot_material.get("course_map", {}) or {}
-    ranks = (exhibition_info or {}).get("ranks", {}) or {}
-
-    if int(outer_lane) != 6:
-        return False
-
-    # 6 は展示最速だけで頭まで押しすぎない。
-    strong_signal = False
-    st6 = st_map.get(6)
-    if isinstance(st6, (int, float)) and float(st6) <= 0.11:
-        strong_signal = True
-    if entry_change and (6 in pre_move_lanes or course_map.get(6, 6) < 6):
-        strong_signal = True
-
-    fastest_gap = calc_fastest_gap_by_lane(exhibition_info, 6)
-    if ranks.get(6) == 1 and fastest_gap is not None and fastest_gap >= 0.05:
-        strong_signal = True
-
-    return not strong_signal
+def render_lane_score_chips(lane_score_text):
+    items = parse_lane_score_items(lane_score_text)
+    if not items:
+        return '<div class="lane-score-empty">未取得</div>'
+    items = sorted(items, key=lambda x: (-x[1], x[0]))
+    chips = ""
+    for lane, score in items:
+        chips += f'<div class="{lane_score_class(score)}"><span class="lane-score-lane">{render_lane_badge(lane)}</span><span class="lane-score-value">{score:.2f}</span></div>'
+    return f'<div class="lane-score-wrap">{chips}</div>'
 
 
-def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None, role_maps=None, day_trend_bias=None):
-    weather_info = weather_info or {}
-    foot_material = foot_material or {}
-    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material, day_trend_bias=day_trend_bias)
-
-    head_score = role_maps["head"]
-    second_score = role_maps["second"]
-    third_score = role_maps["third"]
-    lane_score_map = role_maps["lane"]
-    venue_notes = role_maps.get("venue_notes", [])
-
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    st_map = foot_material.get("st_map", {}) or {}
-    course_order = foot_material.get("course_order", []) or []
-    course_map = foot_material.get("course_map", {}) or {}
-    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
-    entry_change = bool(foot_material.get("entry_change"))
-    entry_text = str(foot_material.get("entry_text") or "")
-    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
-
-    scenarios = []
-    head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
-    second_ranked = [lane for lane, _ in sorted(second_score.items(), key=lambda x: x[1], reverse=True)]
-    lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
-
-    best_head = head_ranked[0]
-    second_head = head_ranked[1]
-    head_gap = head_score[best_head] - head_score[second_head]
-
-    rank1 = ranks.get(1)
-    st1 = st_map.get(1)
-    weight_1 = 0.0
-    if head_score.get(1, 0) >= 0.08:
-        weight_1 += 0.32
-    if best_head == 1:
-        weight_1 += 0.20
-    if rank1 == 1:
-        weight_1 += 0.24
-    elif rank1 == 2:
-        weight_1 += 0.15
-    elif rank1 == 3:
-        weight_1 += 0.08
-    elif rank1 is not None and rank1 >= 5:
-        weight_1 -= 0.18
-    if isinstance(st1, (int, float)):
-        if st1 <= 0.11:
-            weight_1 += 0.12
-        elif st1 <= 0.14:
-            weight_1 += 0.05
-        elif st1 >= 0.19:
-            weight_1 -= 0.10
-    if weather_info.get("water_state_score", 0) > 0:
-        weight_1 += 0.04
-    if course_map.get(1, 1) == 2:
-        weight_1 -= 0.24
-    elif course_map.get(1, 1) >= 3:
-        weight_1 -= 0.38
-    if "大村イン寄り" in venue_notes:
-        weight_1 += 0.06
-    if "江戸川外警戒" in venue_notes:
-        weight_1 -= 0.08
-    if head_gap >= 0.16 and best_head == 1:
-        weight_1 += 0.06
-    weight_1 = clamp(weight_1, 0.0, 1.0)
-
-    if weight_1 >= 0.20:
-        scenarios.append({
-            "name": "1逃げ本線",
-            "head_lane": 1,
-            "weight": weight_1,
-            "head_bonus": {
-                1: 0.25,
-                2: 0.03,
-                3: 0.02,
-            },
-            "second_bonus": {
-                2: 0.17,
-                3: 0.10,
-                4: 0.05,
-                5: 0.01,
-                1: -0.05,
-            },
-            "third_bonus": {
-                2: 0.06,
-                3: 0.10,
-                4: 0.10,
-                5: 0.06,
-                6: 0.03,
-                1: -0.04,
-            },
-        })
-
-    rank2 = ranks.get(2)
-    st2 = st_map.get(2)
-    weight_2 = 0.0
-    if head_score.get(2, 0) >= 0.10:
-        weight_2 += 0.24
-    if best_head == 2:
-        weight_2 += 0.18
-    if second_score.get(1, 0) >= 0.06:
-        weight_2 += 0.10
-    if rank2 == 1:
-        weight_2 += 0.18
-    elif rank2 == 2:
-        weight_2 += 0.10
-    if rank1 is not None and rank1 >= 4:
-        weight_2 += 0.08
-    if course_order and course_order[0] == 2:
-        weight_2 += 0.16
-    elif 2 in pre_move_lanes:
-        weight_2 += 0.08
-    if isinstance(st2, (int, float)):
-        if st2 <= 0.11:
-            weight_2 += 0.12
-        elif st2 <= 0.14:
-            weight_2 += 0.05
-        elif st2 >= 0.18:
-            weight_2 -= 0.08
-    if "大村イン寄り" in venue_notes:
-        weight_2 -= 0.05
-    weight_2 = clamp(weight_2, 0.0, 1.0)
-
-    if weight_2 >= 0.20:
-        scenarios.append({
-            "name": "2差し注意",
-            "head_lane": 2,
-            "weight": weight_2,
-            "head_bonus": {
-                2: 0.23,
-                3: 0.05,
-                1: 0.03,
-            },
-            "second_bonus": {
-                1: 0.15,
-                3: 0.12,
-                4: 0.05,
-                5: 0.02,
-                2: -0.03,
-            },
-            "third_bonus": {
-                1: 0.08,
-                3: 0.11,
-                4: 0.09,
-                5: 0.05,
-                6: 0.03,
-            },
-        })
-
-    center_candidates = [3, 4]
-    center_lane = max(center_candidates, key=lambda lane: head_score.get(lane, -999))
-    rank_center = ranks.get(center_lane)
-    st_center = st_map.get(center_lane)
-    weight_center = 0.0
-    if head_score.get(center_lane, 0) >= 0.12:
-        weight_center += 0.24
-    if best_head == center_lane:
-        weight_center += 0.18
-    if lane_score_map.get(center_lane, 0) >= 0.12:
-        weight_center += 0.10
-    if rank_center == 1:
-        weight_center += 0.18
-    elif rank_center == 2:
-        weight_center += 0.10
-    if isinstance(st_center, (int, float)):
-        if st_center <= 0.11:
-            weight_center += 0.12
-        elif st_center >= 0.19:
-            weight_center -= 0.08
-    if center_lane in pre_move_lanes:
-        weight_center += 0.12
-    if "若松やや波乱" in venue_notes:
-        weight_center += 0.04
-    if "江戸川外警戒" in venue_notes:
-        weight_center += 0.05
-
-    center_head_guard = should_guard_center_head_shift(
-        exhibition_info,
-        foot_material=foot_material,
-        center_lane=center_lane,
-        escape_weight=weight_1,
-    )
-    if center_head_guard:
-        weight_center -= 0.14
-
-    weight_center = clamp(weight_center, 0.0, 1.0)
-
-    if weight_center >= 0.24:
-        if center_lane == 3:
-            if center_head_guard:
-                second_pref = [3, 2, 1, 4, 5]
-                third_pref = [3, 2, 1, 4, 5]
-                name = "3攻め注意(相手寄り)"
-                head_bonus = build_pref_bonus_map(
-                    [3, 1, 2, 5],
-                    [0.14, 0.08, 0.03, 0.01],
-                )
-                second_bonus = build_pref_bonus_map(
-                    second_pref[:5],
-                    [0.18, 0.12, 0.08, 0.04, 0.02],
-                )
-                third_bonus = build_pref_bonus_map(
-                    third_pref[:5],
-                    [0.14, 0.10, 0.08, 0.05, 0.03],
-                )
-            else:
-                second_pref = [1, 2, 4, 5, 6]
-                third_pref = [2, 1, 4, 5, 6]
-                name = "3攻め注意"
-                head_bonus = build_pref_bonus_map(
-                    [center_lane, 2, 1, 5],
-                    [0.25, 0.03, 0.02, 0.02],
-                )
-                second_bonus = build_pref_bonus_map(
-                    second_pref[:5],
-                    [0.13, 0.11, 0.07, 0.04, 0.02],
-                )
-                third_bonus = build_pref_bonus_map(
-                    third_pref[:5],
-                    [0.10, 0.09, 0.08, 0.05, 0.03],
-                )
-        else:
-            second_pref = [2, 3, 1, 5, 6]
-            third_pref = [3, 2, 1, 5, 6]
-            name = "4攻め注意"
-            head_bonus = build_pref_bonus_map(
-                [center_lane, 2, 1, 5],
-                [0.25, 0.03, 0.02, 0.02],
-            )
-            second_bonus = build_pref_bonus_map(
-                second_pref[:5],
-                [0.13, 0.11, 0.07, 0.04, 0.02],
-            )
-            third_bonus = build_pref_bonus_map(
-                third_pref[:5],
-                [0.10, 0.09, 0.08, 0.05, 0.03],
-            )
-
-        scenarios.append({
-            "name": name,
-            "head_lane": center_lane,
-            "weight": weight_center,
-            "head_bonus": head_bonus,
-            "second_bonus": second_bonus,
-            "third_bonus": third_bonus,
-        })
-
-    outer_candidates = [5, 6]
-    outer_lane = max(outer_candidates, key=lambda lane: head_score.get(lane, -999))
-    rank_outer = ranks.get(outer_lane)
-    st_outer = st_map.get(outer_lane)
-    weight_outer = 0.0
-    if head_score.get(outer_lane, 0) >= 0.12:
-        weight_outer += 0.20
-    if best_head == outer_lane:
-        weight_outer += 0.20
-    if lane_score_map.get(outer_lane, 0) >= 0.16:
-        weight_outer += 0.14
-    if rank_outer == 1:
-        weight_outer += 0.18
-    elif rank_outer == 2:
-        weight_outer += 0.10
-    if isinstance(st_outer, (int, float)):
-        if st_outer <= 0.10:
-            weight_outer += 0.14
-        elif st_outer >= 0.18:
-            weight_outer -= 0.08
-    if outer_lane in pre_move_lanes:
-        weight_outer += 0.14
-    if "江戸川外警戒" in venue_notes:
-        weight_outer += 0.12
-    if "若松やや波乱" in venue_notes:
-        weight_outer += 0.06
-    if "大村イン寄り" in venue_notes:
-        weight_outer -= 0.08
-
-    outer_head_guard = should_loosen_outer_head_attack(
-        exhibition_info,
-        foot_material=foot_material,
-        outer_lane=outer_lane,
-    )
-    if outer_head_guard:
-        weight_outer -= 0.16
-
-    weight_outer = clamp(weight_outer, 0.0, 1.0)
-
-    if weight_outer >= 0.24:
-        if outer_lane == 5:
-            second_pref = [6, 1, 2, 4, 3]
-            third_pref = [1, 6, 2, 3, 4]
-            name = "5一撃注意"
-            head_bonus = build_pref_bonus_map(
-                [outer_lane, 6, 1],
-                [0.24, 0.04, 0.02],
-            )
-            second_bonus = build_pref_bonus_map(
-                second_pref[:5],
-                [0.14, 0.12, 0.09, 0.06, 0.03],
-            )
-            third_bonus = build_pref_bonus_map(
-                third_pref[:5],
-                [0.11, 0.10, 0.08, 0.05, 0.03],
-            )
-        else:
-            second_pref = [6, 5, 1, 2, 3]
-            third_pref = [6, 1, 5, 2, 3]
-            if outer_head_guard:
-                name = "6一撃注意(相手寄り)"
-                head_bonus = build_pref_bonus_map(
-                    [6, 5, 1],
-                    [0.14, 0.03, 0.04],
-                )
-                second_bonus = build_pref_bonus_map(
-                    second_pref[:5],
-                    [0.18, 0.12, 0.10, 0.06, 0.03],
-                )
-                third_bonus = build_pref_bonus_map(
-                    third_pref[:5],
-                    [0.15, 0.10, 0.09, 0.05, 0.03],
-                )
-            else:
-                name = "6一撃注意"
-                head_bonus = build_pref_bonus_map(
-                    [outer_lane, 5, 1],
-                    [0.24, 0.04, 0.02],
-                )
-                second_bonus = build_pref_bonus_map(
-                    [5, 1, 2, 3, 4],
-                    [0.14, 0.12, 0.09, 0.06, 0.03],
-                )
-                third_bonus = build_pref_bonus_map(
-                    [1, 5, 2, 3, 4],
-                    [0.11, 0.10, 0.08, 0.05, 0.03],
-                )
-
-        scenarios.append({
-            "name": name,
-            "head_lane": outer_lane,
-            "weight": weight_outer,
-            "head_bonus": head_bonus,
-            "second_bonus": second_bonus,
-            "third_bonus": third_bonus,
-        })
-
-    if course_order:
-        course1_lane = course_order[0]
-        if course1_lane != 1:
-            front_weight = clamp(0.22 + entry_severity * 0.55, 0.0, 0.46)
-            if course1_lane == 2:
-                second_pref = [1, 3, 4, 5, 6]
-                third_pref = [1, 3, 4, 5, 6]
-            elif course1_lane == 3:
-                second_pref = [1, 2, 4, 5, 6]
-                third_pref = [1, 2, 4, 5, 6]
-            elif course1_lane == 4:
-                second_pref = [1, 2, 3, 5, 6]
-                third_pref = [1, 2, 3, 5, 6]
-            elif course1_lane == 5:
-                second_pref = [1, 2, 3, 4, 6]
-                third_pref = [1, 2, 3, 4, 6]
-            else:
-                second_pref = [1, 2, 3, 4, 5]
-                third_pref = [1, 2, 3, 4, 5]
-
-            scenarios.append({
-                "name": f"{course1_lane}前づけ注意",
-                "head_lane": course1_lane,
-                "weight": front_weight,
-                "head_bonus": build_pref_bonus_map([course1_lane, 1, 2, 3], [0.24, 0.04, 0.03, 0.02]),
-                "second_bonus": build_pref_bonus_map(second_pref[:5], [0.13, 0.11, 0.08, 0.05, 0.03]),
-                "third_bonus": build_pref_bonus_map(third_pref[:5], [0.10, 0.09, 0.08, 0.05, 0.03]),
-            })
-
-    scenarios = sorted(scenarios, key=lambda x: x["weight"], reverse=True)[:4]
-    scenario_names = [f"{s['name']}" for s in scenarios[:2]]
-    if entry_change and entry_text:
-        scenario_names.append(f"進入:{entry_text}")
-    scenario_text = " / ".join(scenario_names[:3])
-
-    return {
-        "scenarios": scenarios,
-        "scenario_text": scenario_text,
-        "best_head_lane": best_head,
-        "head_ranked": head_ranked,
-        "second_ranked": second_ranked,
-        "lane_ranked": lane_ranked,
-    }
+def parse_detail_material_list(detail_text):
+    s = str(detail_text or "").strip()
+    if not s:
+        return []
+    return [x.strip() for x in s.split("/") if x.strip()]
 
 
-def scenario_strength_factor(exhibition_info, foot_material=None, signal_metrics=None):
-    foot_material = foot_material or {}
-    times = exhibition_info.get("times", []) if exhibition_info else []
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
-    st_map = foot_material.get("st_map", {}) or {}
-    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
-
-    factor = 1.0
-
-    has_times = len(times) == 6
-    has_ranks = len(ranks) == 6
-    has_st = len(st_map) >= 4
-
-    if not has_times and not has_ranks:
-        factor *= 0.55
-    elif not has_times or not has_ranks:
-        factor *= 0.72
-
-    if not has_st:
-        factor *= 0.90
-
-    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
-    dynamic_factor = 0.78 + signal_strength * 0.34
-    factor *= dynamic_factor
-
-    return round(clamp(factor, 0.45, 1.0), 2)
+def render_detail_material_chips(detail_text):
+    items = parse_detail_material_list(detail_text)
+    if not items:
+        return '<div class="detail-chip-empty">未取得</div>'
+    chips = "".join([f'<div class="detail-chip">{item}</div>' for item in items])
+    return f'<div class="detail-chip-wrap">{chips}</div>'
 
 
-def scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=1.0):
-    if not tri or not scenario_material:
-        return 0.0
-
-    try:
-        a, b, c = [int(x) for x in tri.split("-")]
-    except Exception:
-        return 0.0
-
-    total = 0.0
-    scenarios = scenario_material.get("scenarios", [])
-
-    for sc in scenarios:
-        w = float(sc.get("weight", 0) or 0)
-        if w <= 0:
-            continue
-
-        head_bonus = sc.get("head_bonus", {})
-        second_bonus = sc.get("second_bonus", {})
-        third_bonus = sc.get("third_bonus", {})
-
-        total += float(head_bonus.get(a, -0.03 if a != sc.get("head_lane") else 0) or 0) * w
-        total += float(second_bonus.get(b, 0) or 0) * w
-        total += float(third_bonus.get(c, 0) or 0) * w
-
-        if a == sc.get("head_lane") and b == a:
-            total -= 0.10 * w
-        if a == sc.get("head_lane") and b in second_bonus and c in third_bonus:
-            total += 0.03 * w
-
-    total *= float(scenario_factor or 1.0)
-    return round(total, 4)
-
-
-def pick_best_triplet_for_head(scored_rows, head_lane, exclude_triplets=None):
-    exclude_triplets = set(exclude_triplets or [])
-    for tri, _score in scored_rows:
-        if tri in exclude_triplets:
-            continue
-        if tri.startswith(f"{head_lane}-"):
-            return tri
+def final_rank_badge(rank_text):
+    s = (rank_text or "").strip()
+    if s == "買い強め":
+        return '<span class="final-rank final-rank-strong">買い強め</span>'
+    if s == "買い":
+        return '<span class="final-rank final-rank-buy">買い</span>'
+    if s == "様子見":
+        return '<span class="final-rank final-rank-watch">様子見</span>'
+    if s:
+        return f'<span class="final-rank final-rank-skip">{s}</span>'
     return ""
 
 
-def enforce_head_diversity(top, scored_rows, scenario_material, scenario_factor):
-    if not top:
-        return top
-
-    head_counts = {}
-    for tri in top:
-        head = int(tri.split("-")[0])
-        head_counts[head] = head_counts.get(head, 0) + 1
-
-    dominant_head, dominant_count = sorted(head_counts.items(), key=lambda x: (x[1], x[0]), reverse=True)[0]
-    scenarios = scenario_material.get("scenarios", [])
-
-    if dominant_count <= 4:
-        return top
-
-    candidate_heads = []
-    for sc in scenarios:
-        lane = sc.get("head_lane")
-        if lane and lane != dominant_head:
-            candidate_heads.append((lane, float(sc.get("weight", 0) or 0)))
-
-    candidate_heads = [lane for lane, w in candidate_heads if w * scenario_factor >= 0.20]
-
-    replaced = top[:]
-    for alt_head in candidate_heads[:2]:
-        alt_tri = pick_best_triplet_for_head(scored_rows, alt_head, exclude_triplets=replaced)
-        if alt_tri:
-            replace_idx = -1
-            for idx in range(len(replaced) - 1, -1, -1):
-                if replaced[idx].startswith(f"{dominant_head}-"):
-                    replace_idx = idx
-                    break
-            if replace_idx >= 0:
-                replaced[replace_idx] = alt_tri
-
-    dedup = []
-    for tri in replaced:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return dedup
+def render_ai_rating_filter_options(current_value):
+    html = '<option value="">すべて</option>'
+    for value in AI_RATING_OPTIONS:
+        if not value:
+            continue
+        selected = "selected" if value == current_value else ""
+        html += f'<option value="{value}" {selected}>{value}</option>'
+    return html
 
 
-def add_basic_form_triplets(
-    top,
-    scored_rows,
-    role_maps,
-    exhibition_info,
-    base_triplets=None,
+def render_official_rating_filter_options(current_value):
+    current = current_value or "pickup"
+    html = ""
+    for value, label in OFFICIAL_RATING_FILTER_OPTIONS:
+        selected = "selected" if value == current else ""
+        html += f'<option value="{value}" {selected}>{label}</option>'
+    return html
+
+
+def safe_redirect_path(path, default="/"):
+    s = str(path or "").strip()
+    if not s.startswith("/") or s.startswith("//"):
+        return default
+    return s
+
+
+def build_selection_compare_data(official_text, ai_text):
+    official_items = selection_items(official_text)
+    ai_items = selection_items(ai_text)
+    combined = official_items + ai_items
+    overlap = sorted(set(official_items) & set(ai_items), key=lambda x: combined.index(x))
+    return {
+        "official_items": official_items,
+        "ai_items": ai_items,
+        "overlap": overlap,
+    }
+
+
+def render_selection_column(
+    own_items,
+    overlap_items,
+    source,
+    empty_text,
+    race_id_key="",
+    selected_items=None,
+    form_id="",
 ):
-    """
-    v10.2:
-    1頭基本形と2着2号艇を少し残す。
-    強制しすぎず、条件に合う時だけ1点差し替え。
-    """
-    base_triplets = base_triplets or []
-    head_score = role_maps["head"]
-    second_score = role_maps["second"]
-    lane_score_map = role_maps["lane"]
-    ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
+    if not own_items:
+        return f'<div class="selection-chip-empty">{empty_text}</div>'
 
-    if not top:
-        return top
+    selected_items = {normalize_pick_text(x) for x in (selected_items or set())}
+    overlap_set = set(overlap_items)
 
-    # 1号艇が完全に死んでいない条件
-    keep_one_head = False
-    if head_score.get(1, -999) >= -0.08:
-        keep_one_head = True
-    if ranks.get(1) in [1, 2, 3, 4]:
-        keep_one_head = True
-    if lane_score_map.get(1, -999) >= -0.18:
-        keep_one_head = True
+    chips = ""
+    for idx, item in enumerate(own_items):
+        item_clean = normalize_pick_text(item)
 
-    # 2号艇が2着候補として死んでいない条件
-    keep_two_second = False
-    if second_score.get(2, -999) >= -0.05:
-        keep_two_second = True
-    if ranks.get(2) in [1, 2, 3, 4]:
-        keep_two_second = True
+        if item_clean in overlap_set:
+            chip_kind = "overlap"
+        else:
+            chip_kind = source
 
-    if not (keep_one_head or keep_two_second):
-        return top
-
-    current_has_one_head = any(tri.startswith("1-") for tri in top)
-    current_has_two_second = any(tri.split("-")[1] == "2" for tri in top if tri.count("-") == 2)
-
-    candidate_basic = []
-    for tri, _score in scored_rows:
-        try:
-            a, b, _c = [int(x) for x in tri.split("-")]
-        except Exception:
+        if source == "official":
+            selected_class = " is-selected-view" if item_clean in selected_items else ""
+            chips += f'''
+            <div class="selection-view-chip selection-view-chip-{chip_kind}{selected_class}">
+              <span class="selection-choice-body selection-choice-body-{chip_kind} selection-choice-body-view">{render_colored_pick_html(item_clean)}</span>
+            </div>
+            '''
             continue
 
-        if keep_one_head and a == 1:
-            candidate_basic.append(tri)
-        elif keep_two_second and b == 2:
-            candidate_basic.append(tri)
+        checked = "checked" if item_clean in selected_items else ""
+        item_id = f"cmp-ai-{race_id_key}-{idx}"
 
-    # baseの1頭/2着2号艇も優先候補に混ぜる
-    for tri in base_triplets:
-        try:
-            a, b, _c = [int(x) for x in tri.split("-")]
-        except Exception:
-            continue
-        if (keep_one_head and a == 1) or (keep_two_second and b == 2):
-            if tri not in candidate_basic:
-                candidate_basic.insert(0, tri)
+        chips += f'''
+        <label class="selection-choice-chip selection-choice-chip-{chip_kind}" for="{item_id}">
+          <input
+            class="selection-choice-input"
+            type="checkbox"
+            id="{item_id}"
+            name="selected_ai"
+            value="{item_clean}"
+            data-pick-value="{item_clean}"
+            data-race-group="{race_id_key}"
+            form="{form_id}"
+            {checked}
+            onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}')"
+          >
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{render_colored_pick_html(item_clean)}</span>
+        </label>
+        '''
 
-    if not candidate_basic:
-        return top
-
-    need_insert = False
-    if keep_one_head and not current_has_one_head:
-        need_insert = True
-    if keep_two_second and not current_has_two_second:
-        need_insert = True
-
-    if not need_insert:
-        return top
-
-    chosen = ""
-    for tri in candidate_basic:
-        if tri not in top:
-            chosen = tri
-            break
-
-    if not chosen:
-        return top
-
-    replaced = top[:]
-    replace_idx = len(replaced) - 1
-
-    # 末尾から、1頭でも2着2でもないものを優先して落とす
-    for idx in range(len(replaced) - 1, -1, -1):
-        tri = replaced[idx]
-        try:
-            a, b, _c = [int(x) for x in tri.split("-")]
-        except Exception:
-            continue
-
-        if keep_one_head and a == 1:
-            continue
-        if keep_two_second and b == 2:
-            continue
-        replace_idx = idx
-        break
-
-    replaced[replace_idx] = chosen
-
-    dedup = []
-    for tri in replaced:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return dedup
+    return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
 
 
-def ensure_base_triplets_present(top, scored_rows, base_triplets, min_keep=1):
-    if not top or not base_triplets or min_keep <= 0:
-        return top
+def render_selection_compare_html(r, race_id_key):
+    official_text = r.get("selection", "")
+    ai_text = r.get("ai_selection", "")
+    selected_items = set(selection_items(r.get("purchased_selection_text", "")))
+    form_id = f"race-form-{race_id_key}"
 
-    selected = top[:]
-    existing = [tri for tri in selected if tri in base_triplets]
-    if len(existing) >= min_keep:
-        return selected
+    data = build_selection_compare_data(official_text, ai_text)
 
-    needed = min_keep - len(existing)
-    candidate_base = []
-    score_map = {tri: score for tri, score in scored_rows}
-    for tri in base_triplets:
-        if tri not in selected and tri in score_map:
-            candidate_base.append((tri, score_map[tri]))
-    candidate_base.sort(key=lambda x: (x[1], x[0]), reverse=True)
-
-    for tri, _score in candidate_base[:needed]:
-        replace_idx = None
-        for idx in range(len(selected) - 1, -1, -1):
-            if selected[idx] not in base_triplets:
-                replace_idx = idx
-                break
-        if replace_idx is None:
-            break
-        selected[replace_idx] = tri
-
-    dedup = []
-    for tri in selected:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-    return dedup
-
-
-def extract_lane_text_block(raw_text, lane):
-    s = str(raw_text or "")
-    if not s:
-        return ""
-    m = re.search(rf"{int(lane)}:(.*?)(?:\s*/\s*[1-6]:|$)", s)
-    return m.group(1).strip() if m else ""
-
-
-def lane_has_class_support(base_info, lane=1):
-    lane_text = extract_lane_text_block((base_info or {}).get("class_history_text"), lane)
-    if not lane_text:
-        return False
-    return ("A1" in lane_text) or (lane_text.count("A2") >= 2)
-
-
-def lane_has_reason_support(base_info, lane=1):
-    lane_text = extract_lane_text_block((base_info or {}).get("player_reason_text"), lane)
-    if not lane_text:
-        return False
-    support_words = ["+モータ", "+級別", "+勝率", "+当地", "+近況", "+ST"]
-    return any(word in lane_text for word in support_words)
-
-
-def should_keep_lane1_support(base_info, exhibition_info, foot_material, role_maps, signal_metrics, base_hold_strength=0.0):
-    base_info = base_info or {}
-    foot_material = foot_material or {}
-    role_maps = role_maps or {}
-    signal_metrics = signal_metrics or {}
-
-    course_map = foot_material.get("course_map", {}) or {}
-    if course_map.get(1, 1) != 1:
-        return False
-
-    class_support = lane_has_class_support(base_info, lane=1)
-    reason_support = lane_has_reason_support(base_info, lane=1)
-    if not class_support and not reason_support and float(base_hold_strength or 0) < 0.18:
-        return False
-
-    lane_map = role_maps.get("lane", {}) or {}
-    head_map = role_maps.get("head", {}) or {}
-    second_map = role_maps.get("second", {}) or {}
-    third_map = role_maps.get("third", {}) or {}
-
-    lane1_eval = float(lane_map.get(1, 0) or 0)
-    head1 = float(head_map.get(1, 0) or 0)
-    second1 = float(second_map.get(1, 0) or 0)
-    third1 = float(third_map.get(1, 0) or 0)
-
-    lane1_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
-    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
-    st1 = (foot_material.get("st_map", {}) or {}).get(1)
-
-    if lane1_gap >= 0.18 and not (class_support or reason_support):
-        return False
-    if lane1_eval <= -0.55 and signal_strength >= 0.70 and float(base_hold_strength or 0) < 0.24:
-        return False
-    if max(head1, second1, third1) <= -0.12 and float(base_hold_strength or 0) < 0.22:
-        return False
-    if isinstance(st1, (int, float)) and float(st1) >= 0.30 and lane1_gap >= 0.12:
-        return False
-
-    return True
-
-
-def ensure_lane1_support_triplet(
-    top,
-    scored_rows,
-    base_triplets,
-    base_info,
-    exhibition_info,
-    foot_material,
-    role_maps,
-    signal_metrics,
-    base_hold_strength=0.0,
-):
-    if not top:
-        return top
-
-    if any("1" in tri.split("-") for tri in top if tri.count("-") == 2):
-        return top
-
-    if not should_keep_lane1_support(
-        base_info,
-        exhibition_info,
-        foot_material,
-        role_maps,
-        signal_metrics,
-        base_hold_strength=base_hold_strength,
-    ):
-        return top
-
-    score_map = {tri: score for tri, score in scored_rows}
-    candidates = []
-
-    for tri in base_triplets or []:
-        parts = tri.split("-")
-        if len(parts) != 3:
-            continue
-        if parts[0] == "1":
-            continue
-        if "1" in parts and tri in score_map:
-            bonus = 0.06 if parts[1] == "1" else 0.04
-            candidates.append((tri, score_map[tri] + bonus))
-
-    for tri, score in scored_rows:
-        parts = tri.split("-")
-        if len(parts) != 3:
-            continue
-        if parts[0] == "1":
-            continue
-        if "1" in parts:
-            bonus = 0.05 if parts[1] == "1" else 0.03
-            candidates.append((tri, score + bonus))
-
-    if not candidates:
-        return top
-
-    seen = set()
-    ranked = []
-    for tri, score in sorted(candidates, key=lambda x: (x[1], x[0]), reverse=True):
-        if tri in seen:
-            continue
-        seen.add(tri)
-        ranked.append((tri, score))
-
-    chosen = ""
-    for tri, _score in ranked:
-        if tri not in top:
-            chosen = tri
-            break
-    if not chosen:
-        return top
-
-    replaced = top[:]
-    replace_idx = len(replaced) - 1
-    for idx in range(len(replaced) - 1, -1, -1):
-        tri = replaced[idx]
-        parts = tri.split("-")
-        if len(parts) != 3:
-            continue
-        if "1" not in parts:
-            replace_idx = idx
-            break
-
-    replaced[replace_idx] = chosen
-
-    dedup = []
-    for tri in replaced:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
-
-    log(f"[lane1_support_keep] chosen={chosen} base_hold={base_hold_strength}")
-    return dedup
-
-
-def generate_top_triplets(
-    venue,
-    base_selection,
-    exhibition_info,
-    weather_info=None,
-    foot_material=None,
-    role_maps=None,
-    scenario_material=None,
-    base_hold_strength=0.0,
-    signal_metrics=None,
-    base_info=None,
-):
-    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
-    scenario_material = scenario_material or build_turn_scenario_material(
-        venue, exhibition_info, weather_info, foot_material, role_maps
+    ai_html = render_selection_column(
+        data["ai_items"],
+        data["overlap"],
+        "ai",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+        form_id=form_id,
+    )
+    official_html = render_selection_column(
+        data["official_items"],
+        data["overlap"],
+        "official",
+        "未取得",
+        race_id_key=race_id_key,
+        selected_items=selected_items,
+        form_id=form_id,
     )
 
-    lane_score_map = role_maps["lane"]
-    head_score = role_maps["head"]
-    second_score = role_maps["second"]
-    third_score = role_maps["third"]
+    return f'''
+    <div class="selection-compare-wrap ai-priority-wrap">
+      <div class="selection-compare-col selection-compare-col-ai">
+        <div class="selection-col-title selection-col-title-ai">AI買い目</div>
+        {ai_html}
+      </div>
+      <div class="selection-compare-col selection-compare-col-official">
+        <div class="selection-col-title selection-col-title-official">参考: 公式買い目（見るだけ）</div>
+        {official_html}
+      </div>
+    </div>
+    '''
 
-    signal_metrics = signal_metrics or calculate_latest_signal_metrics(exhibition_info, foot_material)
-    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
-    scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
 
-    base_weight_map = parse_selection_weight_map(base_selection)
-    base_triplets = selection_triplets(base_selection)
-    lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
+def render_selected_summary_html(selected_text):
+    items = selection_items(selected_text)
+    if not items:
+        return '<div class="selection-chip-empty">未選択</div>'
+    chips = "".join([f'<div class="picked-chip">{render_colored_pick_html(item)}</div>' for item in items])
+    return f'<div class="picked-chip-wrap">{chips}</div>'
 
-    base_weight_multiplier = clamp(0.52 - signal_strength * 0.20 + float(base_hold_strength or 0) * 0.20, 0.30, 0.62)
-    scenario_bonus_multiplier = clamp(0.68 + signal_strength * 0.28 - float(base_hold_strength or 0) * 0.08, 0.64, 0.94)
 
-    scored = []
-    for a in range(1, 7):
-        for b in range(1, 7):
-            if b == a:
-                continue
-            for c in range(1, 7):
-                if c == a or c == b:
-                    continue
-
-                tri = f"{a}-{b}-{c}"
-                score = (
-                    head_score.get(a, 0) * 1.12
-                    + second_score.get(b, 0) * 0.98
-                    + third_score.get(c, 0) * 0.82
-                )
-
-                score += (lane_score_map.get(a, 0) - lane_score_map.get(b, 0)) * 0.08
-
-                if third_score.get(c, 0) < -0.22:
-                    score -= 0.10
-                elif third_score.get(c, 0) > 0.18:
-                    score += 0.04
-
-                score += base_weight_map.get(tri, 0) * base_weight_multiplier
-                score += scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=scenario_factor) * scenario_bonus_multiplier
-
-                if head_score.get(a, 0) < -0.18:
-                    score -= 0.18
-
-                if a == lane_ranked[0]:
-                    score += 0.05
-                elif a == lane_ranked[1]:
-                    score += 0.03
-
-                scored.append((tri, round(score, 4)))
-
-    scored.sort(key=lambda x: (x[1], x[0]), reverse=True)
-
-    top = []
-    for tri, _score in scored:
-        if tri not in top:
-            top.append(tri)
-        if len(top) >= 6:
-            break
-
-    if base_triplets:
-        has_base = any(tri in base_triplets[:3] for tri in top)
-        if not has_base:
-            best_base = base_triplets[0]
-            if best_base not in top:
-                top = top[:5] + [best_base]
-
-    head_set = {int(t.split("-")[0]) for t in top if "-" in t}
-    scenarios = scenario_material.get("scenarios", [])
-    if signal_strength >= 0.30 and len(head_set) == 1 and len(scenarios) >= 2:
-        alt_head = scenarios[1].get("head_lane")
-        alt_weight = float(scenarios[1].get("weight", 0) or 0)
-        if alt_head and alt_weight * scenario_factor >= 0.24:
-            alt_tri = pick_best_triplet_for_head(scored, alt_head, exclude_triplets=top)
-            if alt_tri and alt_tri not in top:
-                top = top[:5] + [alt_tri]
-
-    if signal_strength >= 0.30:
-        top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
-    top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
-    top = ensure_lane1_support_triplet(
-        top,
-        scored,
-        base_triplets,
-        base_info=base_info,
-        exhibition_info=exhibition_info,
-        foot_material=foot_material,
-        role_maps=role_maps,
-        signal_metrics=signal_metrics,
-        base_hold_strength=base_hold_strength,
+def get_races_by_date(race_date):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f'''
+        SELECT {CARD_SELECT_COLUMNS}
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
+        ''',
+        (race_date,),
     )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
-    min_base_keep = 1
-    if float(base_hold_strength or 0) >= 0.18 or signal_strength <= 0.28:
-        min_base_keep = 2
-    if (float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80) or signal_strength <= 0.18:
-        min_base_keep = 3
-    top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
-    dedup = []
-    for tri in top:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
-            break
+def get_race_by_id(race_id):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT id, time, venue, race_no
+        FROM races
+        WHERE id = %s
+        ''',
+        (race_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
-    kept_base_count = len([tri for tri in dedup if tri in base_triplets])
+
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
+    ensure_db_initialized()
+
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
+    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+        official_rating_filter = "pickup"
+
+    where_clauses = [
+        "race_date = %s",
+        "venue <> 'テスト会場'",
+    ]
+    params = [today_text()]
+
+    if official_rating_filter == "pickup":
+        where_clauses.append("rating IN (%s, %s)")
+        params.extend(["★★★★★", "★★★★☆"])
+    else:
+        where_clauses.append("rating = %s")
+        params.append(official_rating_filter)
+
+    if ai_rating_filter:
+        where_clauses.append(
+            "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, '')) = %s"
+        )
+        params.append(ai_rating_filter)
+
+    if not show_closed:
+        where_clauses.append("time >= %s")
+        params.append(current_hhmm())
+
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f'''
+        SELECT {CARD_SELECT_COLUMNS}
+        FROM races
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
+        ''',
+        tuple(params),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def update_race_result(race_id, selected_text, hit, payout, memo):
+    ensure_db_initialized()
+    selected_text = " / ".join(
+        unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
+    )
+    purchased = 1 if selected_text else 0
+    if purchased == 0:
+        hit = 0
+        payout = 0
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE races SET purchased = %s, purchased_selection_text = %s, hit = %s, payout = %s, memo = %s WHERE id = %s",
+        (purchased, selected_text, hit, payout, memo, race_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
     log(
-        f"[selection_regen_v10_22] venue={venue} "
-        f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
-        f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
-        f"base={base_triplets[:3]} final={dedup}"
-    )
-    return " / ".join(dedup)
-
-
-def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_cron_safe_3digit_fix")
-    log(
-        f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
-        f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
-        f"RESULT_LOOKBACK_MINUTES={RESULT_LOOKBACK_MINUTES} "
-        f"RESULT_PENDING_LIMIT={RESULT_PENDING_LIMIT} "
-        f"RESULT_REPAIR_MODE={RESULT_REPAIR_MODE} "
-        f"RESULT_REPAIR_LOOKBACK_MINUTES={RESULT_REPAIR_LOOKBACK_MINUTES}"
-    )
-    log("========== build_candidates start ==========")
-    log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
-
-    base_map = fetch_base_map_today()
-    raw_rows = parse_rating_page()
-
-    dedup = {}
-    for row in raw_rows:
-        key = (row["venue"], row["race_no"])
-        if key not in dedup:
-            dedup[key] = row
-    rows = list(dedup.values())
-
-    base_keys = set(base_map.keys())
-    filtered_by_base = []
-    existing_row_keys = set()
-    for row in rows:
-        race_key = f"{row['venue']}|{row['race_no']}R"
-        if race_key in base_keys:
-            filtered_by_base.append(row)
-            existing_row_keys.add((row["venue"], int(row["race_no"])))
-    rows = filtered_by_base
-
-    extra_settle_seed = 0
-    for race_key, base_info in base_map.items():
-        try:
-            venue, race_no_text = str(race_key).split("|", 1)
-        except Exception:
-            continue
-
-        race_no = normalize_race_no_value(race_no_text)
-        if not venue or race_no <= 0:
-            continue
-        if (venue, race_no) in existing_row_keys:
-            continue
-
-        pending_settle = is_settle_pending(base_info)
-        base_time = str(base_info.get("time") or "").strip()
-        repair_target = RESULT_REPAIR_MODE and is_recent_past_race(
-            base_time,
-            lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
-        )
-        if not ((pending_settle and is_recent_past_race(base_time)) or repair_target):
-            continue
-
-        jcd = NAME_JCD_MAP.get(venue, "")
-        if not jcd:
-            continue
-
-        rows.append({
-            "venue": venue,
-            "jcd": jcd,
-            "race_no": race_no,
-            "selection": "",
-            "time": base_time,
-        })
-        existing_row_keys.add((venue, race_no))
-        extra_settle_seed += 1
-
-    log(f"[dedup_summary] count={len(dedup)} extra_settle_seed={extra_settle_seed}")
-    log(f"[base_match_summary] count={len(rows)}")
-
-    needed_jcds = set()
-    for row in rows:
-        jcd = row.get("jcd") or NAME_JCD_MAP.get(row["venue"], "")
-        if jcd:
-            needed_jcds.add(jcd)
-
-    deadlines_cache = fetch_deadlines_parallel(needed_jcds)
-    deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
-
-    latest_rows = []
-    settle_rows = []
-
-    for row in rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
-        if not jcd:
-            continue
-
-        race_key = f"{venue}|{race_no}R"
-        base_info = base_map.get(race_key) or {}
-        deadline = str(row.get("time") or "").strip() or str(base_info.get("time") or "").strip() or deadlines_cache.get(jcd, {}).get(race_no, "")
-        row["time"] = deadline
-
-        pending_settle = is_settle_pending(base_info)
-        repair_target = RESULT_REPAIR_MODE and is_recent_past_race(
-            deadline,
-            lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
-        )
-
-        if is_target_deadline(deadline):
-            latest_rows.append(row)
-        elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
-            settle_rows.append(row)
-
-    # 締切後の結果反映は、新しく締切を過ぎたレースから優先する
-    # 修復モードでは、既に誤結果/誤払戻が入っている可能性があるので多めに再確認する
-    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
-    effective_pending_limit = RESULT_REPAIR_LIMIT if RESULT_REPAIR_MODE else RESULT_PENDING_LIMIT
-    if len(settle_rows) > effective_pending_limit:
-        settle_rows = settle_rows[:effective_pending_limit]
-
-    if settle_rows:
-        log(
-            "[settle_priority] "
-            + ", ".join([
-                f"{r.get('venue')}#{r.get('race_no')}@{r.get('time')}"
-                for r in settle_rows
-            ])
-        )
-
-    rows = latest_rows + settle_rows
-    log(
-        f"[target_races_summary] latest={len(latest_rows)} "
-        f"settle_pending={len(settle_rows)} total={len(rows)}"
+        f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}"
     )
 
-    live_keys = set()
-    settle_keys = set()
-    for row in latest_rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
-        if jcd:
-            live_keys.add((jcd, race_no))
-    for row in settle_rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
-        if jcd:
-            settle_keys.add((jcd, race_no))
 
-    beforeinfo_cache = fetch_beforeinfo_parallel(live_keys) if live_keys else {}
+def delete_race(race_id):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE id = %s", (race_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_race race_id={race_id} deleted={deleted}")
+    return deleted
 
-    venue_targets = {}
-    for jcd, race_no in settle_keys:
-        venue_targets[jcd] = max(venue_targets.get(jcd, 0), int(race_no or 0))
-    day_result_cache = fetch_day_results_parallel(venue_targets) if venue_targets else {}
 
-    payout_fallback_keys = []
-    for key in sorted(settle_keys):
-        info = day_result_cache.get(key) or {}
-        # 修復モードでは、すでに払戻が入っていても個別公式結果ページで再確認して上書き候補にする。
-        if RESULT_REPAIR_MODE:
-            payout_fallback_keys.append(key)
-        elif str(info.get("triplet") or "").strip() and int(info.get("trifecta_payout") or 0) <= 0:
-            payout_fallback_keys.append(key)
+def delete_races_bulk(race_ids):
+    ensure_db_initialized()
+    race_ids = [int(x) for x in race_ids if str(x).strip().isdigit()]
+    if not race_ids:
+        return 0
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM races WHERE id = ANY(%s)", (race_ids,))
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f"delete_races_bulk race_ids={race_ids} deleted={deleted}")
+    return deleted
 
-    if payout_fallback_keys:
-        log(
-            "[raceresult_fallback_targets] "
-            + ", ".join([f"{JCD_NAME_MAP.get(jcd, jcd)}{race_no}" for jcd, race_no in payout_fallback_keys])
+
+def get_summary_by_date(race_date):
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
         )
-        result_page_cache = fetch_raceresult_parallel(payout_fallback_keys)
-        for key, info in result_page_cache.items():
-            merged = dict(day_result_cache.get(key) or {})
-            if (RESULT_REPAIR_MODE or not str(merged.get("triplet") or "").strip()) and str(info.get("triplet") or "").strip():
-                merged["triplet"] = str(info.get("triplet") or "").strip()
-            if (RESULT_REPAIR_MODE or int(merged.get("trifecta_payout") or 0) <= 0) and int(info.get("trifecta_payout") or 0) > 0:
-                merged["trifecta_payout"] = int(info.get("trifecta_payout") or 0)
-            if (RESULT_REPAIR_MODE or not str(merged.get("kimarite") or "").strip()) and str(info.get("kimarite") or "").strip():
-                merged["kimarite"] = str(info.get("kimarite") or "").strip()
-            day_result_cache[key] = merged
+        SELECT
+            COUNT(*) AS total_rows,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
+        FROM latest
+        """,
+        (race_date,),
+    )
+    row = cur.fetchone() or {}
+    cur.close()
+    conn.close()
+
+    total_rows = int(row.get("total_rows") or 0)
+    total_bets = int(row.get("total_bets") or 0)
+    total_points = int(row.get("total_points") or 0)
+    total_investment = int(row.get("total_investment") or 0)
+    total_payout = int(row.get("total_payout") or 0)
+    total_hits = int(row.get("total_hits") or 0)
+    total_profit = total_payout - total_investment
+    hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+    roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+
+    return {
+        "total_rows": total_rows,
+        "total_bets": total_bets,
+        "total_points": total_points,
+        "total_investment": total_investment,
+        "total_payout": total_payout,
+        "total_profit": total_profit,
+        "total_hits": total_hits,
+        "hit_rate": hit_rate,
+        "roi": roi,
+        "last_imported_at": str(row.get("last_imported_at") or "").strip(),
+    }
+
+
+def get_group_summary(race_date, group_key):
+    ensure_db_initialized()
+
+    group_sql = ALLOWED_GROUP_COLUMNS.get(group_key)
+    if not group_sql:
+        return []
+
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        )
+        SELECT
+            COALESCE(NULLIF(BTRIM({group_sql}), ''), '(空白)') AS group_name,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout
+        FROM latest
+        GROUP BY 1
+        ORDER BY 1 ASC
+        """,
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
 
     results = []
-    skipped_no_base = 0
-
     for row in rows:
-        venue = row["venue"]
-        race_no = row["race_no"]
-        selection_from_rating_page = row.get("selection", "")
-        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
-        deadline = row.get("time", "")
-
-        race_key = f"{venue}|{race_no}R"
-        base_info = base_map.get(race_key)
-
-        if not base_info:
-            skipped_no_base += 1
-            log(f"[skip_no_base] key={race_key}")
-            continue
-
-        result_info = day_result_cache.get((jcd, race_no), {}) if (jcd, race_no) in settle_keys else {}
-        is_live_target = (jcd, race_no) in live_keys
-
-        if not is_live_target:
-            result_text = str(result_info.get("triplet") or "").strip()
-            result_payout = int(result_info.get("trifecta_payout") or 0)
-            log(f"[settle_candidate] venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}")
-            if not result_text and result_payout <= 0:
-                log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
-                continue
-
-            candidate = {
-                "race_date": today_text(),
-                "venue": venue,
-                "race_no": f"{race_no}R",
-                "time": deadline,
-                "result_trifecta_text": result_text,
-                "result_trifecta_payout": result_payout,
-                "result_source_url": build_resultlist_url(jcd),
-                "latest_updated_at": jst_now_str(),
+        total_bets = int(row.get("total_bets") or 0)
+        total_hits = int(row.get("total_hits") or 0)
+        total_points = int(row.get("total_points") or 0)
+        total_investment = int(row.get("total_investment") or 0)
+        total_payout = int(row.get("total_payout") or 0)
+        total_profit = total_payout - total_investment
+        hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+        roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+        results.append(
+            {
+                "group_name": str(row.get("group_name") or "(空白)"),
+                "total_bets": total_bets,
+                "total_hits": total_hits,
+                "total_points": total_points,
+                "total_investment": total_investment,
+                "total_payout": total_payout,
+                "total_profit": total_profit,
+                "hit_rate": hit_rate,
+                "roi": roi,
             }
-            results.append(candidate)
-            continue
-
-        base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
-        base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
-        base_reason_text = str(base_info.get("base_reason_text") or "").strip()
-        base_hold_strength = calc_base_hold_strength(base_info)
-        phase_material = build_phase_material(base_info, race_no=race_no)
-        series_day = int(phase_material.get("series_day") or 0)
-        race_phase = normalize_race_phase_label(phase_material.get("race_phase") or "")
-
-        beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
-        exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
-        weather_info = beforeinfo.get("weather", {})
-        start_info = beforeinfo.get("start_info", {"st_map": {}})
-
-        foot_material = build_foot_material(exhibition_info, start_info, weather_info)
-        signal_metrics = calculate_latest_signal_metrics(exhibition_info, foot_material)
-        analyzed = analyze_latest(
-            base_ai_score,
-            exhibition_info,
-            weather_info,
-            foot_material,
-            signal_metrics=signal_metrics,
         )
-        scenario_factor = scenario_strength_factor(
-            exhibition_info,
-            foot_material,
-            signal_metrics=signal_metrics,
-        )
-
-        day_trend_bias = build_day_trend_bias(jcd, race_no, day_result_cache)
-        role_maps = build_role_score_maps(
-            venue,
-            exhibition_info,
-            weather_info,
-            foot_material,
-            day_trend_bias=day_trend_bias,
-        )
-        role_maps = apply_phase_material_to_role_maps(role_maps, phase_material=phase_material)
-        scenario_material = build_turn_scenario_material(
-            venue,
-            exhibition_info,
-            weather_info,
-            foot_material,
-            role_maps,
-            day_trend_bias=day_trend_bias,
-        )
-
-        latest_reason_parts = []
-        if base_reason_text:
-            latest_reason_parts.append(f"朝:{base_reason_text}")
-        if analyzed["latest_reason_text"]:
-            latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
-        if signal_metrics.get("signal_text"):
-            latest_reason_parts.append(signal_metrics["signal_text"])
-        if base_hold_strength >= 0.18 and float(signal_metrics.get("signal_strength", 0) or 0) < 0.35:
-            latest_reason_parts.append("朝評価をやや優先")
-        if scenario_material.get("scenario_text"):
-            latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
-        if phase_material.get("reason_text"):
-            latest_reason_parts.append(f"開催:{phase_material['reason_text']}")
-
-        final_ai_selection = generate_top_triplets(
-            venue,
-            base_ai_selection,
-            exhibition_info,
-            weather_info,
-            foot_material,
-            role_maps=role_maps,
-            scenario_material=scenario_material,
-            base_hold_strength=base_hold_strength,
-            signal_metrics=signal_metrics,
-            base_info=base_info,
-        )
-        final_ai_score = stabilize_final_ai_score(
-            base_ai_score,
-            analyzed["raw_final_ai_score"],
-            base_hold_strength,
-            scenario_factor,
-            signal_metrics=signal_metrics,
-        )
-        final_ai_score = round(final_ai_score + float(phase_material.get("score_adjust", 0) or 0), 2)
-        ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
-
-        candidate = {
-            "race_date": today_text(),
-            "venue": venue,
-            "race_no": f"{race_no}R",
-            "time": deadline,
-            "exhibition": exhibition_info.get("times", []),
-            "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
-            "weather": str(weather_info.get("weather") or "").strip(),
-            "wind_speed": weather_info.get("wind_speed"),
-            "wave_height": weather_info.get("wave_height"),
-            "wind_type": str(weather_info.get("wind_type") or "").strip(),
-            "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
-            "water_state_score": float(weather_info.get("water_state_score") or 0),
-            "day_trend_text": "",
-            "day_trend_sample": 0,
-            "series_day": series_day,
-            "race_phase": race_phase,
-            "ai_lane_score_text": ai_lane_score_text,
-            "rating": str(base_info.get("rating") or row.get("rating") or ""),
-            "final_ai_score": final_ai_score,
-            "final_ai_rating": score_to_ai_rating(final_ai_score),
-            "final_ai_selection": final_ai_selection,
-            "final_rank": determine_final_rank(
-                base_info,
-                final_ai_score,
-                signal_metrics=signal_metrics,
-                foot_material=foot_material,
-                role_maps=role_maps,
-                scenario_material=scenario_material,
-                base_hold_strength=base_hold_strength,
-                phase_material=phase_material,
-            ),
-            "latest_reason_text": " / ".join(latest_reason_parts[:10]),
-            "latest_updated_at": jst_now_str(),
-        }
-        results.append(candidate)
-
-    results.sort(
-        key=lambda x: (
-            to_minutes(x["time"]) if x["time"] else 9999,
-            x["venue"],
-            int(str(x["race_no"]).replace("R", "")),
-        )
-    )
-
-    log(f"[skip_no_base_summary] count={skipped_no_base}")
-    log(f"build_candidates final_count={len(results)}")
-    log("========== build_candidates end ==========")
     return results
 
-def send_to_render(races):
-    if not RENDER_IMPORT_URL:
-        raise RuntimeError("RENDER_IMPORT_URL が未設定です")
-    if not IMPORT_TOKEN:
-        raise RuntimeError("IMPORT_TOKEN が未設定です")
+def get_history_dates():
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT race_date FROM races WHERE venue <> 'テスト会場' ORDER BY race_date DESC"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [row[0] for row in rows]
 
-    headers = {"Content-Type": "application/json", "X-IMPORT-TOKEN": IMPORT_TOKEN}
-    payload = {"races": races}
 
-    last_err = None
-    for attempt in range(1, 6):
+def get_history_date_summaries():
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        )
+        SELECT
+            race_date,
+            COUNT(*) AS total_rows,
+            COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
+            COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
+            COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(MAX(imported_at), '') AS last_imported_at
+        FROM latest
+        GROUP BY race_date
+        ORDER BY race_date DESC
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    results = []
+    for row in rows:
+        total_bets = int(row.get("total_bets") or 0)
+        total_hits = int(row.get("total_hits") or 0)
+        total_points = int(row.get("total_points") or 0)
+        total_investment = int(row.get("total_investment") or 0)
+        total_payout = int(row.get("total_payout") or 0)
+        total_profit = total_payout - total_investment
+        hit_rate = round((total_hits / total_bets * 100), 1) if total_bets else 0
+        roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
+        results.append(
+            {
+                "race_date": str(row.get("race_date") or "").strip(),
+                "summary": {
+                    "total_rows": int(row.get("total_rows") or 0),
+                    "total_bets": total_bets,
+                    "total_points": total_points,
+                    "total_investment": total_investment,
+                    "total_payout": total_payout,
+                    "total_profit": total_profit,
+                    "total_hits": total_hits,
+                    "hit_rate": hit_rate,
+                    "roi": roi,
+                    "last_imported_at": str(row.get("last_imported_at") or "").strip(),
+                },
+            }
+        )
+    return results
+
+def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
+    filtered = list(rows)
+    if venue_filter:
+        filtered = [r for r in filtered if str(r.get("venue", "")).strip() == venue_filter]
+    if race_no_filter:
+        filtered = [r for r in filtered if str(r.get("race_no", "")).strip() == race_no_filter]
+    if purchased_only:
+        filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
+    if hit_only:
+        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+    return filtered
+
+
+def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
+    venues = sorted(set(str(r.get("venue", "")).strip() for r in rows if str(r.get("venue", "")).strip()))
+    race_nos = sorted(
+        set(str(r.get("race_no", "")).strip() for r in rows if str(r.get("race_no", "")).strip()),
+        key=lambda x: int(str(x).replace("R", "")) if str(x).replace("R", "").isdigit() else 999
+    )
+    venue_options = '<option value="">すべて</option>'
+    for venue in venues:
+        selected = "selected" if venue == selected_venue else ""
+        venue_options += f'<option value="{venue}" {selected}>{venue}</option>'
+    race_no_options = '<option value="">すべて</option>'
+    for race_no in race_nos:
+        selected = "selected" if race_no == selected_race_no else ""
+        race_no_options += f'<option value="{race_no}" {selected}>{race_no}</option>'
+    return venue_options, race_no_options, venues, race_nos
+
+
+def build_card_html(r, is_history=False, race_date=""):
+    selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
+    selected_total_amount = get_selected_total_amount(r)
+
+    result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
+    result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+    auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
+    auto_payout = result_trifecta_payout if auto_hit else 0
+    display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
+    display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
+    checked_hit = "checked" if display_hit_value == 1 else ""
+    payout_value = display_payout_value if display_payout_value else ""
+    memo_value = r["memo"] if r["memo"] else ""
+    auto_profit_value = display_payout_value - selected_total_amount if selected_count > 0 else 0
+    settled_flag_value = int(r.get("settled_flag") or 0)
+    settled_at_text = str(r.get("settled_at") or "").strip()
+
+    card_class = "card history-edit-card" if is_history else "card"
+    if int(r.get("hit") or 0) == 1:
+        card_class += " card-hit"
+    elif selected_count > 0:
+        card_class += " card-purchased"
+
+    status_parts = []
+    if selected_count > 0:
+        status_parts.append(f'<span class="status-badge status-badge-saved">購入済み {selected_count}点</span>')
+    if display_hit_value == 1:
+        status_parts.append('<span class="status-badge status-badge-hit">的中</span>')
+    if result_trifecta_text or settled_flag_value == 1:
+        status_parts.append('<span class="status-badge countdown-normal">結果反映済み</span>')
+    status_html = f'<div class="status-wrap">{"".join(status_parts)}</div>' if status_parts else ""
+
+    ai_reasons = parse_json_array_text(r.get("ai_reasons", "[]"))
+    exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+    ai_reason_html = ""
+    if ai_reasons and not is_history:
+        items = "".join([f"<li>{x}</li>" for x in ai_reasons])
+        ai_reason_html = f'<div class="row"><span class="label">補正理由</span><span class="value text-left"><ul class="reason-list">{items}</ul></span></div>'
+
+    race_id_key = f"history-{r['id']}" if is_history else str(r["id"])
+
+    exhibition_time_html = render_exhibition_time_chips(exhibition)
+    exhibition_rank_html = render_exhibition_rank_boxes(r.get("exhibition_rank", ""))
+    weather_summary_html = render_weather_summary_html(
+        r.get("weather", ""),
+        r.get("wind_speed"),
+        r.get("wave_height"),
+        r.get("wind_type", ""),
+        r.get("wind_dir", ""),
+        r.get("water_state_score"),
+    )
+    display_ai_rating = (
+        display_text(r.get("final_ai_rating"), "")
+        or display_text(r.get("base_ai_rating"), "")
+        or "AI評価なし"
+    )
+    display_ai_selection = (
+        str(r.get("final_ai_selection") or "").strip()
+        or str(r.get("base_ai_selection") or "").strip()
+        or ""
+    )
+    display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
+    render_r = dict(r)
+    render_r["ai_selection"] = display_ai_selection
+    selection_compare_html = render_selection_compare_html(render_r, race_id_key)
+    ai_detail_text = display_ai_detail_text or normalize_ai_detail(r.get("ai_detail"), exhibition)
+    ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
+    player_rank_summary_html = render_player_rank_summary_html(
+        r.get("player_names_text", ""),
+        r.get("class_history_text", ""),
+        r.get("ai_lane_score_text", ""),
+        r.get("exhibition_rank", ""),
+        exhibition,
+        r.get("player_stat_text", ""),
+        r.get("player_reason_text", ""),
+        r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
+    )
+    final_rank_html = final_rank_badge(r.get("final_rank"))
+    countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
+    selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
+    form_id = f"race-form-{race_id_key}"
+
+    top_checkbox = ""
+    if is_history:
+        top_checkbox = f'''
+        <div class="multi-check-wrap">
+          <input type="checkbox" class="bulk-checkbox" name="race_ids" value="{r['id']}" form="bulk-delete-form" onchange="updateBulkDeleteCount()">
+        </div>
+        '''
+
+    history_hidden = f'<input type="hidden" name="redirect_to" value="/history/{race_date}">' if is_history else ''
+    action_url = "/update_record" if is_history else "/save"
+
+    delete_form = ""
+    if is_history:
+        delete_form = f'''
+        <form method="post" action="/delete_record" class="delete-form" onsubmit="return confirm('この過去データを削除しますか？');">
+          <input type="hidden" name="race_id" value="{r['id']}">
+          <input type="hidden" name="redirect_to" value="/history/{race_date}">
+          <button type="submit" class="delete-btn">この1件を削除</button>
+        </form>
+        '''
+
+    return f'''
+    <div class="{card_class}" data-race-card-id="{race_id_key}" id="race-card-{r['id']}">
+      {top_checkbox}
+      <div class="card-top card-top-main">
+        <div class="card-top-left">
+          <div class="time-line">
+            <div class="time">{r['time']}</div>
+            {countdown_html}
+          </div>
+          <div class="race-mainline">
+            <span class="race-spot race-spot-main">
+              <span class="race-venue">{r['venue']}</span>
+              <span class="race-rno">{r['race_no']}</span>
+            </span>
+          </div>
+        </div>
+        {status_html}
+      </div>
+
+      <div class="badge-row">
+        <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
+        <span class="ai-rating">{display_ai_rating}</span>
+        {final_rank_html}
+      </div>
+
+      <div class="metric-badge-row">
+        <span class="metric-badge"><span class="metric-badge-label">券種</span><span class="metric-badge-value">{r['bet_type']}</span></span>
+        <span class="metric-badge"><span class="metric-badge-label">選択点数</span><span class="metric-badge-value" id="selected-count-badge-{race_id_key}">{selected_count}点</span></span>
+        <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
+        <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
+      </div>
+
+      <div class="info-box">
+        <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
+        <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
+        <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+        <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
+        <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
+        <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
+        <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
+        <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+        <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+        {ai_reason_html}
+      </div>
+
+      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
+        <input type="hidden" name="race_id" value="{r['id']}">
+        <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
+        {history_hidden}
+
+        <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
+          <div class="auto-result-note">
+            的中・払戻は公式結果から自動反映されます
+          </div>
+        </div>
+
+        <button type="submit" class="save-btn {'half-btn' if is_history else ''}">保存</button>
+      </form>
+      {delete_form}
+    </div>
+    '''
+
+
+def build_safe_card_html(r, is_history=False, race_date=""):
+    try:
+        return build_card_html(r, is_history=is_history, race_date=race_date)
+    except Exception as e:
+        log(
+            "[card_render_error] "
+            f"id={r.get('id')} "
+            f"venue={r.get('venue')} "
+            f"race_no={r.get('race_no')} "
+            f"time={r.get('time')} "
+            f"err={e}"
+        )
+        return f'''
+        <div class="card">
+          <div class="message message-error">
+            表示エラー: {r.get("venue", "")} {r.get("race_no", "")}
+          </div>
+        </div>
+        '''
+
+
+
+
+def csv_safe(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict)):
         try:
-            log(f"[render_post_try] attempt={attempt} url={RENDER_IMPORT_URL} races={len(races)}")
-            health_url = RENDER_IMPORT_URL.replace("/api/import_latest_candidates", "/healthz")
-            try:
-                hr = requests.get(health_url, headers=HEADERS, timeout=(5, 10))
-                log(f"[render_health] attempt={attempt} status={hr.status_code}")
-            except Exception as he:
-                log(f"[render_health_err] attempt={attempt} err={he}")
-
-            res = requests.post(RENDER_IMPORT_URL, headers=headers, json=payload, timeout=POST_TIMEOUT)
-            print("status_code =", res.status_code)
-            print("response =", res.text)
-
-            if res.status_code in (502, 503, 504):
-                raise requests.exceptions.HTTPError(
-                    f"{res.status_code} Server Error: {res.text}",
-                    response=res,
-                )
-
-            res.raise_for_status()
-            log("[render_post_ok]")
-            return
-        except Exception as e:
-            last_err = e
-            log(f"[render_post_retry] attempt={attempt} err={e}")
-            if attempt < 5:
-                time.sleep(8 * attempt)
-            else:
-                log(f"[render_post_failed] err={e}")
-
-    raise last_err
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value)
 
 
-def main():
-    races = build_candidates()
-    if not races:
-        print("候補が0件でした")
+def build_export_rows(rows):
+    export_rows = []
+    for r in rows:
+        selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
+        selected_total_amount = get_selected_total_amount(r)
+
+        result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
+        result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+        auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
+        auto_payout = result_trifecta_payout if auto_hit else 0
+        display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
+        display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
+        auto_profit_value = display_payout_value - selected_total_amount if selected_count > 0 else 0
+
+        display_ai_rating = (
+            display_text(r.get("final_ai_rating"), "")
+            or display_text(r.get("base_ai_rating"), "")
+            or "AI評価なし"
+        )
+        display_ai_selection = (
+            str(r.get("final_ai_selection") or "").strip()
+            or str(r.get("base_ai_selection") or "").strip()
+            or ""
+        )
+        display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
+        ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
+
+        weather_parts = []
+        weather = str(r.get("weather") or "").strip()
+        wind_type = str(r.get("wind_type") or "").strip()
+        wind_dir = str(r.get("wind_dir") or "").strip()
+        wind_speed = r.get("wind_speed")
+        wave_height = r.get("wave_height")
+        water_state_score = r.get("water_state_score")
+
+        if weather:
+            weather_parts.append(weather)
+        if wind_type:
+            weather_parts.append(wind_type)
+        if wind_dir:
+            weather_parts.append(wind_dir)
+        if wind_speed not in [None, ""]:
+            weather_parts.append(f"風速{wind_speed}m")
+        if wave_height not in [None, ""]:
+            weather_parts.append(f"波高{wave_height}cm")
+
+        export_rows.append({
+            "race_date": csv_safe(r.get("race_date")),
+            "time": csv_safe(r.get("time")),
+            "venue": csv_safe(r.get("venue")),
+            "race_no": csv_safe(r.get("race_no")),
+            "official_rating": csv_safe(r.get("rating")),
+            "bet_type": csv_safe(r.get("bet_type")),
+            "official_selection": csv_safe(r.get("selection")),
+            "amount_per_point": int(r.get("amount") or 0),
+            "ai_score": round(ai_score_value, 2),
+            "ai_rating": csv_safe(display_ai_rating),
+            "ai_selection": csv_safe(display_ai_selection),
+            "final_rank": csv_safe(r.get("final_rank")),
+            "latest_reason_text": csv_safe(display_ai_detail_text),
+            "player_names_text": csv_safe(r.get("player_names_text")),
+            "class_history_text": csv_safe(r.get("class_history_text")),
+            "player_stat_text": csv_safe(r.get("player_stat_text")),
+            "player_reason_text": csv_safe(r.get("player_reason_text")),
+            "exhibition_times": csv_safe(parse_json_array_text(r.get("exhibition", "[]"))),
+            "exhibition_rank": csv_safe(r.get("exhibition_rank")),
+            "ai_lane_score_text": csv_safe(r.get("ai_lane_score_text")),
+            "weather_summary": " / ".join(weather_parts),
+            "weather": csv_safe(weather),
+            "wind_type": csv_safe(wind_type),
+            "wind_dir": csv_safe(wind_dir),
+            "wind_speed": csv_safe(wind_speed),
+            "wave_height": csv_safe(wave_height),
+            "water_state_score": csv_safe(water_state_score),
+            "selected_count": selected_count,
+            "selected_total_amount": selected_total_amount,
+            "purchased": int(r.get("purchased") or 0),
+            "purchased_selection_text": csv_safe(r.get("purchased_selection_text")),
+            "official_result_trifecta": csv_safe(result_trifecta_text),
+            "official_result_trifecta_payout": result_trifecta_payout,
+            "display_hit": display_hit_value,
+            "display_payout": display_payout_value,
+            "auto_profit": auto_profit_value,
+            "memo": csv_safe(r.get("memo")),
+            "settled_flag": int(r.get("settled_flag") or 0),
+            "settled_at": csv_safe(r.get("settled_at")),
+            "imported_at": csv_safe(r.get("imported_at")),
+        })
+    return export_rows
+
+
+def make_csv_response(rows, filename):
+    output = io.StringIO()
+    export_rows = build_export_rows(rows)
+    fieldnames = list(export_rows[0].keys()) if export_rows else [
+        "race_date", "time", "venue", "race_no", "official_rating", "bet_type",
+        "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
+        "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
+        "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
+        "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
+        "wind_speed", "wave_height", "water_state_score", "selected_count",
+        "selected_total_amount", "purchased", "purchased_selection_text",
+        "official_result_trifecta", "official_result_trifecta_payout", "display_hit",
+        "display_payout", "auto_profit", "memo", "settled_flag", "settled_at", "imported_at"
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in export_rows:
+        writer.writerow(row)
+
+    csv_text = output.getvalue()
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
+    updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
+    if message_text:
+        message_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {message_class}">{message_text}</div>'
+    else:
+        message_html = ""
+    checked_show_closed = "checked" if show_closed else ""
+    ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
+    official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
+    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★4以上候補はありません</div>'
+    external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
+    filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
+    filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
+    official_label_map = {
+        "pickup": "公式★5+★4",
+        "★★★★★": "公式★5のみ",
+        "★★★★☆": "公式★4のみ",
+    }
+    filter_official_text = official_label_map.get(official_rating_filter, "公式★5+★4")
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">🏁</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">ボートレース買い候補</div>
+          </div>
+        </div>
+        <div class="topbar-status">
+          <span class="top-pill">最終取込: {updated_str}</span>
+        </div>
+      </div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の買い候補</div>
+        <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
+        {external_line}
+        {message_html}
+        <form method="get" action="/" class="filter-box">
+          <div class="filter-grid">
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
+                締切後も表示する
+              </label>
+            </div>
+            <div class="filter-item">
+              <label for="official_rating">公式評価で絞る</label>
+              <select name="official_rating" id="official_rating">{official_rating_options_html}</select>
+            </div>
+            <div class="filter-item">
+              <label for="ai_rating">AI評価で絞る</label>
+              <select name="ai_rating" id="ai_rating">{ai_rating_options_html}</select>
+            </div>
+            <div class="filter-actions">
+              <button type="submit" class="filter-btn">フィルター適用</button>
+              <a href="/" class="filter-reset">解除</a>
+            </div>
+          </div>
+        </form>
+        <div class="nav nav-app">
+          <a href="/" class="nav-card active">今日の候補</a>
+          <a href="/stats" class="nav-card">今日の集計</a>
+          <a href="/history" class="nav-card">過去データ</a>
+          <a href="/export/today.csv" class="nav-card">今日CSV</a>
+        </div>
+        <div class="summary">
+          <div class="summary-box"><div class="summary-label">表示中候補</div><div class="summary-value">{len(races)}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div>
+        </div>
+      </div>
+      {cards_html}
+    </div>
+    '''
+    return render_layout("今日の買い候補", content)
+
+
+def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
+    def make_table(rows):
+        if not rows:
+            return '<div class="empty">データがありません</div>'
+        body = ""
+        for r in rows:
+            body += f"<tr><td>{r['group_name']}</td><td>{r['total_bets']}</td><td>{r['total_points']}</td><td>{r['total_hits']}</td><td>{yen(r['total_investment'])}</td><td>{yen(r['total_payout'])}</td><td class='{profit_class(r['total_profit'])}'>{signed_yen(r['total_profit'])}</td><td>{percent(r['hit_rate'])}</td><td>{percent(r['roi'])}</td></tr>"
+        return f"<div class='table-wrap'><table><thead><tr><th>区分</th><th>購入レース</th><th>購入点数</th><th>的中</th><th>投資</th><th>払戻</th><th>収支</th><th>的中率</th><th>回収率</th></tr></thead><tbody>{body}</tbody></table></div>"
+
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-logo">📊</div>
+          <div>
+            <div class="brand-title">Race Candidates</div>
+            <div class="brand-sub">今日の集計</div>
+          </div>
+        </div>
+        <div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div>
+      </div>
+      <div class="header hero hero-strong">
+        <div class="title">今日の集計</div>
+        <div class="sub">対象日: {race_date}</div>
+        <div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>
+        <div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card active">今日の集計</a><a href="/history" class="nav-card">過去データ</a></div>
+        <div class="summary six">
+          <div class="summary-box"><div class="summary-label">全候補数</div><div class="summary-value">{summary['total_rows']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入レース数</div><div class="summary-value">{summary['total_bets']}</div></div>
+          <div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div>
+          <div class="summary-box"><div class="summary-label">的中数</div><div class="summary-value">{summary['total_hits']}</div></div>
+          <div class="summary-box"><div class="summary-label">投資額</div><div class="summary-value">{yen(summary['total_investment'])}</div></div>
+          <div class="summary-box"><div class="summary-label">払戻額</div><div class="summary-value">{yen(summary['total_payout'])}</div></div>
+        </div>
+        <div class="summary" style="margin-top:8px;">
+          <div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div>
+          <div class="summary-box"><div class="summary-label">的中率</div><div class="summary-value">{percent(summary['hit_rate'])}</div></div>
+          <div class="summary-box"><div class="summary-label">回収率</div><div class="summary-value">{percent(summary['roi'])}</div></div>
+          <div class="summary-box"><div class="summary-label">1点あたり平均投資</div><div class="summary-value">{yen(round(summary['total_investment'] / summary['total_points']) if summary['total_points'] else 0)}</div></div>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">公式星別集計</div></div>
+          {make_table(by_rating)}
+        </div>
+        <div>
+          <div class="header"><div class="section-title">AI補正星別集計</div></div>
+          {make_table(by_ai_rating)}
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div>
+          <div class="header"><div class="section-title">最終判定別集計</div></div>
+          {make_table(by_final_rank)}
+        </div>
+        <div>
+          <div class="header"><div class="section-title">会場別集計</div></div>
+          {make_table(by_venue)}
+        </div>
+      </div>
+    </div>
+    '''
+    return render_layout("今日の集計", content)
+
+
+def render_history_page(date_summaries):
+    if not date_summaries:
+        list_html = '<div class="empty">過去データはありません</div>'
+    else:
+        items = ""
+        for item in date_summaries:
+            d = item["race_date"]
+            s = item["summary"]
+            items += f'''<div class="history-item"><div class="history-top"><div class="history-date">{d}</div><a class="history-link" href="/history/{d}">結果を見る</a></div><div class="history-mini"><div class="history-mini-box"><div class="history-mini-label">候補数</div><div class="history-mini-value">{s['total_rows']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入レース</div><div class="history-mini-value">{s['total_bets']}</div></div><div class="history-mini-box"><div class="history-mini-label">購入点数</div><div class="history-mini-value">{s['total_points']}</div></div><div class="history-mini-box"><div class="history-mini-label">収支</div><div class="history-mini-value {profit_class(s['total_profit'])}">{signed_yen(s['total_profit'])}</div></div></div></div>'''
+        list_html = f'<div class="header"><div class="history-list">{items}</div></div>'
+    return render_layout("過去データ", f'<div class="app-shell"><div class="topbar"><div class="brand"><div class="brand-logo">🗂️</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ一覧</div></div></div></div><div class="header hero hero-strong"><div class="title">過去データ</div><div class="nav nav-app"><a href="/" class="nav-card">今日の候補</a><a href="/stats" class="nav-card">今日の集計</a><a href="/history" class="nav-card active">過去データ</a></div></div>{list_html}</div>')
+
+
+def render_history_detail_page(
+    race_date,
+    races,
+    summary,
+    message_type="",
+    message_text="",
+    venue_filter="",
+    race_no_filter="",
+    purchased_only=False,
+    hit_only=False,
+):
+    if message_text:
+        message_class = "message-success" if message_type == "success" else "message-error"
+        message_html = f'<div class="message {message_class}">{message_text}</div>'
+    else:
+        message_html = ""
+
+    venue_options_html, race_no_options_html, _all_venues, _all_race_nos = make_history_filter_options(
+        races,
+        selected_venue=venue_filter,
+        selected_race_no=race_no_filter,
+    )
+
+    filtered_races = filter_history_races(
+        races,
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
+
+    checked_purchased = "checked" if purchased_only else ""
+    checked_hit = "checked" if hit_only else ""
+
+    jump_items = []
+    seen_race_nos = set()
+    for r in filtered_races:
+        race_no = str(r.get("race_no", "")).strip()
+        if race_no and race_no not in seen_race_nos:
+            seen_race_nos.add(race_no)
+            jump_items.append(f'<a class="jump-chip" href="#race-card-{r["id"]}">{race_no}</a>')
+    jump_html = "".join(jump_items) if jump_items else '<span class="jump-empty">ジャンプ候補なし</span>'
+
+    if not filtered_races:
+        body = '<div class="empty">条件に合うデータがありません</div>'
+    else:
+        cards_html = ''.join([build_safe_card_html(r, is_history=True, race_date=race_date) for r in filtered_races])
+        body = f'''
+        <form id="bulk-delete-form" method="post" action="/delete_records_bulk" onsubmit="return confirmBulkDelete();"><input type="hidden" name="redirect_to" value="/history/{race_date}"></form>
+        <div class="header history-filter-box">
+          <div class="section-title">絞り込み</div>
+          <form method="get" action="/history/{race_date}" class="filter-box">
+            <div class="history-filter-grid">
+              <div class="filter-item"><label for="venue">会場</label><select name="venue" id="venue">{venue_options_html}</select></div>
+              <div class="filter-item"><label for="race_no">R</label><select name="race_no" id="race_no">{race_no_options_html}</select></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="purchased_only" value="1" {checked_purchased}>購入済みのみ</label></div>
+              <div class="filter-item filter-item-check"><label class="filter-check"><input type="checkbox" name="hit_only" value="1" {checked_hit}>的中のみ</label></div>
+              <div class="filter-actions"><button type="submit" class="filter-btn">絞り込む</button><a href="/history/{race_date}" class="filter-reset">解除</a></div>
+            </div>
+          </form>
+          <div class="history-filter-meta"><div class="history-filter-count">表示中 {len(filtered_races)} / 全{len(races)}件</div><div class="jump-wrap">{jump_html}</div></div>
+        </div>
+        <div class="bulk-toolbar"><div class="bulk-toolbar-left"><button type="button" class="toolbar-btn" onclick="toggleAllBulk(true)">全選択</button><button type="button" class="toolbar-btn toolbar-btn-muted" onclick="toggleAllBulk(false)">選択解除</button></div><div class="bulk-toolbar-right"><span class="bulk-count" id="bulk-delete-count">0件選択中</span><button type="submit" class="toolbar-delete-btn" form="bulk-delete-form">選択したものを削除</button></div></div>
+        {cards_html}
+        '''
+    content = f'''
+    <div class="app-shell">
+      <div class="topbar"><div class="brand"><div class="brand-logo">🧾</div><div><div class="brand-title">Race Candidates</div><div class="brand-sub">過去データ詳細</div></div></div><div class="topbar-status"><span class="top-pill">対象日: {race_date}</span></div></div>
+      <div class="header hero hero-strong"><div class="title">過去データ詳細</div><div class="sub">対象日: {race_date}</div><div class="sub">最終取込時刻: {summary['last_imported_at'] or '未更新'}</div>{message_html}<div class="nav nav-app"><a href="/history" class="nav-card">過去データ一覧</a><a href="/" class="nav-card">今日の候補</a><a href="/history/{race_date}" class="nav-card active">この日の詳細</a><a href="/export/history/{race_date}.csv" class="nav-card">この日CSV</a></div><div class="summary"><div class="summary-box"><div class="summary-label">候補数</div><div class="summary-value">{summary['total_rows']}</div></div><div class="summary-box"><div class="summary-label">購入レース</div><div class="summary-value">{summary['total_bets']}</div></div><div class="summary-box"><div class="summary-label">購入点数</div><div class="summary-value">{summary['total_points']}</div></div><div class="summary-box"><div class="summary-label">収支</div><div class="summary-value {profit_class(summary['total_profit'])}">{signed_yen(summary['total_profit'])}</div></div></div></div>
+      {body}
+    </div>
+    '''
+    return render_layout("過去データ詳細", content)
+
+
+def render_layout(title, body_html):
+    home_active = "active" if title == "今日の買い候補" else ""
+    stats_active = "active" if title == "今日の集計" else ""
+    history_active = "active" if title in ["過去データ", "過去データ詳細"] else ""
+
+    css = """
+    <style>
+      *{box-sizing:border-box}
+      html{padding-top:env(safe-area-inset-top,0px);background:#f5f7fb}
+      body{
+        margin:0;
+        background:#f5f7fb;
+        font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','Yu Gothic',sans-serif;
+        color:#222;
+        -webkit-text-size-adjust:100%;
+      }
+      .container{
+        max-width:980px;
+        margin:0 auto;
+        padding:calc(16px + env(safe-area-inset-top,0px)) 12px calc(92px + env(safe-area-inset-bottom,0px));
+      }
+      .app-shell{display:flex;flex-direction:column;gap:14px}
+      .topbar,.header,.card,.history-item{background:#fff;border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .hero-strong{background:linear-gradient(180deg,#fff,#f8fbff)}
+      .brand{display:flex;align-items:center;gap:10px;min-width:0}
+      .brand-logo{font-size:28px;flex:0 0 auto}
+      .brand-title{font-weight:700}
+      .brand-sub,.sub{font-size:13px;color:#667085}
+      .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px}
+      .topbar-status{min-width:0;display:flex;justify-content:flex-end}
+      .top-pill{background:#eef4ff;color:#2f5bd2;padding:6px 10px;border-radius:999px;font-size:12px;display:inline-block;max-width:100%;white-space:normal;word-break:break-word;line-height:1.4}
+      .title{font-size:24px;font-weight:800;margin-bottom:4px}
+      .nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+      .nav-card{background:#eef2ff;color:#334;padding:9px 12px;border-radius:10px;text-decoration:none}
+      .nav-card.active{background:#2f5bd2;color:#fff}
+      .summary,.summary.six{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+      .summary.six{grid-template-columns:repeat(6,1fr)}
+      .summary-box,.history-mini-box{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:10px}
+      .summary-label,.history-mini-label{font-size:12px;color:#667085}
+      .summary-value,.history-mini-value{font-size:20px;font-weight:800;margin-top:4px}
+      .profit-plus{color:#175cd3}
+      .profit-minus{color:#d92d20}
+      .profit-zero{color:#344054}
+      .filter-box,.info-box{margin-top:10px}
+      .filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:10px;align-items:end}
+      .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .filter-check{display:flex;align-items:center;gap:8px}
+      select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
+      .filter-btn,.save-btn,.toolbar-delete-btn,.delete-btn,.toolbar-btn{border:none;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+      .filter-btn,.save-btn,.toolbar-delete-btn{background:#2f5bd2;color:#fff}
+      .delete-btn,.toolbar-btn-muted{background:#fee4e2;color:#b42318}
+      .toolbar-btn{background:#eef2ff;color:#344054}
+      .filter-reset{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;text-decoration:none;background:#f2f4f7;color:#344054;border-radius:10px}
+      .card-top-main{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+      .time-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .time{font-size:24px;font-weight:800}
+      .countdown-badge{display:inline-flex;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}
+      .countdown-normal{background:#eef2ff;color:#3538cd}
+      .countdown-warning{background:#fff4e5;color:#b54708}
+      .countdown-soon{background:#ffead5;color:#c4320a}
+      .countdown-closed{background:#f2f4f7;color:#475467}
+      .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
+      .race-venue{font-size:22px}
+      .race-rno{font-size:22px}
+      .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .status-badge-saved{background:#ecfdf3;color:#067647}
+      .status-badge-hit{background:#fff1f3;color:#c11574}
+      .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+      .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating{background:#fff6e5;color:#b54708}
+      .ai-rating{background:#eef4ff;color:#175cd3}
+      .final-rank-strong{background:#ecfdf3;color:#027a48}
+      .final-rank-buy{background:#e0f2fe;color:#0369a1}
+      .final-rank-watch{background:#f2f4f7;color:#475467}
+      .final-rank-skip{background:#fef3f2;color:#b42318}
+      .metric-badge{background:#f8fafc;border:1px solid #eaecf0}
+      .metric-badge-strong{background:#eef4ff}
+      .metric-badge-score{background:#fff6e5}
+      .metric-badge-label{color:#667085}
+      .metric-badge-value{font-weight:800}
+      .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
+      .row:first-child{border-top:none}
+      .label{font-weight:700;color:#344054}
+      .value{min-width:0}
+      .selection-compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
+      .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
+      .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
+      .selection-choice-chip{display:inline-block;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
+      .selection-view-chip{display:inline-block}
+      .selection-choice-body-view{cursor:default}
+      .selection-view-chip .selection-choice-body{border-style:solid}
+      .selection-view-chip.is-selected-view .selection-choice-body{box-shadow:0 0 0 2px rgba(5,96,58,.08) inset}
+      .selection-choice-input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
+      .selection-choice-body{display:inline-flex;align-items:center;justify-content:center;padding:8px 10px;border-radius:999px;font-weight:700;border:2px solid #d0d5dd;background:#fff;color:#344054;white-space:nowrap;line-height:1.2;transition:all .15s ease}
+      .selection-choice-chip:hover .selection-choice-body{transform:translateY(-1px)}
+      .selection-choice-input:focus + .selection-choice-body{outline:2px solid rgba(47,91,210,.18);outline-offset:2px}
+      .selection-choice-body-overlap{background:#f3fbf6;border-color:#bfe7cc;color:#5f7a68}
+      .selection-choice-input:checked + .selection-choice-body-overlap{background:#dcfae6;border-color:#6fd69a;color:#05603a;box-shadow:0 0 0 2px rgba(5,96,58,.08) inset}
+      .selection-choice-input:checked + .selection-choice-body-official{background:#e7f0ff;border-color:#8fb4ff;color:#124fc2;box-shadow:0 0 0 2px rgba(18,79,194,.08) inset}
+      .selection-choice-input:checked + .selection-choice-body-ai{background:#fff1db;border-color:#f2b96b;color:#a64b00;box-shadow:0 0 0 2px rgba(166,75,0,.08) inset}
+      .lane-color{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 4px;border-radius:2px;font-weight:800;font-size:14px;line-height:1;border:1px solid rgba(0,0,0,.10);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+      .lane-color-1{background:#ffffff;color:#111827;border-color:#d1d5db}
+      .lane-color-2{background:#1f2937;color:#ffffff;border-color:#1f2937}
+      .lane-color-3{background:#ef4444;color:#ffffff;border-color:#ef4444}
+      .lane-color-4{background:#3b82f6;color:#ffffff;border-color:#3b82f6}
+      .lane-color-5{background:#fde047;color:#111827;border-color:#eab308}
+      .lane-color-6{background:#22c55e;color:#ffffff;border-color:#22c55e}
+      .pick-inline .lane-color{min-width:22px;height:22px;font-size:14px;border-radius:2px;padding:0 3px}
+      .picked-chip .pick-inline .lane-color,.selection-choice-body .pick-inline .lane-color{min-width:21px;height:21px;font-size:13px}
+      .player-chip .lane-color,.class-history-lane .lane-color,.ex-chip-lane .lane-color,.ex-lane .lane-color{min-width:28px;height:24px;font-size:14px;border-radius:2px}
+      .ex-chip{display:inline-flex;align-items:center;gap:8px}
+      .ex-chip-time{font-weight:700}
+      .ex-lane{display:flex;justify-content:center;margin-bottom:4px}
+      .pick-inline{display:inline-flex;align-items:center;gap:4px;flex-wrap:nowrap}
+      .pick-sep{font-weight:900;color:#667085;font-size:12px;line-height:1}
+      .pick-plain{font-weight:800;color:#344054}
+      .row-player-rank .label,.row-exhibition-rank .label{padding-top:4px}
+      .row-player-rank .value{width:100%}
+      .player-rank-wrap{display:flex;flex-direction:column;gap:10px;padding:4px 0}
+      .player-rank-row{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
+      .player-rank-row:first-of-type{border-top:none}
+      .player-rank-main-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
+      .player-rank-class-row{display:flex;flex-wrap:wrap;gap:6px;padding-left:34px}
+      .player-rank-main{display:flex;align-items:center;gap:10px;min-width:0}
+      .player-rank-lane{flex:0 0 auto}
+      .player-rank-name{min-width:0;font-weight:800;color:#172033;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+      .player-rank-evidence{min-width:0}
+      .player-evidence-wrap{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start}
+      .player-evidence-chip{display:inline-flex;align-items:center;padding:5px 9px;border-radius:999px;border:1px solid;font-size:12px;font-weight:700;line-height:1.2;white-space:nowrap}
+      .player-evidence-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
+      .player-evidence-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
+      .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
+      .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap,.weather-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .picked-chip,.ex-chip,.lane-score-chip,.detail-chip,.weather-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
+      .picked-chip{white-space:nowrap}
+      .weather-chip{font-weight:700;color:#344054}
+      .weather-chip-windtype{background:#eef4ff;color:#175cd3;border-color:#cfe0ff}
+      .weather-chip-dir{background:#f4ebff;color:#6941c6;border-color:#e0d2ff}
+      .weather-chip-num{background:#fff6e5;color:#b54708;border-color:#f5deb3}
+      .weather-chip-good{background:#ecfdf3;color:#027a48;border-color:#abefc6}
+      .weather-chip-bad{background:#fef3f2;color:#b42318;border-color:#fecdca}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
+      .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
+      .lane-score-verygood{background:#ecfdf3}
+      .lane-score-good{background:#eef4ff}
+      .lane-score-bad{background:#fef3f2}
+      .ex-rank-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+      .ex-rank-box{border:1px solid #eaecf0;background:#f8fafc;border-radius:8px;padding:6px 4px;text-align:center}
+      .ex-rank-1{background:#ecfdf3}
+      .ex-rank-2{background:#eef4ff}
+      .ex-rank-3{background:#fff6e5}
+      .ex-rank-low{background:#fef3f2}
+      .ex-rank{font-size:14px;font-weight:800;line-height:1.1}
+      .class-chip{display:inline-flex;gap:5px;align-items:center;border-radius:10px;padding:6px 8px;border:1px solid #d0d5dd;background:#fff}
+      .class-chip-a1{background:#ecfdf3}
+      .class-chip-a2{background:#eef4ff}
+      .class-chip-b1{background:#fff6e5}
+      .class-chip-b2{background:#fef3f2}
+      .class-chip-sub{font-size:10px;color:#667085}
+      .class-chip-main{font-size:13px;font-weight:800}
+      .current-class-chip .class-chip-main{font-size:15px}
+      .form{margin-top:12px}
+      .detail-box{display:flex;flex-direction:column;gap:10px}
+      .detail-box-simple{gap:0}
+      .auto-result-note{padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0;color:#475467;font-size:13px;font-weight:700}
+      .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
+      .input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
+      .save-btn{width:100%;margin-top:10px}
+      .half-btn{width:100%}
+      .delete-form{margin-top:8px}
+      .message{margin-top:10px;padding:10px 12px;border-radius:10px;font-weight:700}
+      .message-success{background:#ecfdf3;color:#027a48}
+      .message-error{background:#fef3f2;color:#b42318}
+      .empty{background:#fff;border-radius:16px;padding:24px;text-align:center;color:#667085;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .history-list{display:flex;flex-direction:column;gap:10px}
+      .history-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+      .history-date{font-size:20px;font-weight:800}
+      .history-link{text-decoration:none;background:#eef4ff;color:#175cd3;padding:8px 10px;border-radius:10px}
+      .history-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+      .table-wrap{overflow:auto;background:#fff;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      table{width:100%;border-collapse:collapse;background:#fff}
+      th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;white-space:nowrap}
+      th{background:#f8fafc}
+      .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+      .section-title{font-size:18px;font-weight:800}
+      .bulk-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:12px;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+      .bulk-toolbar-left,.bulk-toolbar-right{display:flex;gap:8px;align-items:center}
+      .history-filter-box{padding:16px}
+      .history-filter-grid{display:grid;grid-template-columns:1.2fr 180px auto auto auto;gap:12px;align-items:end;margin-top:10px}
+      .filter-item-check{display:flex;align-items:end}
+      .history-filter-meta{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:14px;flex-wrap:wrap}
+      .history-filter-count{font-size:13px;font-weight:800;color:#475467}
+      .jump-wrap{display:flex;gap:8px;flex-wrap:wrap}
+      .jump-chip{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:8px 12px;border-radius:999px;text-decoration:none;background:#eef4ff;color:#175cd3;border:1px solid #cdddff;font-weight:800}
+      .jump-empty{color:#98a2b3;font-size:13px}
+      .card-hit{border-color:#f5c2da;box-shadow:0 14px 38px rgba(193,21,116,.08)}
+      .card-purchased{border-color:#bfe3cd;box-shadow:0 14px 38px rgba(6,118,71,.08)}
+      .bottom-nav{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #eaecf0;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));z-index:50}
+      .bottom-nav-item{text-decoration:none;color:#667085;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
+      .bottom-nav-item.active{color:#175cd3;font-weight:800}
+      @media (max-width: 760px){
+        html{background:#f5f7fb}
+        .container{max-width:none;padding:calc(12px + env(safe-area-inset-top,0px)) 10px calc(92px + env(safe-area-inset-bottom,0px));}
+        .topbar{flex-direction:column;align-items:flex-start;padding:14px;border-radius:18px;}
+        .topbar-status{width:100%;justify-content:flex-start;}
+        .top-pill{width:100%;border-radius:12px;}
+        .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid{grid-template-columns:1fr;}
+        .row{grid-template-columns:1fr;gap:8px;}
+        .race-venue,.race-rno{font-size:20px}
+        .time{font-size:22px}
+        .ex-rank-grid{grid-template-columns:repeat(3,1fr);gap:6px}
+        .ex-rank-box{padding:6px 4px}
+        .ex-rank{font-size:13px}
+        .card-top-main{flex-direction:column;align-items:flex-start}
+        .status-wrap{margin-top:2px}
+        .history-filter-meta{flex-direction:column;align-items:flex-start}
+        .jump-wrap{width:100%}
+        .jump-chip{min-width:48px;padding:8px 11px}
+        .bulk-toolbar{flex-direction:column;align-items:stretch}
+        .bulk-toolbar-left,.bulk-toolbar-right{width:100%;justify-content:space-between;flex-wrap:wrap}
+        .player-rank-row{grid-template-columns:1fr;gap:8px;align-items:start;padding:8px 0}
+        .player-rank-main{gap:8px}
+        .player-rank-name{font-size:14px;line-height:1.4}
+        .player-rank-evidence{width:100%}
+        .player-evidence-wrap{gap:5px}
+        .player-evidence-chip{font-size:11px;padding:5px 8px}
+        .lane-color{min-width:24px;height:24px;font-size:14px;border-radius:4px}
+        .pick-inline{gap:5px}
+        .pick-sep{font-size:13px}
+        .bottom-nav{left:0;right:0;transform:none;bottom:0;width:auto;border-radius:0;border-left:none;border-right:none;box-shadow:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));}
+        .bottom-nav-item{border-radius:12px}
+        .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
+      }
+    </style>
+    """
+
+    js = """
+    <script>
+      function getCardRootByRaceId(raceId){
+        return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
+      }
+      function parseSelectionText(text){
+        return String(text || '').split(' / ').map(x => String(x || '').replace(/\s+/g, '').trim()).filter(Boolean);
+      }
+      function getRaceCheckboxes(raceId){
+        return Array.from(document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]'));
+      }
+      function getCheckedValues(raceId){
+        return getRaceCheckboxes(raceId).filter(x => x.checked).map(x => (x.getAttribute('data-pick-value') || '').trim()).filter(Boolean);
+      }
+      function renderColoredPickHtml(value){
+        const s = String(value || '').replace(/\s+/g, '').trim();
+        if(!s){ return ''; }
+        return '<span class="pick-inline">' + s.split('-').map((part, idx) => {
+          const sep = idx > 0 ? '<span class="pick-sep">-</span>' : '';
+          if(/^\d+$/.test(part)){
+            return sep + '<span class="lane-color lane-color-' + part + '">' + part + '</span>';
+          }
+          return sep + '<span class="pick-plain">' + part + '</span>';
+        }).join('') + '</span>';
+      }
+      function setCheckedValuesFromHidden(raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return []; }
+        const values = parseSelectionText(hidden.value);
+        const valueSet = new Set(values);
+        getRaceCheckboxes(raceId).forEach(el => {
+          const pick = (el.getAttribute('data-pick-value') || '').trim();
+          el.checked = valueSet.has(pick);
+        });
+        return values;
+      }
+      function syncSelectionValue(el, raceId){
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(!hidden){ return true; }
+        const values = getCheckedValues(raceId);
+        hidden.value = values.join(' / ');
+        return true;
+      }
+      function updateSelectionSummary(raceId, preserveHiddenWhenEmpty=true){
+        const root = getCardRootByRaceId(raceId);
+        if(!root){ return; }
+        const summaryEl = document.getElementById('selected-summary-' + raceId);
+        const countEl = document.getElementById('selected-count-badge-' + raceId);
+        const totalEl = document.getElementById('selected-total-badge-' + raceId);
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        let values = getCheckedValues(raceId);
+        if(values.length === 0 && hidden && preserveHiddenWhenEmpty){
+          values = setCheckedValuesFromHidden(raceId);
+        }
+        if(summaryEl){
+          if(values.length === 0){
+            summaryEl.innerHTML = '<div class="selection-chip-empty">未選択</div>';
+          }else{
+            summaryEl.innerHTML = '<div class="picked-chip-wrap">' + values.map(v => '<div class="picked-chip">' + renderColoredPickHtml(v) + '</div>').join('') + '</div>';
+          }
+        }
+        if(countEl){ countEl.textContent = values.length + '点'; }
+        if(totalEl){ totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円'; }
+        if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){ hidden.value = values.join(' / '); }
+      }
+      function toggleFormState(raceId){ return true; }
+      function updateBulkDeleteCount(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        const el = document.getElementById('bulk-delete-count');
+        if(el){ el.textContent = count + '件選択中'; }
+      }
+      function toggleAllBulk(checked){
+        document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
+        updateBulkDeleteCount();
+      }
+      function confirmBulkDelete(){
+        const count = document.querySelectorAll('.bulk-checkbox:checked').length;
+        if(count <= 0){ alert('削除するデータを選んでください'); return false; }
+        return confirm(count + '件を削除しますか？');
+      }
+      document.addEventListener('DOMContentLoaded', function(){
+        document.querySelectorAll('form[data-race-id]').forEach(form => {
+          const raceId = form.getAttribute('data-race-id');
+          setCheckedValuesFromHidden(raceId);
+          updateSelectionSummary(raceId, true);
+          form.addEventListener('submit', function(){ syncSelectionValue(null, raceId); });
+        });
+        updateBulkDeleteCount();
+      });
+    </script>
+    """
+
+    bottom_nav_html = f'''
+    <nav class="bottom-nav">
+      <a href="/" class="bottom-nav-item {home_active}"><span class="bottom-nav-icon">🏁</span><span class="bottom-nav-label">候補</span></a>
+      <a href="/stats" class="bottom-nav-item {stats_active}"><span class="bottom-nav-icon">📊</span><span class="bottom-nav-label">集計</span></a>
+      <a href="/history" class="bottom-nav-item {history_active}"><span class="bottom-nav-icon">🗂️</span><span class="bottom-nav-label">過去</span></a>
+    </nav>
+    '''
+    return """<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\"><title>{}</title>{}</head><body><div class=\"container\">{}</div>{}{}{}</body></html>""".format(title, css, body_html, bottom_nav_html, js, "")
+
+
+def is_valid_import_token(req):
+    sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
+    return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
+
+
+def is_valid_read_token(req):
+    sent = req.headers.get("X-IMPORT-TOKEN", "").strip()
+    return bool(IMPORT_TOKEN) and sent == IMPORT_TOKEN
+
+
+_db_initialized = False
+
+
+def ensure_db_initialized():
+    global _db_initialized
+    if _db_initialized:
         return
-    send_to_render(races)
+    init_db()
 
+
+def init_db():
+    global _db_initialized
+
+    conn = db_connect()
+    cur = conn.cursor()
+
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS races (
+            id SERIAL PRIMARY KEY,
+            race_date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            venue TEXT NOT NULL,
+            race_no TEXT NOT NULL,
+            race_no_num INTEGER NOT NULL DEFAULT 0,
+            rating TEXT NOT NULL DEFAULT '',
+            bet_type TEXT NOT NULL DEFAULT '',
+            selection TEXT NOT NULL DEFAULT '',
+            amount INTEGER NOT NULL DEFAULT 100,
+
+            ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            ai_rating TEXT NOT NULL DEFAULT '',
+            ai_label TEXT NOT NULL DEFAULT '',
+            final_rank TEXT NOT NULL DEFAULT '',
+            ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition JSONB NOT NULL DEFAULT '[]'::jsonb,
+            exhibition_rank TEXT NOT NULL DEFAULT '',
+            weather TEXT NOT NULL DEFAULT '',
+            wind_speed DOUBLE PRECISION NOT NULL DEFAULT 0,
+            wave_height DOUBLE PRECISION NOT NULL DEFAULT 0,
+            wind_type TEXT NOT NULL DEFAULT '',
+            wind_dir TEXT NOT NULL DEFAULT '',
+            water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            motor_rank TEXT NOT NULL DEFAULT '',
+            ai_detail TEXT NOT NULL DEFAULT '',
+            ai_selection TEXT NOT NULL DEFAULT '',
+            ai_confidence TEXT NOT NULL DEFAULT '',
+            ai_lane_score_text TEXT NOT NULL DEFAULT '',
+            class_history_text TEXT NOT NULL DEFAULT '',
+            player_names_text TEXT NOT NULL DEFAULT '',
+            player_stat_text TEXT NOT NULL DEFAULT '',
+            player_reason_text TEXT NOT NULL DEFAULT '',
+
+            base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            base_ai_rating TEXT NOT NULL DEFAULT '',
+            base_ai_selection TEXT NOT NULL DEFAULT '',
+            base_reason_text TEXT NOT NULL DEFAULT '',
+            base_updated_at TEXT NOT NULL DEFAULT '',
+
+            final_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            final_ai_rating TEXT NOT NULL DEFAULT '',
+            final_ai_selection TEXT NOT NULL DEFAULT '',
+            latest_reason_text TEXT NOT NULL DEFAULT '',
+            latest_updated_at TEXT NOT NULL DEFAULT '',
+
+            purchased INTEGER NOT NULL DEFAULT 0,
+            purchased_selection_text TEXT NOT NULL DEFAULT '',
+            hit INTEGER NOT NULL DEFAULT 0,
+            payout INTEGER NOT NULL DEFAULT 0,
+            memo TEXT NOT NULL DEFAULT '',
+            result_trifecta_text TEXT NOT NULL DEFAULT '',
+            result_trifecta_payout INTEGER NOT NULL DEFAULT 0,
+            result_exacta_text TEXT NOT NULL DEFAULT '',
+            result_exacta_payout INTEGER NOT NULL DEFAULT 0,
+            result_trio_text TEXT NOT NULL DEFAULT '',
+            result_trio_payout INTEGER NOT NULL DEFAULT 0,
+            settled_flag INTEGER NOT NULL DEFAULT 0,
+            settled_at TEXT NOT NULL DEFAULT '',
+            result_source_url TEXT NOT NULL DEFAULT '',
+            imported_at TEXT NOT NULL DEFAULT ''
+        )
+        '''
+    )
+
+    alter_sqls = [
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_no_num INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS weather TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_speed DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wave_height DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_type TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_dir TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_confidence TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_lane_score_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS class_history_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_stat_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_reason_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_selection TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_reason_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_updated_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_rating TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_selection TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS latest_reason_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS latest_updated_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS purchased_selection_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS hit INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS memo TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trifecta_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trifecta_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_exacta_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_exacta_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trio_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_trio_payout INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS settled_flag INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS settled_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS result_source_url TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS imported_at TEXT NOT NULL DEFAULT ''",
+    ]
+    for sql in alter_sqls:
+        cur.execute(sql)
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_today_view ON races (race_date, rating, time, venue, race_no_num)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_history_view ON races (race_date, venue, race_no_num, hit)")
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    _db_initialized = True
+
+
+def upsert_base_candidates(cleaned):
+    ensure_db_initialized()
+    if not cleaned:
+        return {'inserted': 0, 'updated': 0}
+    race_date = str(cleaned[0]['race_date']).strip()
+    existing_map = get_existing_race_map_by_date(race_date)
+    conn = db_connect()
+    cur = conn.cursor()
+    inserted = 0
+    updated = 0
+    for r in cleaned:
+        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
+        existing = existing_map.get(key)
+        if existing:
+            cur.execute(
+                '''
+                UPDATE races
+                SET
+                    time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
+                    race_no_num = %s,
+                    rating = %s,
+                    bet_type = %s,
+                    selection = %s,
+                    amount = %s,
+                    player_names_text = %s,
+                    class_history_text = %s,
+                    player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
+                    player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
+                    base_ai_score = %s,
+                    base_ai_rating = %s,
+                    base_ai_selection = %s,
+                    base_reason_text = %s,
+                    base_updated_at = %s,
+                    imported_at = %s
+                WHERE id = %s
+                ''',
+                (
+                    str(r.get('time') or '').strip(),
+                    str(r.get('time') or '').strip(),
+                    int(r.get('race_no_num') or 0),
+                    str(r.get('rating') or '').strip(),
+                    str(r.get('bet_type') or '').strip(),
+                    str(r.get('selection') or '').strip(),
+                    int(r.get('amount') or 100),
+                    str(r.get('player_names_text') or '').strip(),
+                    str(r.get('class_history_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
+                    safe_float(r.get('base_ai_score', 0), 0),
+                    str(r.get('base_ai_rating') or '').strip(),
+                    str(r.get('base_ai_selection') or '').strip(),
+                    str(r.get('base_reason_text') or '').strip(),
+                    str(r.get('base_updated_at') or '').strip(),
+                    jst_now_str(),
+                    existing['id'],
+                )
+            )
+            updated += 1
+        else:
+            cur.execute(
+                '''
+                INSERT INTO races (
+                    race_date, time, venue, race_no, race_no_num,
+                    rating, bet_type, selection, amount,
+                    player_names_text, class_history_text, player_stat_text, player_reason_text,
+                    base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
+                    purchased, purchased_selection_text, hit, payout, memo, imported_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
+                ''',
+                (
+                    str(r.get('race_date') or '').strip(),
+                    str(r.get('time') or '').strip(),
+                    str(r.get('venue') or '').strip(),
+                    str(r.get('race_no') or '').strip(),
+                    int(r.get('race_no_num') or 0),
+                    str(r.get('rating') or '').strip(),
+                    str(r.get('bet_type') or '').strip(),
+                    str(r.get('selection') or '').strip(),
+                    int(r.get('amount') or 100),
+                    str(r.get('player_names_text') or '').strip(),
+                    str(r.get('class_history_text') or '').strip(),
+                    str(r.get('player_stat_text') or '').strip(),
+                    str(r.get('player_reason_text') or '').strip(),
+                    safe_float(r.get('base_ai_score', 0), 0),
+                    str(r.get('base_ai_rating') or '').strip(),
+                    str(r.get('base_ai_selection') or '').strip(),
+                    str(r.get('base_reason_text') or '').strip(),
+                    str(r.get('base_updated_at') or '').strip(),
+                    0,
+                    '',
+                    0,
+                    0,
+                    '',
+                    jst_now_str(),
+                )
+            )
+            inserted += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f'upsert_base_candidates inserted={inserted} updated={updated}')
+    return {'inserted': inserted, 'updated': updated}
+
+
+def upsert_latest_candidates(cleaned):
+    ensure_db_initialized()
+    if not cleaned:
+        return {'updated': 0, 'skipped': 0}
+    race_date = str(cleaned[0]['race_date']).strip()
+    existing_map = get_existing_race_map_by_date(race_date)
+    conn = db_connect()
+    cur = conn.cursor()
+    updated = 0
+    skipped = 0
+    for r in cleaned:
+        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
+        existing = existing_map.get(key)
+        if not existing:
+            skipped += 1
+            continue
+
+        incoming_time = str(r.get('time') or '').strip()
+        current_time = str(existing.get('time') or '').strip()
+        effective_time = incoming_time or current_time
+
+        freeze_after_close = False
+        if effective_time:
+            freeze_after_close = not is_not_started(effective_time)
+
+        final_ai_score_value = safe_float(r.get('final_ai_score', 0), 0)
+        final_ai_rating_value = str(r.get('final_ai_rating') or '').strip()
+        final_ai_selection_value = str(r.get('final_ai_selection') or '').strip()
+        final_rank_value = str(r.get('final_rank') or '').strip()
+        latest_reason_text_value = str(r.get('latest_reason_text') or '').strip()
+        latest_updated_at_value = str(r.get('latest_updated_at') or '').strip()
+
+        if freeze_after_close and str(existing.get('final_ai_selection') or '').strip():
+            final_ai_score_value = safe_float(existing.get('final_ai_score', 0), 0)
+            final_ai_rating_value = str(existing.get('final_ai_rating') or '').strip()
+            final_ai_selection_value = str(existing.get('final_ai_selection') or '').strip()
+            final_rank_value = str(existing.get('final_rank') or '').strip()
+            latest_reason_text_value = str(existing.get('latest_reason_text') or '').strip()
+            latest_updated_at_value = str(existing.get('latest_updated_at') or '').strip()
+
+        cur.execute(
+            '''
+            UPDATE races
+            SET
+                time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
+                exhibition = %s,
+                exhibition_rank = %s,
+                weather = %s,
+                wind_speed = %s,
+                wave_height = %s,
+                wind_type = %s,
+                wind_dir = %s,
+                water_state_score = %s,
+                ai_lane_score_text = %s,
+                player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
+                player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
+                final_ai_score = %s,
+                final_ai_rating = %s,
+                final_ai_selection = %s,
+                final_rank = %s,
+                latest_reason_text = %s,
+                latest_updated_at = %s,
+                result_trifecta_text = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE result_trifecta_text
+                END,
+                result_trifecta_payout = CASE
+                    WHEN COALESCE(%s, 0) > 0 THEN %s
+                    ELSE result_trifecta_payout
+                END,
+                result_source_url = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE result_source_url
+                END,
+                settled_flag = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN 1
+                    ELSE settled_flag
+                END,
+                settled_at = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE settled_at
+                END,
+                imported_at = %s
+            WHERE id = %s
+            ''',
+            (
+                incoming_time,
+                incoming_time,
+                json.dumps(r.get('exhibition', []), ensure_ascii=False),
+                str(r.get('exhibition_rank') or '').strip(),
+                str(r.get('weather') or '').strip(),
+                safe_float(r.get('wind_speed'), 0),
+                safe_float(r.get('wave_height'), 0),
+                str(r.get('wind_type') or '').strip(),
+                str(r.get('wind_dir') or '').strip(),
+                safe_float(r.get('water_state_score'), 0),
+                str(r.get('ai_lane_score_text') or '').strip(),
+                str(r.get('player_stat_text') or '').strip(),
+                str(r.get('player_stat_text') or '').strip(),
+                str(r.get('player_reason_text') or '').strip(),
+                str(r.get('player_reason_text') or '').strip(),
+                final_ai_score_value,
+                final_ai_rating_value,
+                final_ai_selection_value,
+                final_rank_value,
+                latest_reason_text_value,
+                latest_updated_at_value,
+                str(r.get('result_trifecta_text') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                int(r.get('result_trifecta_payout') or 0),
+                int(r.get('result_trifecta_payout') or 0),
+                str(r.get('result_source_url') or '').strip(),
+                str(r.get('result_source_url') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                jst_now_str(),
+                jst_now_str(),
+                existing['id'],
+            )
+        )
+        updated += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    log(f'upsert_latest_candidates updated={updated} skipped={skipped}')
+    return {'updated': updated, 'skipped': skipped}
+
+
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
+
+
+@app.route("/")
+def index():
+    show_closed = request.args.get("show_closed", "").strip() == "1"
+    ai_rating_filter = request.args.get("ai_rating", "").strip()
+    official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
+    if ai_rating_filter not in AI_RATING_OPTIONS:
+        ai_rating_filter = ""
+    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+        official_rating_filter = "pickup"
+    races = get_filtered_today_races(
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
+        official_rating_filter=official_rating_filter,
+    )
+    summary = get_summary_by_date(today_text())
+    return render_home(
+        races,
+        summary,
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+        show_closed=show_closed,
+        ai_rating_filter=ai_rating_filter,
+        official_rating_filter=official_rating_filter,
+    )
+
+
+def parse_selected_from_request():
+    raw_selected_text = request.form.get("selected_text", "")
+    selected_items = [normalize_pick_text(x) for x in selection_items(raw_selected_text)]
+    selected_items = [x for x in selected_items if x]
+    if selected_items:
+        return " / ".join(unique_preserve(selected_items))
+    ai = [normalize_pick_text(x) for x in request.form.getlist("selected_ai")]
+    ai = [x for x in ai if x]
+    return " / ".join(unique_preserve(ai))
+
+
+@app.route("/save", methods=["POST"])
+def save():
+    race_id = int(request.form.get("race_id", "0"))
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect("/?type=error&msg=" + quote("データが見つかりません"))
+    selected_text = parse_selected_from_request()
+    hit = 0
+    payout = 0
+    memo = ""
+    update_race_result(race_id, selected_text, hit, payout, memo)
+    redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+    sep = "&" if "?" in redirect_base else "?"
+    return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
+
+
+@app.route("/update_record", methods=["POST"])
+def update_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
+    selected_text = parse_selected_from_request()
+    hit = 0
+    payout = 0
+    memo = ""
+    update_race_result(race_id, selected_text, hit, payout, memo)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
+
+
+@app.route("/delete_record", methods=["POST"])
+def delete_record():
+    race_id = int(request.form.get("race_id", "0"))
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    race = get_race_by_id(race_id)
+    if not race:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除対象が見つかりません"))
+    delete_race(race_id)
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("削除しました"))
+
+
+@app.route("/delete_records_bulk", methods=["POST"])
+def delete_records_bulk():
+    redirect_to = safe_redirect_path(request.form.get("redirect_to", "/history"), "/history")
+    deleted = delete_races_bulk(request.form.getlist("race_ids"))
+    if deleted <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("削除するデータを選んでください"))
+    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote(f"{deleted}件削除しました"))
+
+
+@app.route("/stats")
+def stats():
+    race_date = today_text()
+    return render_stats_page(
+        race_date,
+        get_summary_by_date(race_date),
+        get_group_summary(race_date, "rating"),
+        get_group_summary(race_date, "venue"),
+        get_group_summary(race_date, "ai_rating"),
+        get_group_summary(race_date, "final_rank"),
+    )
+
+
+@app.route("/history")
+def history():
+    return render_history_page(get_history_date_summaries())
+
+
+@app.route("/history/<race_date>")
+def history_detail(race_date):
+    venue_filter = request.args.get("venue", "").strip()
+    race_no_filter = request.args.get("race_no", "").strip()
+    purchased_only = request.args.get("purchased_only", "").strip() == "1"
+    hit_only = request.args.get("hit_only", "").strip() == "1"
+    races = get_races_by_date(race_date)
+    return render_history_detail_page(
+        race_date,
+        races,
+        get_summary_by_date(race_date),
+        request.args.get("type", "").strip(),
+        request.args.get("msg", "").strip(),
+        venue_filter=venue_filter,
+        race_no_filter=race_no_filter,
+        purchased_only=purchased_only,
+        hit_only=hit_only,
+    )
+
+
+@app.route("/api/import_base_candidates", methods=["POST"])
+def import_base_candidates():
+    if not is_valid_import_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    races = data.get("races", [])
+    if not isinstance(races, list):
+        return jsonify({"ok": False, "error": "races must be a list"}), 400
+    required_keys = {"race_date", "venue", "race_no", "race_no_num", "rating", "bet_type", "selection", "amount"}
+    cleaned = []
+    for i, r in enumerate(races):
+        if not isinstance(r, dict):
+            return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
+        missing = required_keys - set(r.keys())
+        if missing:
+            return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+        cleaned.append(
+            {
+                "race_date": str(r.get("race_date") or "").strip(),
+                "time": str(r.get("time") or "").strip(),
+                "venue": str(r.get("venue") or "").strip(),
+                "race_no": str(r.get("race_no") or "").strip(),
+                "race_no_num": int(r.get("race_no_num") or 0),
+                "rating": str(r.get("rating") or "").strip(),
+                "bet_type": str(r.get("bet_type") or "").strip(),
+                "selection": str(r.get("selection") or "").strip(),
+                "amount": int(r.get("amount") or 100),
+                "player_names_text": str(r.get("player_names_text") or "").strip(),
+                "class_history_text": str(r.get("class_history_text") or "").strip(),
+                "player_stat_text": str(r.get("player_stat_text") or "").strip(),
+                "player_reason_text": str(r.get("player_reason_text") or "").strip(),
+                "base_ai_score": safe_float(r.get("base_ai_score", 0), 0),
+                "base_ai_rating": str(r.get("base_ai_rating") or "").strip(),
+                "base_ai_selection": str(r.get("base_ai_selection") or "").strip(),
+                "base_reason_text": str(r.get("base_reason_text") or "").strip(),
+                "base_updated_at": str(r.get("base_updated_at") or "").strip(),
+            }
+        )
+    if not cleaned:
+        return jsonify({"ok": False, "error": "races is empty"}), 400
+    race_dates = sorted(set(r["race_date"] for r in cleaned))
+    if len(race_dates) != 1:
+        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+    result = upsert_base_candidates(cleaned)
+    return jsonify({"ok": True, "received": len(cleaned), "inserted": result["inserted"], "updated": result["updated"], "imported_at": jst_now_str()})
+
+
+@app.route("/api/base_map_today", methods=["GET"])
+def api_base_map_today():
+    if not is_valid_read_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    race_date = request.args.get("race_date", "").strip() or today_text()
+    ensure_db_initialized()
+    conn = db_connect()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        '''
+        SELECT
+            race_date,
+            venue,
+            race_no,
+            rating,
+            base_ai_score,
+            base_ai_rating,
+            base_ai_selection,
+            base_reason_text,
+            final_ai_score,
+            final_ai_rating,
+            final_ai_selection,
+            latest_reason_text
+        FROM races
+        WHERE race_date = %s
+          AND venue <> 'テスト会場'
+        ''',
+        (race_date,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    base_map = {}
+    for row in rows:
+        key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
+        base_map[key] = {
+            "rating": str(row.get("rating") or "").strip(),
+            "base_ai_score": safe_float(row.get("base_ai_score"), 0),
+            "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
+            "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
+            "base_reason_text": str(row.get("base_reason_text") or "").strip(),
+            "final_ai_score": safe_float(row.get("final_ai_score"), 0),
+            "final_ai_rating": str(row.get("final_ai_rating") or "").strip(),
+            "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
+            "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
+        }
+    return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
+
+
+@app.route("/api/import_latest_candidates", methods=["POST"])
+def import_latest_candidates():
+    if not is_valid_import_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    races = data.get("races", [])
+    if not isinstance(races, list):
+        return jsonify({"ok": False, "error": "races must be a list"}), 400
+    required_keys = {"race_date", "venue", "race_no"}
+    cleaned = []
+    for i, r in enumerate(races):
+        if not isinstance(r, dict):
+            return jsonify({"ok": False, "error": f"row {i} is not dict"}), 400
+        missing = required_keys - set(r.keys())
+        if missing:
+            return jsonify({"ok": False, "error": f"row {i} missing keys: {sorted(list(missing))}"}), 400
+        cleaned.append(
+            {
+                "race_date": str(r.get("race_date") or "").strip(),
+                "venue": str(r.get("venue") or "").strip(),
+                "race_no": str(r.get("race_no") or "").strip(),
+                "time": str(r.get("time") or "").strip(),
+                "exhibition": r.get("exhibition", []),
+                "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
+                "weather": str(r.get("weather") or "").strip(),
+                "wind_speed": safe_float(r.get("wind_speed"), 0),
+                "wave_height": safe_float(r.get("wave_height"), 0),
+                "wind_type": str(r.get("wind_type") or "").strip(),
+                "wind_dir": str(r.get("wind_dir") or "").strip(),
+                "water_state_score": safe_float(r.get("water_state_score"), 0),
+                "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
+                "player_stat_text": str(r.get("player_stat_text") or "").strip(),
+                "player_reason_text": str(r.get("player_reason_text") or "").strip(),
+                "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
+                "final_ai_rating": str(r.get("final_ai_rating") or "").strip(),
+                "final_ai_selection": str(r.get("final_ai_selection") or "").strip(),
+                "final_rank": str(r.get("final_rank") or "").strip(),
+                "latest_reason_text": str(r.get("latest_reason_text") or "").strip(),
+                "latest_updated_at": str(r.get("latest_updated_at") or "").strip(),
+                "result_trifecta_text": str(r.get("result_trifecta_text") or "").strip(),
+                "result_trifecta_payout": int(r.get("result_trifecta_payout") or 0),
+                "result_source_url": str(r.get("result_source_url") or "").strip(),
+            }
+        )
+    if not cleaned:
+        return jsonify({"ok": False, "error": "races is empty"}), 400
+    race_dates = sorted(set(r["race_date"] for r in cleaned))
+    if len(race_dates) != 1:
+        return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
+    result = upsert_latest_candidates(cleaned)
+    return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
+
+
+@app.route("/export/today.csv")
+def export_today_csv():
+    rows = get_races_by_date(today_text())
+    return make_csv_response(rows, f"race_candidates_today_{today_text()}.csv")
+
+
+@app.route("/export/history/<race_date>.csv")
+def export_history_csv(race_date):
+    rows = get_races_by_date(race_date)
+    return make_csv_response(rows, f"race_candidates_{race_date}.csv")
+
+
+
+
+init_db()
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
