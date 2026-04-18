@@ -3549,7 +3549,7 @@ def build_candidates():
             signal_metrics=signal_metrics,
         )
 
-        day_trend_bias = build_day_trend_bias(jcd, race_no, {})
+        day_trend_bias = build_day_trend_bias(jcd, race_no, day_result_cache)
         role_maps = build_role_score_maps(
             venue,
             exhibition_info,
