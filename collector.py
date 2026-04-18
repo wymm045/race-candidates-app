@@ -3508,7 +3508,9 @@ def build_candidates():
         if not is_live_target:
             result_text = str(result_info.get("triplet") or "").strip()
             result_payout = int(result_info.get("trifecta_payout") or 0)
+            log(f"[settle_candidate] venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}")
             if not result_text and result_payout <= 0:
+                log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
                 continue
 
             candidate = {
