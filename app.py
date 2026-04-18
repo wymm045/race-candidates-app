@@ -329,7 +329,10 @@ def get_existing_race_map_by_date(race_date):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         '''
-        SELECT id, race_date, venue, race_no
+        SELECT
+            id, race_date, venue, race_no, time,
+            final_ai_score, final_ai_rating, final_ai_selection, final_rank,
+            latest_reason_text, latest_updated_at
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -2477,6 +2480,30 @@ def upsert_latest_candidates(cleaned):
         if not existing:
             skipped += 1
             continue
+
+        incoming_time = str(r.get('time') or '').strip()
+        current_time = str(existing.get('time') or '').strip()
+        effective_time = incoming_time or current_time
+
+        freeze_after_close = False
+        if effective_time:
+            freeze_after_close = not is_not_started(effective_time)
+
+        final_ai_score_value = safe_float(r.get('final_ai_score', 0), 0)
+        final_ai_rating_value = str(r.get('final_ai_rating') or '').strip()
+        final_ai_selection_value = str(r.get('final_ai_selection') or '').strip()
+        final_rank_value = str(r.get('final_rank') or '').strip()
+        latest_reason_text_value = str(r.get('latest_reason_text') or '').strip()
+        latest_updated_at_value = str(r.get('latest_updated_at') or '').strip()
+
+        if freeze_after_close and str(existing.get('final_ai_selection') or '').strip():
+            final_ai_score_value = safe_float(existing.get('final_ai_score', 0), 0)
+            final_ai_rating_value = str(existing.get('final_ai_rating') or '').strip()
+            final_ai_selection_value = str(existing.get('final_ai_selection') or '').strip()
+            final_rank_value = str(existing.get('final_rank') or '').strip()
+            latest_reason_text_value = str(existing.get('latest_reason_text') or '').strip()
+            latest_updated_at_value = str(existing.get('latest_updated_at') or '').strip()
+
         cur.execute(
             '''
             UPDATE races
@@ -2523,8 +2550,8 @@ def upsert_latest_candidates(cleaned):
             WHERE id = %s
             ''',
             (
-                str(r.get('time') or '').strip(),
-                str(r.get('time') or '').strip(),
+                incoming_time,
+                incoming_time,
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
                 str(r.get('exhibition_rank') or '').strip(),
                 str(r.get('weather') or '').strip(),
@@ -2538,12 +2565,12 @@ def upsert_latest_candidates(cleaned):
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
-                safe_float(r.get('final_ai_score', 0), 0),
-                str(r.get('final_ai_rating') or '').strip(),
-                str(r.get('final_ai_selection') or '').strip(),
-                str(r.get('final_rank') or '').strip(),
-                str(r.get('latest_reason_text') or '').strip(),
-                str(r.get('latest_updated_at') or '').strip(),
+                final_ai_score_value,
+                final_ai_rating_value,
+                final_ai_selection_value,
+                final_rank_value,
+                latest_reason_text_value,
+                latest_updated_at_value,
                 str(r.get('result_trifecta_text') or '').strip(),
                 str(r.get('result_trifecta_text') or '').strip(),
                 int(r.get('result_trifecta_payout') or 0),
