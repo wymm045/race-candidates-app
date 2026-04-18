@@ -216,6 +216,42 @@ def safe_float(value, default=0.0):
         return float(default)
 
 
+def effective_ai_score(row):
+    """
+    表示・CSV用のAI点数を返す。
+    latest反映後は final_ai_score を優先。
+    latest前は final_ai_score が 0 のままでも base_ai_score が入っていることがあるため、
+    final_rank 等が空なら base_ai_score -> old ai_score の順で見る。
+    """
+    row = row or {}
+
+    has_latest = any([
+        str(row.get("final_rank") or "").strip(),
+        str(row.get("latest_updated_at") or "").strip(),
+        str(row.get("latest_reason_text") or "").strip(),
+    ])
+
+    if has_latest:
+        return safe_float(row.get("final_ai_score"), 0)
+
+    # latest前は、0/空を未確定扱いにして base -> old ai の順で見る。
+    for key in ["final_ai_score", "base_ai_score", "ai_score"]:
+        value = row.get(key)
+        if value is None:
+            continue
+        s = str(value).strip()
+        if s == "":
+            continue
+        try:
+            score = float(s)
+        except Exception:
+            continue
+        if abs(score) > 0.000001:
+            return score
+
+    return 0.0
+
+
 def normalize_ai_detail(raw_detail, exhibition_list):
     detail = (raw_detail or "").strip()
     has_exhibition = bool(exhibition_list)
@@ -931,7 +967,6 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
     has_lane1_head = any(h == 1 for h in core_heads)
     has_inner_head = any(h in {1, 2, 3} for h in core_heads)
     has_outer_head = any(h in {5, 6} for h in core_heads)
-    exact_overlap_count = len(set(core_items) & set(official_top2))
     official_close = any(is_close_to_official_core(x, official_top2) for x in core_items)
 
     conditions = [
@@ -948,6 +983,29 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
     tone = "skip"
     recommend_text = "買わずに結果だけ確認"
     memo = "条件が弱いので、無理に買わない。"
+    action_label = "推奨どおり見送り"
+
+    # 朝baseだけの段階では final_rank がまだ入らない。
+    # ここで見送り表示にすると紛らわしいので、直前補正待ちとして表示する。
+    if not rank:
+        title = "直前待ち"
+        tone = "watch"
+        recommend_text = "展示・風・進入の反映待ち"
+        memo = "朝baseだけの候補です。collector_latest.py 反映後に買い判定を確認してください。"
+        action_label = "直前待ち（反映なし）"
+        return {
+            "ai_core_items": core_items,
+            "official_top2": official_top2,
+            "conditions": conditions,
+            "should_buy": False,
+            "recommended_count": 0,
+            "recommended_amount": 100,
+            "title": title,
+            "tone": tone,
+            "recommend_text": recommend_text,
+            "memo": memo,
+            "action_label": action_label,
+        }
 
     strong_conditions = has_lane1_head and official_close and not has_outer_head
     light_conditions = has_inner_head and not has_outer_head
@@ -955,6 +1013,7 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
     if rank == "買い強め":
         should_buy = True
         recommended_count = 3
+        action_label = "推奨を反映"
         if strong_conditions:
             recommended_amount = 200
             title = "200円候補"
@@ -975,6 +1034,7 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
         tone = "buy"
         recommend_text = "AI本線3点 × 100円"
         memo = "基本は本線3点だけ。全6点に広げない。"
+        action_label = "推奨を反映"
     elif rank == "様子見":
         if strong_conditions or (official_close and light_conditions):
             should_buy = True
@@ -984,14 +1044,17 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
             tone = "watch"
             recommend_text = "AI本線3点 × 100円まで"
             memo = "様子見は全部買わない。条件が揃う時だけ100円。"
+            action_label = "推奨を反映"
         else:
             title = "様子見は原則買わない"
             recommend_text = "買わずに検証"
             memo = "様子見は取り逃し確認用。条件不足なら見送り。"
+            action_label = "推奨どおり見送り"
     else:
         title = "見送り推奨"
         recommend_text = "買わない"
         memo = "見送り寄りは買わない。"
+        action_label = "推奨どおり見送り"
 
     return {
         "ai_core_items": core_items,
@@ -1004,6 +1067,7 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
         "tone": tone,
         "recommend_text": recommend_text,
         "memo": memo,
+        "action_label": action_label,
     }
 
 
@@ -1032,7 +1096,7 @@ def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_
     else:
         official_html = '<span class="selection-chip-empty">公式上位未取得</span>'
 
-    action_label = "推奨を反映" if guide["should_buy"] else "推奨どおり見送り"
+    action_label = guide.get("action_label") or ("推奨を反映" if guide["should_buy"] else "推奨どおり見送り")
 
     return f'''
     <div class="bet-guide-box bet-guide-{guide['tone']}">
@@ -1663,7 +1727,7 @@ def build_card_html(r, is_history=False, race_date=""):
     render_r["ai_selection"] = display_ai_selection
     selection_compare_html = render_selection_compare_html(render_r, race_id_key)
     ai_detail_text = display_ai_detail_text or normalize_ai_detail(r.get("ai_detail"), exhibition)
-    ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
+    ai_score_value = effective_ai_score(r)
     player_rank_summary_html = render_player_rank_summary_html(
         r.get("player_names_text", ""),
         r.get("class_history_text", ""),
@@ -1850,7 +1914,7 @@ def build_export_rows(rows):
             or ""
         )
         display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
-        ai_score_value = safe_float(r.get("final_ai_score"), safe_float(r.get("base_ai_score"), safe_float(r.get("ai_score"), 0)))
+        ai_score_value = effective_ai_score(r)
 
         weather_parts = []
         weather = str(r.get("weather") or "").strip()
