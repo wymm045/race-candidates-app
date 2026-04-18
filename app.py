@@ -1476,6 +1476,13 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+        <div class="row row-gpt-review">
+          <span class="label">精査</span>
+          <span class="value">
+            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}">ChatGPTで精査</button>
+            <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
+          </span>
+        </div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         {ai_reason_html}
@@ -2235,6 +2242,85 @@ def render_layout(title, body_html):
         }, 10000);
 
         return loadGptReview(raceId, btn);
+      }
+
+      function loadGptReview(raceId, btn){
+        const box = document.getElementById('gpt-review-' + raceId);
+        if(!box){
+          btn.disabled = false;
+          btn.textContent = 'ChatGPTで精査';
+          return false;
+        }
+
+        const done = function(){
+          window.__gptReviewWatchdog = window.__gptReviewWatchdog || {};
+          if(window.__gptReviewWatchdog[raceId]){
+            clearTimeout(window.__gptReviewWatchdog[raceId]);
+            delete window.__gptReviewWatchdog[raceId];
+          }
+          btn.disabled = false;
+          btn.textContent = 'ChatGPTで精査';
+        };
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/api/gpt_race_review?race_id=' + encodeURIComponent(raceId), true);
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.timeout = 10000;
+
+        xhr.onreadystatechange = function(){
+          if(xhr.readyState !== 4){
+            return;
+          }
+
+          if(xhr.status < 200 || xhr.status >= 300){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">通信失敗: HTTP ' + xhr.status + '</div>';
+            done();
+            return;
+          }
+
+          let data;
+          try{
+            data = JSON.parse(xhr.responseText || '{}');
+          }catch(e){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">JSON変換失敗</div><div class="gpt-review-content">' + String(xhr.responseText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+            done();
+            return;
+          }
+
+          if(!data.ok){
+            box.style.display = 'block';
+            box.innerHTML = '<div class="gpt-review-error">取得失敗: ' + (data.error || 'unknown error') + '</div>';
+            done();
+            return;
+          }
+
+          const escaped = String(data.review_text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
+          done();
+        };
+
+        xhr.onerror = function(){
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
+          done();
+        };
+
+        xhr.ontimeout = function(){
+          box.style.display = 'block';
+          box.innerHTML = '<div class="gpt-review-error">タイムアウトしました</div>';
+          done();
+        };
+
+        xhr.send();
+        return false;
       }
 
       function confirmBulkDelete(){
