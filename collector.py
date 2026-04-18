@@ -3320,6 +3320,163 @@ def ensure_base_triplets_present(top, scored_rows, base_triplets, min_keep=1):
     return dedup
 
 
+def extract_lane_text_block(raw_text, lane):
+    s = str(raw_text or "")
+    if not s:
+        return ""
+    m = re.search(rf"{int(lane)}:(.*?)(?:\s*/\s*[1-6]:|$)", s)
+    return m.group(1).strip() if m else ""
+
+
+def lane_has_class_support(base_info, lane=1):
+    lane_text = extract_lane_text_block((base_info or {}).get("class_history_text"), lane)
+    if not lane_text:
+        return False
+    return ("A1" in lane_text) or (lane_text.count("A2") >= 2)
+
+
+def lane_has_reason_support(base_info, lane=1):
+    lane_text = extract_lane_text_block((base_info or {}).get("player_reason_text"), lane)
+    if not lane_text:
+        return False
+    support_words = ["+モータ", "+級別", "+勝率", "+当地", "+近況", "+ST"]
+    return any(word in lane_text for word in support_words)
+
+
+def should_keep_lane1_support(base_info, exhibition_info, foot_material, role_maps, signal_metrics, base_hold_strength=0.0):
+    base_info = base_info or {}
+    foot_material = foot_material or {}
+    role_maps = role_maps or {}
+    signal_metrics = signal_metrics or {}
+
+    course_map = foot_material.get("course_map", {}) or {}
+    if course_map.get(1, 1) != 1:
+        return False
+
+    class_support = lane_has_class_support(base_info, lane=1)
+    reason_support = lane_has_reason_support(base_info, lane=1)
+    if not class_support and not reason_support and float(base_hold_strength or 0) < 0.18:
+        return False
+
+    lane_map = role_maps.get("lane", {}) or {}
+    head_map = role_maps.get("head", {}) or {}
+    second_map = role_maps.get("second", {}) or {}
+    third_map = role_maps.get("third", {}) or {}
+
+    lane1_eval = float(lane_map.get(1, 0) or 0)
+    head1 = float(head_map.get(1, 0) or 0)
+    second1 = float(second_map.get(1, 0) or 0)
+    third1 = float(third_map.get(1, 0) or 0)
+
+    lane1_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+    st1 = (foot_material.get("st_map", {}) or {}).get(1)
+
+    if lane1_gap >= 0.18 and not (class_support or reason_support):
+        return False
+    if lane1_eval <= -0.55 and signal_strength >= 0.70 and float(base_hold_strength or 0) < 0.24:
+        return False
+    if max(head1, second1, third1) <= -0.12 and float(base_hold_strength or 0) < 0.22:
+        return False
+    if isinstance(st1, (int, float)) and float(st1) >= 0.30 and lane1_gap >= 0.12:
+        return False
+
+    return True
+
+
+def ensure_lane1_support_triplet(
+    top,
+    scored_rows,
+    base_triplets,
+    base_info,
+    exhibition_info,
+    foot_material,
+    role_maps,
+    signal_metrics,
+    base_hold_strength=0.0,
+):
+    if not top:
+        return top
+
+    if any("1" in tri.split("-") for tri in top if tri.count("-") == 2):
+        return top
+
+    if not should_keep_lane1_support(
+        base_info,
+        exhibition_info,
+        foot_material,
+        role_maps,
+        signal_metrics,
+        base_hold_strength=base_hold_strength,
+    ):
+        return top
+
+    score_map = {tri: score for tri, score in scored_rows}
+    candidates = []
+
+    for tri in base_triplets or []:
+        parts = tri.split("-")
+        if len(parts) != 3:
+            continue
+        if parts[0] == "1":
+            continue
+        if "1" in parts and tri in score_map:
+            bonus = 0.06 if parts[1] == "1" else 0.04
+            candidates.append((tri, score_map[tri] + bonus))
+
+    for tri, score in scored_rows:
+        parts = tri.split("-")
+        if len(parts) != 3:
+            continue
+        if parts[0] == "1":
+            continue
+        if "1" in parts:
+            bonus = 0.05 if parts[1] == "1" else 0.03
+            candidates.append((tri, score + bonus))
+
+    if not candidates:
+        return top
+
+    seen = set()
+    ranked = []
+    for tri, score in sorted(candidates, key=lambda x: (x[1], x[0]), reverse=True):
+        if tri in seen:
+            continue
+        seen.add(tri)
+        ranked.append((tri, score))
+
+    chosen = ""
+    for tri, _score in ranked:
+        if tri not in top:
+            chosen = tri
+            break
+    if not chosen:
+        return top
+
+    replaced = top[:]
+    replace_idx = len(replaced) - 1
+    for idx in range(len(replaced) - 1, -1, -1):
+        tri = replaced[idx]
+        parts = tri.split("-")
+        if len(parts) != 3:
+            continue
+        if "1" not in parts:
+            replace_idx = idx
+            break
+
+    replaced[replace_idx] = chosen
+
+    dedup = []
+    for tri in replaced:
+        if tri not in dedup:
+            dedup.append(tri)
+        if len(dedup) >= 6:
+            break
+
+    log(f"[lane1_support_keep] chosen={chosen} base_hold={base_hold_strength}")
+    return dedup
+
+
 def generate_top_triplets(
     venue,
     base_selection,
@@ -3330,6 +3487,7 @@ def generate_top_triplets(
     scenario_material=None,
     base_hold_strength=0.0,
     signal_metrics=None,
+    base_info=None,
 ):
     role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
     scenario_material = scenario_material or build_turn_scenario_material(
@@ -3417,6 +3575,17 @@ def generate_top_triplets(
     if signal_strength >= 0.30:
         top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
     top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
+    top = ensure_lane1_support_triplet(
+        top,
+        scored,
+        base_triplets,
+        base_info=base_info,
+        exhibition_info=exhibition_info,
+        foot_material=foot_material,
+        role_maps=role_maps,
+        signal_metrics=signal_metrics,
+        base_hold_strength=base_hold_strength,
+    )
 
     min_base_keep = 1
     if float(base_hold_strength or 0) >= 0.18 or signal_strength <= 0.28:
@@ -3443,7 +3612,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore")
+    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_timeheavy_settle_restore")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -3703,6 +3872,7 @@ def build_candidates():
             scenario_material=scenario_material,
             base_hold_strength=base_hold_strength,
             signal_metrics=signal_metrics,
+            base_info=base_info,
         )
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
