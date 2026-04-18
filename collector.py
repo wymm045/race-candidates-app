@@ -379,15 +379,6 @@ def normalize_race_no_value(race_no):
         return int(m.group(1)) if m else 0
 
 
-def parse_base_map_race_key(race_key):
-    s = str(race_key or "").strip()
-    if "|" not in s:
-        return "", 0
-    venue, race_no_text = s.split("|", 1)
-    race_no = normalize_race_no_value(race_no_text)
-    return venue.strip(), race_no
-
-
 def is_exhibition_time_value(val):
     return isinstance(val, (int, float)) and 6.2 <= float(val) <= 8.5
 
@@ -3183,7 +3174,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy_settlelight")
+    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy_settle_restore")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -3201,50 +3192,56 @@ def build_candidates():
         key = (row["venue"], row["race_no"])
         if key not in dedup:
             dedup[key] = row
+    rows = list(dedup.values())
+
+    base_keys = set(base_map.keys())
+    filtered_by_base = []
+    existing_row_keys = set()
+    for row in rows:
+        race_key = f"{row['venue']}|{row['race_no']}R"
+        if race_key in base_keys:
+            filtered_by_base.append(row)
+            existing_row_keys.add((row["venue"], int(row["race_no"])))
+    rows = filtered_by_base
 
     extra_settle_seed = 0
     for race_key, base_info in base_map.items():
-        venue, race_no = parse_base_map_race_key(race_key)
-        if not venue or not race_no:
-            continue
-        key = (venue, race_no)
-        if key in dedup:
-            continue
-        if not is_settle_pending(base_info):
+        try:
+            venue, race_no_text = str(race_key).split("|", 1)
+        except Exception:
             continue
 
-        deadline = str(base_info.get("time") or "").strip()
-        if not deadline or not is_recent_past_race(deadline):
+        race_no = normalize_race_no_value(race_no_text)
+        if not venue or race_no <= 0:
+            continue
+        if (venue, race_no) in existing_row_keys:
+            continue
+
+        pending_settle = is_settle_pending(base_info)
+        base_time = str(base_info.get("time") or "").strip()
+        if not pending_settle or not is_recent_past_race(base_time):
             continue
 
         jcd = NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
 
-        dedup[key] = {
+        rows.append({
             "venue": venue,
             "jcd": jcd,
             "race_no": race_no,
-            "selection": str(base_info.get("final_ai_selection") or base_info.get("base_ai_selection") or "").strip(),
-            "time": deadline,
-        }
+            "selection": "",
+            "time": base_time,
+        })
+        existing_row_keys.add((venue, race_no))
         extra_settle_seed += 1
 
-    rows = list(dedup.values())
-    log(f"[dedup_summary] count={len(rows)} extra_settle_seed={extra_settle_seed}")
-
-    base_keys = set(base_map.keys())
-    filtered_by_base = []
-    for row in rows:
-        race_key = f"{row['venue']}|{row['race_no']}R"
-        if race_key in base_keys:
-            filtered_by_base.append(row)
-    rows = filtered_by_base
+    log(f"[dedup_summary] count={len(dedup)} extra_settle_seed={extra_settle_seed}")
     log(f"[base_match_summary] count={len(rows)}")
 
     needed_jcds = set()
     for row in rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(row["venue"], "")
         if jcd:
             needed_jcds.add(jcd)
 
@@ -3257,15 +3254,15 @@ def build_candidates():
     for row in rows:
         venue = row["venue"]
         race_no = row["race_no"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
 
-        deadline = deadlines_cache.get(jcd, {}).get(race_no, "") or str(row.get("time") or "").strip()
-        row["time"] = deadline
-
         race_key = f"{venue}|{race_no}R"
         base_info = base_map.get(race_key) or {}
+        deadline = str(row.get("time") or "").strip() or str(base_info.get("time") or "").strip() or deadlines_cache.get(jcd, {}).get(race_no, "")
+        row["time"] = deadline
+
         pending_settle = is_settle_pending(base_info)
 
         if is_target_deadline(deadline):
@@ -3288,13 +3285,13 @@ def build_candidates():
     for row in latest_rows:
         venue = row["venue"]
         race_no = row["race_no"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if jcd:
             live_keys.add((jcd, race_no))
     for row in settle_rows:
         venue = row["venue"]
         race_no = row["race_no"]
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if jcd:
             settle_keys.add((jcd, race_no))
 
@@ -3312,7 +3309,7 @@ def build_candidates():
         venue = row["venue"]
         race_no = row["race_no"]
         selection_from_rating_page = row.get("selection", "")
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         deadline = row.get("time", "")
 
         race_key = f"{venue}|{race_no}R"
