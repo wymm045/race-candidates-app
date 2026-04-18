@@ -116,7 +116,7 @@ def is_past_race(time_str):
 
 
 RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "180"))
-RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "8"))
+RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "16"))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -3353,7 +3353,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore")
+    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore_priorityfix")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -3449,9 +3449,12 @@ def build_candidates():
         elif pending_settle and is_recent_past_race(deadline):
             settle_rows.append(row)
 
-    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "99:99"))
+    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
     if len(settle_rows) > RESULT_PENDING_LIMIT:
         settle_rows = settle_rows[:RESULT_PENDING_LIMIT]
+
+    if settle_rows:
+        log("[settle_priority] " + ", ".join([f"{r['venue']}{r['race_no']}@{r.get('time','')}" for r in settle_rows[:RESULT_PENDING_LIMIT]]))
 
     rows = latest_rows + settle_rows
     log(
