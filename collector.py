@@ -2479,6 +2479,102 @@ def build_pref_bonus_map(lanes, values):
     return out
 
 
+def get_exhibition_time_by_lane(exhibition_info, lane):
+    times = (exhibition_info or {}).get("times", []) or []
+    idx = int(lane) - 1
+    if idx < 0 or idx >= len(times):
+        return None
+    try:
+        v = float(times[idx])
+    except Exception:
+        return None
+    return v if is_exhibition_time_value(v) else None
+
+
+def calc_fastest_gap_by_lane(exhibition_info, lane):
+    target = get_exhibition_time_by_lane(exhibition_info, lane)
+    if target is None:
+        return None
+
+    float_times = []
+    for i, raw in enumerate((exhibition_info or {}).get("times", []) or [], start=1):
+        try:
+            v = float(raw)
+        except Exception:
+            continue
+        if is_exhibition_time_value(v):
+            float_times.append((i, v))
+
+    if len(float_times) < 2:
+        return None
+
+    sorted_times = sorted(float_times, key=lambda x: x[1])
+    if sorted_times[0][0] != int(lane):
+        return None
+    return round(sorted_times[1][1] - sorted_times[0][1], 3)
+
+
+def should_guard_center_head_shift(exhibition_info, foot_material=None, center_lane=3, escape_weight=0.0):
+    foot_material = foot_material or {}
+    course_map = foot_material.get("course_map", {}) or {}
+    entry_change = bool(foot_material.get("entry_change"))
+    entry_severity = float(foot_material.get("entry_severity", 0) or 0)
+    st_map = foot_material.get("st_map", {}) or {}
+
+    if int(center_lane) != 3:
+        return False
+    if float(escape_weight or 0) < 0.42:
+        return False
+    if course_map.get(1, 1) != 1:
+        return False
+    if entry_change or entry_severity >= 0.12:
+        return False
+
+    lane1_time = get_exhibition_time_by_lane(exhibition_info, 1)
+    lane3_time = get_exhibition_time_by_lane(exhibition_info, 3)
+    if lane1_time is None or lane3_time is None:
+        return False
+
+    ex_diff = abs(lane1_time - lane3_time)
+    if ex_diff > 0.05:
+        return False
+
+    st1 = st_map.get(1)
+    st3 = st_map.get(3)
+    if isinstance(st1, (int, float)) and isinstance(st3, (int, float)):
+        # 1 がそこまで悪くないなら、3 はまず相手側へ寄せる
+        if (float(st1) - float(st3)) > 0.03:
+            return False
+
+    return True
+
+
+def should_loosen_outer_head_attack(exhibition_info, foot_material=None, outer_lane=6):
+    foot_material = foot_material or {}
+    st_map = foot_material.get("st_map", {}) or {}
+    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
+    entry_change = bool(foot_material.get("entry_change"))
+    course_map = foot_material.get("course_map", {}) or {}
+    ranks = (exhibition_info or {}).get("ranks", {}) or {}
+
+    if int(outer_lane) != 6:
+        return False
+
+    # 6 は展示最速だけで頭まで押しすぎない。
+    strong_signal = False
+    st6 = st_map.get(6)
+    if isinstance(st6, (int, float)) and float(st6) <= 0.11:
+        strong_signal = True
+    if entry_change and (6 in pre_move_lanes or course_map.get(6, 6) < 6):
+        strong_signal = True
+
+    fastest_gap = calc_fastest_gap_by_lane(exhibition_info, 6)
+    if ranks.get(6) == 1 and fastest_gap is not None and fastest_gap >= 0.05:
+        strong_signal = True
+
+    return not strong_signal
+
+
 def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot_material=None, role_maps=None, day_trend_bias=None):
     weather_info = weather_info or {}
     foot_material = foot_material or {}
@@ -2653,34 +2749,76 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_center += 0.04
     if "江戸川外警戒" in venue_notes:
         weight_center += 0.05
+
+    center_head_guard = should_guard_center_head_shift(
+        exhibition_info,
+        foot_material=foot_material,
+        center_lane=center_lane,
+        escape_weight=weight_1,
+    )
+    if center_head_guard:
+        weight_center -= 0.14
+
     weight_center = clamp(weight_center, 0.0, 1.0)
 
     if weight_center >= 0.24:
         if center_lane == 3:
-            second_pref = [1, 2, 4, 5, 6]
-            third_pref = [2, 1, 4, 5, 6]
-            name = "3攻め注意"
+            if center_head_guard:
+                second_pref = [3, 2, 1, 4, 5]
+                third_pref = [3, 2, 1, 4, 5]
+                name = "3攻め注意(相手寄り)"
+                head_bonus = build_pref_bonus_map(
+                    [3, 1, 2, 5],
+                    [0.14, 0.08, 0.03, 0.01],
+                )
+                second_bonus = build_pref_bonus_map(
+                    second_pref[:5],
+                    [0.18, 0.12, 0.08, 0.04, 0.02],
+                )
+                third_bonus = build_pref_bonus_map(
+                    third_pref[:5],
+                    [0.14, 0.10, 0.08, 0.05, 0.03],
+                )
+            else:
+                second_pref = [1, 2, 4, 5, 6]
+                third_pref = [2, 1, 4, 5, 6]
+                name = "3攻め注意"
+                head_bonus = build_pref_bonus_map(
+                    [center_lane, 2, 1, 5],
+                    [0.25, 0.03, 0.02, 0.02],
+                )
+                second_bonus = build_pref_bonus_map(
+                    second_pref[:5],
+                    [0.13, 0.11, 0.07, 0.04, 0.02],
+                )
+                third_bonus = build_pref_bonus_map(
+                    third_pref[:5],
+                    [0.10, 0.09, 0.08, 0.05, 0.03],
+                )
         else:
             second_pref = [2, 3, 1, 5, 6]
             third_pref = [3, 2, 1, 5, 6]
             name = "4攻め注意"
+            head_bonus = build_pref_bonus_map(
+                [center_lane, 2, 1, 5],
+                [0.25, 0.03, 0.02, 0.02],
+            )
+            second_bonus = build_pref_bonus_map(
+                second_pref[:5],
+                [0.13, 0.11, 0.07, 0.04, 0.02],
+            )
+            third_bonus = build_pref_bonus_map(
+                third_pref[:5],
+                [0.10, 0.09, 0.08, 0.05, 0.03],
+            )
 
         scenarios.append({
             "name": name,
             "head_lane": center_lane,
             "weight": weight_center,
-            "head_bonus": build_pref_bonus_map(
-                [center_lane, 2, 1, 5],
-                [0.25, 0.03, 0.02, 0.02],
-            ),
-            "second_bonus": build_pref_bonus_map(
-                second_pref[:5],
-                [0.13, 0.11, 0.07, 0.04, 0.02],
-            ),
-            "third_bonus": build_pref_bonus_map(
-                third_pref[:5],
-                [0.10, 0.09, 0.08, 0.05, 0.03],
-            ),
+            "head_bonus": head_bonus,
+            "second_bonus": second_bonus,
+            "third_bonus": third_bonus,
         })
 
     outer_candidates = [5, 6]
@@ -2711,6 +2849,15 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_outer += 0.06
     if "大村イン寄り" in venue_notes:
         weight_outer -= 0.08
+
+    outer_head_guard = should_loosen_outer_head_attack(
+        exhibition_info,
+        foot_material=foot_material,
+        outer_lane=outer_lane,
+    )
+    if outer_head_guard:
+        weight_outer -= 0.16
+
     weight_outer = clamp(weight_outer, 0.0, 1.0)
 
     if weight_outer >= 0.24:
@@ -2718,27 +2865,57 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
             second_pref = [6, 1, 2, 4, 3]
             third_pref = [1, 6, 2, 3, 4]
             name = "5一撃注意"
+            head_bonus = build_pref_bonus_map(
+                [outer_lane, 6, 1],
+                [0.24, 0.04, 0.02],
+            )
+            second_bonus = build_pref_bonus_map(
+                second_pref[:5],
+                [0.14, 0.12, 0.09, 0.06, 0.03],
+            )
+            third_bonus = build_pref_bonus_map(
+                third_pref[:5],
+                [0.11, 0.10, 0.08, 0.05, 0.03],
+            )
         else:
-            second_pref = [5, 1, 2, 3, 4]
-            third_pref = [1, 5, 2, 3, 4]
-            name = "6一撃注意"
+            second_pref = [6, 5, 1, 2, 3]
+            third_pref = [6, 1, 5, 2, 3]
+            if outer_head_guard:
+                name = "6一撃注意(相手寄り)"
+                head_bonus = build_pref_bonus_map(
+                    [6, 5, 1],
+                    [0.14, 0.03, 0.04],
+                )
+                second_bonus = build_pref_bonus_map(
+                    second_pref[:5],
+                    [0.18, 0.12, 0.10, 0.06, 0.03],
+                )
+                third_bonus = build_pref_bonus_map(
+                    third_pref[:5],
+                    [0.15, 0.10, 0.09, 0.05, 0.03],
+                )
+            else:
+                name = "6一撃注意"
+                head_bonus = build_pref_bonus_map(
+                    [outer_lane, 5, 1],
+                    [0.24, 0.04, 0.02],
+                )
+                second_bonus = build_pref_bonus_map(
+                    [5, 1, 2, 3, 4],
+                    [0.14, 0.12, 0.09, 0.06, 0.03],
+                )
+                third_bonus = build_pref_bonus_map(
+                    [1, 5, 2, 3, 4],
+                    [0.11, 0.10, 0.08, 0.05, 0.03],
+                )
 
         scenarios.append({
             "name": name,
             "head_lane": outer_lane,
             "weight": weight_outer,
-            "head_bonus": build_pref_bonus_map(
-                [outer_lane, 5 if outer_lane == 6 else 6, 1],
-                [0.24, 0.04, 0.02],
-            ),
-            "second_bonus": build_pref_bonus_map(
-                second_pref[:5],
-                [0.14, 0.12, 0.09, 0.06, 0.03],
-            ),
-            "third_bonus": build_pref_bonus_map(
-                third_pref[:5],
-                [0.11, 0.10, 0.08, 0.05, 0.03],
-            ),
+            "head_bonus": head_bonus,
+            "second_bonus": second_bonus,
+            "third_bonus": third_bonus,
         })
 
     if course_order:
@@ -3165,16 +3342,18 @@ def generate_top_triplets(
         if len(dedup) >= 6:
             break
 
+    kept_base_count = len([tri for tri in dedup if tri in base_triplets])
     log(
-        f"[selection_regen_v10_5] venue={venue} "
+        f"[selection_regen_v10_22] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
+        f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
         f"base={base_triplets[:3]} final={dedup}"
     )
     return " / ".join(dedup)
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy_settle_restore")
+    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
