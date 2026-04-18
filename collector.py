@@ -134,10 +134,20 @@ def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
 def is_settle_pending(base_info):
     if not base_info:
         return False
-    settled_flag = int(base_info.get("settled_flag") or 0)
+
     result_text = str(base_info.get("result_trifecta_text") or "").strip()
     result_payout = int(base_info.get("result_trifecta_payout") or 0)
-    return settled_flag != 1 and result_text == "" and result_payout <= 0
+
+    # 3連単の払戻がまだ無いものは、結果文言が入っていても再取得対象に残す。
+    # これで「公式結果は入ったが公式払戻だけ未反映」の取りこぼしを次回回収できる。
+    if result_payout <= 0:
+        return True
+
+    # 結果文言も払戻も入っていれば取得済みとみなす。
+    if result_text:
+        return False
+
+    return False
 
 
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
