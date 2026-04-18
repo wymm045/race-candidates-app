@@ -3245,6 +3245,311 @@ def pick_best_triplet_for_head(scored_rows, head_lane, exclude_triplets=None):
     return ""
 
 
+def pick_best_triplet_by_condition(scored_rows, condition_fn, exclude_triplets=None):
+    exclude_triplets = set(exclude_triplets or [])
+    for tri, _score in scored_rows:
+        if tri in exclude_triplets:
+            continue
+        try:
+            a, b, c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+        if condition_fn(a, b, c, tri):
+            return tri
+    return ""
+
+
+def is_outer_head_too_loose(lane, exhibition_info=None, foot_material=None, lane_score_map=None):
+    """
+    5・6号艇は、展示だけで頭にしすぎないためのガード。
+    強い根拠がある時だけ頭候補として許可する。
+    """
+    lane = int(lane)
+    if lane not in {5, 6}:
+        return False
+
+    exhibition_info = exhibition_info or {}
+    foot_material = foot_material or {}
+    lane_score_map = lane_score_map or {}
+
+    ranks = exhibition_info.get("ranks", {}) or {}
+    st_map = foot_material.get("st_map", {}) or {}
+    pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
+    course_map = foot_material.get("course_map", {}) or {}
+    entry_change = bool(foot_material.get("entry_change"))
+
+    lane_score = float(lane_score_map.get(lane, 0) or 0)
+    rank = ranks.get(lane)
+    st = st_map.get(lane)
+    fastest_gap = calc_fastest_gap_by_lane(exhibition_info, lane)
+
+    strong_signal = False
+
+    if lane_score >= 0.30 and rank in {1, 2}:
+        strong_signal = True
+
+    if fastest_gap is not None and fastest_gap >= 0.05:
+        strong_signal = True
+
+    if isinstance(st, (int, float)) and float(st) <= 0.10:
+        strong_signal = True
+
+    if entry_change and (lane in pre_move_lanes or course_map.get(lane, lane) < lane):
+        strong_signal = True
+
+    return not strong_signal
+
+
+def should_keep_lane1_head_core(
+    base_info,
+    exhibition_info,
+    foot_material,
+    role_maps,
+    signal_metrics,
+    base_hold_strength=0.0,
+):
+    """
+    1号艇が大きく悪くない時は、本線3点の中に1頭を残す。
+    直前材料で外へ寄せすぎるのを防ぐ。
+    """
+    base_info = base_info or {}
+    exhibition_info = exhibition_info or {}
+    foot_material = foot_material or {}
+    role_maps = role_maps or {}
+    signal_metrics = signal_metrics or {}
+
+    course_map = foot_material.get("course_map", {}) or {}
+    if course_map.get(1, 1) != 1:
+        return False
+
+    ranks = exhibition_info.get("ranks", {}) or {}
+    st_map = foot_material.get("st_map", {}) or {}
+
+    rank1 = ranks.get(1)
+    st1 = st_map.get(1)
+    lane1_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+
+    lane_map = role_maps.get("lane", {}) or {}
+    head_map = role_maps.get("head", {}) or {}
+
+    lane1_eval = float(lane_map.get(1, 0) or 0)
+    head1 = float(head_map.get(1, 0) or 0)
+
+    class_support = lane_has_class_support(base_info, lane=1)
+    reason_support = lane_has_reason_support(base_info, lane=1)
+    morning_support = float(base_hold_strength or 0) >= 0.18
+
+    # かなり明確に悪い時は残さない
+    if (
+        lane1_gap >= 0.14
+        and rank1 is not None
+        and rank1 >= 5
+        and isinstance(st1, (int, float))
+        and float(st1) >= 0.18
+    ):
+        return False
+
+    if signal_strength >= 0.72 and lane1_gap >= 0.10 and head1 < -0.08 and not morning_support:
+        return False
+
+    # 残していい条件
+    if class_support or reason_support or morning_support:
+        return True
+
+    if rank1 in {1, 2, 3, 4}:
+        return True
+
+    if isinstance(st1, (int, float)) and float(st1) <= 0.16:
+        return True
+
+    if lane1_gap <= 0.05:
+        return True
+
+    if head1 >= 0.05 or lane1_eval >= 0.02:
+        return True
+
+    return False
+
+
+def build_core_cover_triplets(
+    initial_top,
+    scored_rows,
+    role_maps,
+    scenario_material,
+    signal_metrics,
+    base_triplets=None,
+    official_triplets=None,
+    base_info=None,
+    exhibition_info=None,
+    foot_material=None,
+    base_hold_strength=0.0,
+):
+    """
+    AI6点を「本線3点 + 相手入れ替え3点」に整える。
+    1着候補を広げすぎず、2・3着の取りこぼしを減らす。
+    """
+    base_triplets = base_triplets or []
+    official_triplets = official_triplets or []
+    exhibition_info = exhibition_info or {}
+    foot_material = foot_material or {}
+    signal_metrics = signal_metrics or {}
+
+    score_map = {tri: score for tri, score in scored_rows}
+    lane_score_map = role_maps.get("lane", {}) or {}
+    head_score = role_maps.get("head", {}) or {}
+
+    head_ranked = [lane for lane, _ in sorted(head_score.items(), key=lambda x: x[1], reverse=True)]
+    if not head_ranked:
+        return initial_top[:6]
+
+    signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
+    top_head = int(head_ranked[0])
+    second_head = int(head_ranked[1]) if len(head_ranked) >= 2 else top_head
+    head_gap = float(head_score.get(top_head, 0) or 0) - float(head_score.get(second_head, 0) or 0)
+
+    lane1_core = should_keep_lane1_head_core(
+        base_info,
+        exhibition_info,
+        foot_material,
+        role_maps,
+        signal_metrics,
+        base_hold_strength=base_hold_strength,
+    )
+
+    candidate_heads = []
+
+    if lane1_core:
+        candidate_heads.append(1)
+
+    candidate_heads.append(top_head)
+
+    for sc in (scenario_material.get("scenarios", []) or [])[:2]:
+        try:
+            lane = int(sc.get("head_lane") or 0)
+            weight = float(sc.get("weight", 0) or 0)
+        except Exception:
+            continue
+        if lane and weight >= 0.24:
+            candidate_heads.append(lane)
+
+    if len(head_ranked) >= 2 and (signal_strength >= 0.34 or head_gap <= 0.18):
+        candidate_heads.append(second_head)
+
+    # 重複削除
+    dedup_heads = []
+    for h in candidate_heads:
+        if h not in dedup_heads:
+            dedup_heads.append(h)
+
+    main = []
+
+    def add_main(tri):
+        if tri and tri in score_map and tri not in main:
+            main.append(tri)
+
+    # 本線3点：頭候補ごとに一番良い買い目を入れる
+    for head in dedup_heads:
+        tri = pick_best_triplet_by_condition(
+            scored_rows,
+            lambda a, b, c, t, head=head: (
+                a == head
+                and not is_outer_head_too_loose(a, exhibition_info, foot_material, lane_score_map)
+            ),
+            exclude_triplets=main,
+        )
+        add_main(tri)
+        if len(main) >= 3:
+            break
+
+    # 足りなければ、通常スコア上位から補充
+    for tri, _score in scored_rows:
+        if len(main) >= 3:
+            break
+        try:
+            a, _b, _c = [int(x) for x in tri.split("-")]
+        except Exception:
+            continue
+        if is_outer_head_too_loose(a, exhibition_info, foot_material, lane_score_map):
+            continue
+        add_main(tri)
+
+    # それでも足りなければ外頭も許可して補充
+    for tri, _score in scored_rows:
+        if len(main) >= 3:
+            break
+        add_main(tri)
+
+    main = main[:3]
+
+    selected = main[:]
+    cover = []
+
+    def add_cover(tri):
+        if not tri:
+            return
+        if tri not in score_map:
+            return
+        if tri in selected or tri in cover:
+            return
+        cover.append(tri)
+
+    # 1) 本線の2・3着入れ替えを優先
+    for tri in main:
+        try:
+            a, b, c = tri.split("-")
+        except Exception:
+            continue
+        swap = f"{a}-{c}-{b}"
+        add_cover(swap)
+
+    # 2) 公式上位2点はAI補正材料として保険に入れる
+    for tri in official_triplets[:2]:
+        add_cover(tri)
+
+    # 3) 朝/baseの上位も1〜2点残す
+    for tri in base_triplets[:3]:
+        add_cover(tri)
+
+    # 4) 本線と同じ頭で、2・3着違いを補充
+    main_heads = []
+    for tri in main:
+        try:
+            h = int(tri.split("-")[0])
+        except Exception:
+            continue
+        if h not in main_heads:
+            main_heads.append(h)
+
+    for head in main_heads:
+        for tri, _score in scored_rows:
+            if len(cover) >= 3:
+                break
+            try:
+                a, _b, _c = [int(x) for x in tri.split("-")]
+            except Exception:
+                continue
+            if a == head:
+                add_cover(tri)
+        if len(cover) >= 3:
+            break
+
+    # 5) 最後に通常スコア上位で埋める
+    for tri, _score in scored_rows:
+        if len(cover) >= 3:
+            break
+        add_cover(tri)
+
+    final = []
+    for tri in selected + cover:
+        if tri not in final:
+            final.append(tri)
+        if len(final) >= 6:
+            break
+
+    return final
+
+
 def enforce_head_diversity(top, scored_rows, scenario_material, scenario_factor):
     if not top:
         return top
@@ -3608,6 +3913,7 @@ def generate_top_triplets(
     base_hold_strength=0.0,
     signal_metrics=None,
     base_info=None,
+    official_selection="",
 ):
     role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
     scenario_material = scenario_material or build_turn_scenario_material(
@@ -3625,10 +3931,36 @@ def generate_top_triplets(
 
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
+
+    official_triplets = selection_triplets(official_selection)[:2]
+    official_weight_map = {}
+    for idx, tri in enumerate(official_triplets):
+        official_weight_map[tri] = 1.00 if idx == 0 else 0.82
+
     lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
 
-    base_weight_multiplier = clamp(0.52 - signal_strength * 0.20 + float(base_hold_strength or 0) * 0.20, 0.30, 0.62)
-    scenario_bonus_multiplier = clamp(0.68 + signal_strength * 0.28 - float(base_hold_strength or 0) * 0.08, 0.64, 0.94)
+    base_weight_multiplier = clamp(
+        0.52 - signal_strength * 0.20 + float(base_hold_strength or 0) * 0.20,
+        0.30,
+        0.62,
+    )
+    scenario_bonus_multiplier = clamp(
+        0.68 + signal_strength * 0.28 - float(base_hold_strength or 0) * 0.08,
+        0.64,
+        0.94,
+    )
+
+    # 公式上位2点は「そのまま買う」ではなく、AIスコアの微補正として使う
+    official_weight_multiplier = clamp(0.24 + signal_strength * 0.08, 0.22, 0.34)
+
+    lane1_core_keep = should_keep_lane1_head_core(
+        base_info,
+        exhibition_info,
+        foot_material,
+        role_maps,
+        signal_metrics,
+        base_hold_strength=base_hold_strength,
+    )
 
     scored = []
     for a in range(1, 7):
@@ -3648,32 +3980,76 @@ def generate_top_triplets(
 
                 score += (lane_score_map.get(a, 0) - lane_score_map.get(b, 0)) * 0.08
 
+                # 5・6頭は強い根拠がない限り少し抑える
+                if is_outer_head_too_loose(a, exhibition_info, foot_material, lane_score_map):
+                    score -= 0.16 if a == 5 else 0.22
+
+                # 1号艇が大きく悪くない時は、頭候補として少し守る
+                if lane1_core_keep and a == 1:
+                    score += 0.08
+
                 if third_score.get(c, 0) < -0.22:
                     score -= 0.10
                 elif third_score.get(c, 0) > 0.18:
                     score += 0.04
 
                 score += base_weight_map.get(tri, 0) * base_weight_multiplier
-                score += scenario_bonus_for_triplet(tri, scenario_material, scenario_factor=scenario_factor) * scenario_bonus_multiplier
+                score += official_weight_map.get(tri, 0) * official_weight_multiplier
+                score += scenario_bonus_for_triplet(
+                    tri,
+                    scenario_material,
+                    scenario_factor=scenario_factor,
+                ) * scenario_bonus_multiplier
+
+                # 公式上位2点と頭・2着が重なる形は少しだけ上げる
+                for otri, ow in official_weight_map.items():
+                    try:
+                        oa, ob, oc = [int(x) for x in otri.split("-")]
+                    except Exception:
+                        continue
+
+                    if a == oa:
+                        score += 0.018 * ow
+                    if b == ob:
+                        score += 0.012 * ow
+                    if c == oc:
+                        score += 0.008 * ow
+                    if a == oa and b == ob:
+                        score += 0.035 * ow
 
                 if head_score.get(a, 0) < -0.18:
                     score -= 0.18
 
                 if a == lane_ranked[0]:
                     score += 0.05
-                elif a == lane_ranked[1]:
+                elif len(lane_ranked) >= 2 and a == lane_ranked[1]:
                     score += 0.03
 
                 scored.append((tri, round(score, 4)))
 
     scored.sort(key=lambda x: (x[1], x[0]), reverse=True)
 
-    top = []
+    initial_top = []
     for tri, _score in scored:
-        if tri not in top:
-            top.append(tri)
-        if len(top) >= 6:
+        if tri not in initial_top:
+            initial_top.append(tri)
+        if len(initial_top) >= 6:
             break
+
+    # v10.24: AI6点を「本線3点 + 相手入れ替え3点」に再構成
+    top = build_core_cover_triplets(
+        initial_top,
+        scored,
+        role_maps,
+        scenario_material,
+        signal_metrics,
+        base_triplets=base_triplets,
+        official_triplets=official_triplets,
+        base_info=base_info,
+        exhibition_info=exhibition_info,
+        foot_material=foot_material,
+        base_hold_strength=base_hold_strength,
+    )
 
     if base_triplets:
         has_base = any(tri in base_triplets[:3] for tri in top)
@@ -3694,7 +4070,9 @@ def generate_top_triplets(
 
     if signal_strength >= 0.30:
         top = enforce_head_diversity(top, scored, scenario_material, scenario_factor)
+
     top = add_basic_form_triplets(top, scored, role_maps, exhibition_info, base_triplets=base_triplets)
+
     top = ensure_lane1_support_triplet(
         top,
         scored,
@@ -3712,6 +4090,7 @@ def generate_top_triplets(
         min_base_keep = 2
     if (float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80) or signal_strength <= 0.18:
         min_base_keep = 3
+
     top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
     dedup = []
@@ -3722,17 +4101,20 @@ def generate_top_triplets(
             break
 
     kept_base_count = len([tri for tri in dedup if tri in base_triplets])
+    kept_official_count = len([tri for tri in dedup if tri in official_triplets])
+
     log(
-        f"[selection_regen_v10_22] venue={venue} "
+        f"[selection_regen_v10_24_core_cover] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
-        f"base={base_triplets[:3]} final={dedup}"
+        f"official_keep={kept_official_count}/{len(official_triplets)} "
+        f"base={base_triplets[:3]} official={official_triplets} final={dedup}"
     )
+
     return " / ".join(dedup)
 
-
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_cron_safe_3digit_fix")
+    log("[collector_version] collector_latest_rankgate_v10_24_core_cover_ai")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4020,6 +4402,7 @@ def build_candidates():
             base_hold_strength=base_hold_strength,
             signal_metrics=signal_metrics,
             base_info=base_info,
+            official_selection=selection_from_rating_page,
         )
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
