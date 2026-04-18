@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone, timedelta
 import os
 import re
@@ -121,6 +120,12 @@ def is_past_race(time_str):
 # 実際の取得件数は RESULT_PENDING_LIMIT で絞るので重くなりすぎない。
 RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "480"))
 RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
+
+# DBに誤った公式結果/払戻が入った時だけ使う修復モード。
+# この修復専用ファイルではデフォルトON。通常運用に戻す時は RESULT_REPAIR_MODE=0 にするか通常版へ戻す。
+RESULT_REPAIR_MODE = os.environ.get("RESULT_REPAIR_MODE", "1").strip() == "1"
+RESULT_REPAIR_LOOKBACK_MINUTES = int(os.environ.get("RESULT_REPAIR_LOOKBACK_MINUTES", "720"))
+RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "120"))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -1067,89 +1072,107 @@ def parse_kimarite_from_text(text):
 
 
 def parse_payout_from_text(text):
+    """
+    3連単の払戻を安全寄りに拾う。
+    空白除去で「¥660 1人気」→「6601」のように連結する誤取得を避ける。
+    """
     s = str(text or "")
     if not s:
         return 0
 
+    normalized = re.sub(r"[ \t\r\f\v]+", " ", s)
     compact = re.sub(r"\s+", "", s)
 
     def to_int(num_text):
         try:
-            return int(str(num_text).replace(",", ""))
+            return int(str(num_text).replace(",", "").replace(" ", ""))
         except Exception:
             return 0
 
     def valid_money(val):
         return 100 <= int(val or 0) <= 5000000
 
-    # まず 3連単 / 三連単 の近くにある払戻を最優先で拾う
-    targeted_patterns = [
-        r"(?:3連単|三連単)[^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
-        r"(?:払戻金|払戻|払戻金額)[^0-9]{0,20}(?:3連単|三連単)[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
-        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
-    ]
-    for pat in targeted_patterns:
-        m = re.search(pat, compact, re.I)
-        if m:
+    def split_money_and_popularity(digits):
+        digits = re.sub(r"\D", "", str(digits or ""))
+        if len(digits) < 4:
+            return 0
+        candidates = []
+        for pop_len in (1, 2, 3):
+            if len(digits) <= pop_len:
+                continue
+            money = int(digits[:-pop_len])
+            pop = int(digits[-pop_len:])
+            if 1 <= pop <= 120 and valid_money(money):
+                candidates.append((pop_len, money))
+        if not candidates:
+            return 0
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
+
+    # compactで「¥6601人気」になったケースだけ救済
+    for m in re.finditer(r"[¥￥]([0-9]{4,9})人気", compact):
+        val = split_money_and_popularity(m.group(1))
+        if valid_money(val):
+            return val
+
+    # 通貨記号/円つきは空白を残した文字列で見る
+    for pat in [
+        r"[¥￥]\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?![0-9])",
+        r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\s*円(?![0-9])",
+    ]:
+        for m in re.finditer(pat, normalized):
             val = to_int(m.group(1))
             if valid_money(val):
                 return val
 
-    # 「1-4-2 6,740円」「1-4-2 6740 12人気」のような形も拾う
-    triplet_then_money_patterns = [
-        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
-        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?[0-9]{1,2}人気",
-    ]
-    for pat in triplet_then_money_patterns:
-        m = re.search(pat, compact, re.I)
-        if m:
-            val = to_int(m.group(4))
-            if valid_money(val):
-                return val
-
-    # 行単位で 3連単 を含むところの数値を優先
+    # 3連単の行・セルだけを対象にする
     line_candidates = []
     for raw_line in s.splitlines():
-        line = re.sub(r"\s+", "", raw_line)
-        if "3連単" not in line and "三連単" not in line and not parse_result_triplet_from_text(line):
+        line = re.sub(r"[ \t\r\f\v]+", " ", raw_line).strip()
+        if not line:
+            continue
+        has_context = (
+            "3連単" in line
+            or "三連単" in line
+            or "組番" in line
+            or bool(parse_result_triplet_from_text(line))
+        )
+        if not has_context:
             continue
 
         for pat in [
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})人気",
-            r"¥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-            r"￥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?![0-9])",
+            r"[¥￥]\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?![0-9])",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\s*円(?![0-9])",
         ]:
             for m in re.finditer(pat, line):
                 val = to_int(m.group(1))
                 if valid_money(val):
                     line_candidates.append(val)
-    if line_candidates:
-        return max(line_candidates)
 
-    # 明示的な通貨表記
-    explicit_money = []
-    for pat in [
-        r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
-        r"¥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-        r"￥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-    ]:
-        for m in re.finditer(pat, compact, re.I):
+        tri_match = re.search(r"[1-6]\s*[-=]\s*[1-6]\s*[-=]\s*[1-6](.*)$", line)
+        if tri_match:
+            tail = tri_match.group(1)
+            for m in re.finditer(r"(?:[¥￥]\s*)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?:\s*円)?(?!\s*人気)(?![0-9])", tail):
+                val = to_int(m.group(1))
+                if valid_money(val):
+                    line_candidates.append(val)
+
+    if line_candidates:
+        return line_candidates[0]
+
+    # 表セル結合の「3連単 1-2-3 660 1人気」型
+    if ("3連単" in normalized or "三連単" in normalized or "組番" in normalized or parse_result_triplet_from_text(normalized)):
+        m = re.search(
+            r"[1-6]\s*[-=]\s*[1-6]\s*[-=]\s*[1-6]\s+(?:[¥￥]\s*)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})(?:\s*円)?(?:\s+[0-9]{1,3}\s*人気)?",
+            normalized,
+        )
+        if m:
             val = to_int(m.group(1))
             if valid_money(val):
-                explicit_money.append(val)
-    if explicit_money:
-        return max(explicit_money)
+                return val
 
-    # 最後の保険: 4桁以上の数値を候補にする（レース番号や人気を避ける）
-    loose_candidates = []
-    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})", compact):
-        val = to_int(m.group(1))
-        if valid_money(val):
-            loose_candidates.append(val)
-
-    return max(loose_candidates) if loose_candidates else 0
+    # 裸の4桁以上は誤取得しやすいので拾わない
+    return 0
 
 
 def parse_result_triplet_from_cells(cell_texts):
@@ -1297,14 +1320,14 @@ def parse_resultlist_for_jcd(jcd):
                 "second": b,
                 "third": c,
                 "kimarite": parse_kimarite_from_text(compact_line),
-                "trifecta_payout": parse_payout_from_text(compact_line),
+                "trifecta_payout": parse_payout_from_text(line),
             }
 
         kim = parse_kimarite_from_text(compact_line)
         if kim and current_race_no in results and not results[current_race_no].get("kimarite"):
             results[current_race_no]["kimarite"] = kim
 
-        pay = parse_payout_from_text(compact_line)
+        pay = parse_payout_from_text(line)
         if pay and current_race_no in results and pay > int(results[current_race_no].get("trifecta_payout") or 0):
             results[current_race_no]["trifecta_payout"] = pay
 
@@ -1318,7 +1341,7 @@ def parse_resultlist_for_jcd(jcd):
             continue
         chunk = m.group(1)
         tri = parse_result_triplet_from_text(chunk)
-        pay = parse_payout_from_text(chunk)
+        pay = 0
         kim = parse_kimarite_from_text(chunk)
 
         if race_no in results:
@@ -3709,12 +3732,14 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_payout_priority_3digit_fix")
+    log("[collector_version] collector_latest_rankgate_v10_23_result_repair_safe_payout")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
         f"RESULT_LOOKBACK_MINUTES={RESULT_LOOKBACK_MINUTES} "
-        f"RESULT_PENDING_LIMIT={RESULT_PENDING_LIMIT}"
+        f"RESULT_PENDING_LIMIT={RESULT_PENDING_LIMIT} "
+        f"RESULT_REPAIR_MODE={RESULT_REPAIR_MODE} "
+        f"RESULT_REPAIR_LOOKBACK_MINUTES={RESULT_REPAIR_LOOKBACK_MINUTES}"
     )
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -3754,7 +3779,11 @@ def build_candidates():
 
         pending_settle = is_settle_pending(base_info)
         base_time = str(base_info.get("time") or "").strip()
-        if not pending_settle or not is_recent_past_race(base_time):
+        repair_target = RESULT_REPAIR_MODE and is_recent_past_race(
+            base_time,
+            lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
+        )
+        if not ((pending_settle and is_recent_past_race(base_time)) or repair_target):
             continue
 
         jcd = NAME_JCD_MAP.get(venue, "")
@@ -3799,17 +3828,22 @@ def build_candidates():
         row["time"] = deadline
 
         pending_settle = is_settle_pending(base_info)
+        repair_target = RESULT_REPAIR_MODE and is_recent_past_race(
+            deadline,
+            lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
+        )
 
         if is_target_deadline(deadline):
             latest_rows.append(row)
-        elif pending_settle and is_recent_past_race(deadline):
+        elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
             settle_rows.append(row)
 
     # 締切後の結果反映は、新しく締切を過ぎたレースから優先する
-    # これで、直近の締切後レースが古いレースに押し出されて未反映になるのを防ぐ。
+    # 修復モードでは、既に誤結果/誤払戻が入っている可能性があるので多めに再確認する
     settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
-    if len(settle_rows) > RESULT_PENDING_LIMIT:
-        settle_rows = settle_rows[:RESULT_PENDING_LIMIT]
+    effective_pending_limit = RESULT_REPAIR_LIMIT if RESULT_REPAIR_MODE else RESULT_PENDING_LIMIT
+    if len(settle_rows) > effective_pending_limit:
+        settle_rows = settle_rows[:effective_pending_limit]
 
     if settle_rows:
         log(
@@ -3851,7 +3885,10 @@ def build_candidates():
     payout_fallback_keys = []
     for key in sorted(settle_keys):
         info = day_result_cache.get(key) or {}
-        if str(info.get("triplet") or "").strip() and int(info.get("trifecta_payout") or 0) <= 0:
+        # 修復モードでは、すでに払戻が入っていても個別公式結果ページで再確認して上書き候補にする。
+        if RESULT_REPAIR_MODE:
+            payout_fallback_keys.append(key)
+        elif str(info.get("triplet") or "").strip() and int(info.get("trifecta_payout") or 0) <= 0:
             payout_fallback_keys.append(key)
 
     if payout_fallback_keys:
@@ -3862,11 +3899,11 @@ def build_candidates():
         result_page_cache = fetch_raceresult_parallel(payout_fallback_keys)
         for key, info in result_page_cache.items():
             merged = dict(day_result_cache.get(key) or {})
-            if not str(merged.get("triplet") or "").strip() and str(info.get("triplet") or "").strip():
+            if (RESULT_REPAIR_MODE or not str(merged.get("triplet") or "").strip()) and str(info.get("triplet") or "").strip():
                 merged["triplet"] = str(info.get("triplet") or "").strip()
-            if int(merged.get("trifecta_payout") or 0) <= 0 and int(info.get("trifecta_payout") or 0) > 0:
+            if (RESULT_REPAIR_MODE or int(merged.get("trifecta_payout") or 0) <= 0) and int(info.get("trifecta_payout") or 0) > 0:
                 merged["trifecta_payout"] = int(info.get("trifecta_payout") or 0)
-            if not str(merged.get("kimarite") or "").strip() and str(info.get("kimarite") or "").strip():
+            if (RESULT_REPAIR_MODE or not str(merged.get("kimarite") or "").strip()) and str(info.get("kimarite") or "").strip():
                 merged["kimarite"] = str(info.get("kimarite") or "").strip()
             day_result_cache[key] = merged
 
@@ -3894,7 +3931,9 @@ def build_candidates():
         if not is_live_target:
             result_text = str(result_info.get("triplet") or "").strip()
             result_payout = int(result_info.get("trifecta_payout") or 0)
+            log(f"[settle_candidate] venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}")
             if not result_text and result_payout <= 0:
+                log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
                 continue
 
             candidate = {
