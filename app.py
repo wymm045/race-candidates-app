@@ -893,6 +893,160 @@ def build_selection_compare_data(official_text, ai_text):
         "overlap": overlap,
     }
 
+def get_triplet_head_lane(triplet):
+    try:
+        return int(str(triplet or "").split("-")[0])
+    except Exception:
+        return 0
+
+
+def is_close_to_official_core(ai_item, official_items):
+    ai = normalize_pick_text(ai_item)
+    if not ai:
+        return False
+    if ai in official_items:
+        return True
+    try:
+        a1, b1, _c1 = ai.split("-")
+    except Exception:
+        return False
+    for official in official_items:
+        official = normalize_pick_text(official)
+        try:
+            a2, b2, _c2 = official.split("-")
+        except Exception:
+            continue
+        if a1 == a2 and b1 == b2:
+            return True
+    return False
+
+
+def build_bet_guide_data(final_rank, ai_selection, official_selection):
+    rank = str(final_rank or "").strip()
+    ai_items = selection_items(ai_selection)
+    core_items = ai_items[:3]
+    official_top2 = selection_items(official_selection)[:2]
+
+    core_heads = [get_triplet_head_lane(x) for x in core_items]
+    has_lane1_head = any(h == 1 for h in core_heads)
+    has_inner_head = any(h in {1, 2, 3} for h in core_heads)
+    has_outer_head = any(h in {5, 6} for h in core_heads)
+    exact_overlap_count = len(set(core_items) & set(official_top2))
+    official_close = any(is_close_to_official_core(x, official_top2) for x in core_items)
+
+    conditions = [
+        ("AI本線3点に1号艇頭あり", has_lane1_head),
+        ("公式上位2点とAI本線が近い", official_close),
+        ("AI本線が内寄り中心", has_inner_head),
+        ("5・6号艇頭を強く買いすぎない", not has_outer_head),
+    ]
+
+    should_buy = False
+    recommended_count = 0
+    recommended_amount = 100
+    title = "見送り推奨"
+    tone = "skip"
+    recommend_text = "買わずに結果だけ確認"
+    memo = "条件が弱いので、無理に買わない。"
+
+    strong_conditions = has_lane1_head and official_close and not has_outer_head
+    light_conditions = has_inner_head and not has_outer_head
+
+    if rank == "買い強め":
+        should_buy = True
+        recommended_count = 3
+        if strong_conditions:
+            recommended_amount = 200
+            title = "200円候補"
+            tone = "strong"
+            recommend_text = "AI本線3点 × 200円候補"
+            memo = "1号艇頭・公式近さ・外頭リスクが揃う時だけ厚め。迷ったら100円。"
+        else:
+            recommended_amount = 100
+            title = "買い強めだけど100円推奨"
+            tone = "buy"
+            recommend_text = "AI本線3点 × 100円"
+            memo = "買い強めでも条件不足なら200円にしない。"
+    elif rank == "買い":
+        should_buy = True
+        recommended_count = 3
+        recommended_amount = 100
+        title = "通常買い"
+        tone = "buy"
+        recommend_text = "AI本線3点 × 100円"
+        memo = "基本は本線3点だけ。全6点に広げない。"
+    elif rank == "様子見":
+        if strong_conditions or (official_close and light_conditions):
+            should_buy = True
+            recommended_count = 3
+            recommended_amount = 100
+            title = "条件付きで買ってもいい"
+            tone = "watch"
+            recommend_text = "AI本線3点 × 100円まで"
+            memo = "様子見は全部買わない。条件が揃う時だけ100円。"
+        else:
+            title = "様子見は原則買わない"
+            recommend_text = "買わずに検証"
+            memo = "様子見は取り逃し確認用。条件不足なら見送り。"
+    else:
+        title = "見送り推奨"
+        recommend_text = "買わない"
+        memo = "見送り寄りは買わない。"
+
+    return {
+        "ai_core_items": core_items,
+        "official_top2": official_top2,
+        "conditions": conditions,
+        "should_buy": should_buy,
+        "recommended_count": recommended_count,
+        "recommended_amount": recommended_amount,
+        "title": title,
+        "tone": tone,
+        "recommend_text": recommend_text,
+        "memo": memo,
+    }
+
+
+def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_key=""):
+    guide = build_bet_guide_data(final_rank, ai_selection, official_selection)
+    condition_html = ""
+    for label, ok in guide["conditions"]:
+        cls = "guide-check guide-check-ok" if ok else "guide-check guide-check-ng"
+        mark = "OK" if ok else "NG"
+        condition_html += f'<span class="{cls}"><span class="guide-check-mark">{mark}</span>{label}</span>'
+
+    if guide["ai_core_items"]:
+        core_html = "".join([f'<span class="guide-pick-chip">{render_colored_pick_html(x)}</span>' for x in guide["ai_core_items"]])
+    else:
+        core_html = '<span class="selection-chip-empty">AI本線未取得</span>'
+
+    if guide["official_top2"]:
+        official_html = "".join([f'<span class="guide-pick-chip guide-pick-official">{render_colored_pick_html(x)}</span>' for x in guide["official_top2"]])
+    else:
+        official_html = '<span class="selection-chip-empty">公式上位未取得</span>'
+
+    action_label = "推奨を反映" if guide["should_buy"] else "推奨どおり見送り"
+
+    return f'''
+    <div class="bet-guide-box bet-guide-{guide['tone']}">
+      <div class="bet-guide-head">
+        <div>
+          <div class="bet-guide-kicker">買い方メモ</div>
+          <div class="bet-guide-title">{guide['title']}</div>
+        </div>
+        <div class="bet-guide-recommend">{guide['recommend_text']}</div>
+      </div>
+      <div class="bet-guide-body">
+        <div class="bet-guide-row"><span class="bet-guide-label">AI本線3点</span><span class="bet-guide-picks">{core_html}</span></div>
+        <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
+        <div class="guide-check-wrap">{condition_html}</div>
+        <div class="bet-guide-memo">{guide['memo']}</div>
+      </div>
+      <button type="button" class="quick-select-btn quick-select-recommend" onclick="applyRecommendedBet('{race_id_key}', {guide['recommended_count']}, {guide['recommended_amount']})">{action_label}</button>
+    </div>
+    '''
+
+
 
 def render_selection_column(
     own_items,
@@ -1504,6 +1658,12 @@ def build_card_html(r, is_history=False, race_date=""):
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
     form_id = f"race-form-{race_id_key}"
+    bet_guide_html = render_bet_guide_html(
+        r.get("final_rank"),
+        display_ai_selection,
+        r.get("selection", ""),
+        race_id_key=race_id_key,
+    )
 
     top_checkbox = ""
     if is_history:
@@ -1559,6 +1719,8 @@ def build_card_html(r, is_history=False, race_date=""):
         <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
       </div>
 
+      {bet_guide_html}
+
       <div class="info-box">
         <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
@@ -1588,9 +1750,9 @@ def build_card_html(r, is_history=False, race_date=""):
               </select>
             </div>
             <div class="bet-control-item bet-control-hint">
-              <div>おすすめ</div>
-              <strong>上位3点 × 100円</strong><br>
-              <span>良さそうな買い強めだけ200円</span>
+              <div>基本ルール</div>
+              <strong>AI本線3点中心</strong><br>
+              <span>200円は条件が揃う買い強めだけ</span>
             </div>
           </div>
         </div>
@@ -2098,6 +2260,28 @@ def render_layout(title, body_html):
       .selection-section-title{font-size:12px;font-weight:900;color:#344054;margin-bottom:7px}
       .selection-choice-core .selection-choice-body{border-width:2px}
       .selection-choice-cover .selection-choice-body{opacity:.92}
+      .bet-guide-box{margin-top:12px;border-radius:16px;border:1px solid #eaecf0;padding:12px;background:#fff;box-shadow:0 4px 14px rgba(0,0,0,.04)}
+      .bet-guide-strong{background:linear-gradient(180deg,#ecfdf3,#ffffff);border-color:#abefc6}
+      .bet-guide-buy{background:linear-gradient(180deg,#eef4ff,#ffffff);border-color:#cfe0ff}
+      .bet-guide-watch{background:linear-gradient(180deg,#fff6e5,#ffffff);border-color:#f5deb3}
+      .bet-guide-skip{background:linear-gradient(180deg,#f8fafc,#ffffff);border-color:#eaecf0}
+      .bet-guide-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+      .bet-guide-kicker{font-size:12px;color:#667085;font-weight:800}
+      .bet-guide-title{font-size:18px;font-weight:900;color:#101828;margin-top:2px}
+      .bet-guide-recommend{background:#101828;color:#fff;border-radius:999px;padding:8px 12px;font-size:13px;font-weight:900;white-space:nowrap}
+      .bet-guide-body{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+      .bet-guide-row{display:grid;grid-template-columns:92px 1fr;gap:8px;align-items:center}
+      .bet-guide-label{font-size:12px;color:#667085;font-weight:800}
+      .bet-guide-picks{display:flex;flex-wrap:wrap;gap:6px}
+      .guide-pick-chip{display:inline-flex;align-items:center;border:1px solid #eaecf0;background:#fff;border-radius:999px;padding:5px 7px}
+      .guide-pick-official{background:#eef4ff;border-color:#cfe0ff}
+      .guide-check-wrap{display:flex;flex-wrap:wrap;gap:6px}
+      .guide-check{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:6px 9px;font-size:12px;font-weight:800;border:1px solid}
+      .guide-check-ok{background:#ecfdf3;border-color:#abefc6;color:#027a48}
+      .guide-check-ng{background:#f2f4f7;border-color:#d0d5dd;color:#667085}
+      .guide-check-mark{font-size:10px;font-weight:900}
+      .bet-guide-memo{font-size:13px;color:#475467;font-weight:700;line-height:1.5}
+      .quick-select-recommend{margin-top:10px;background:#101828;color:#fff;width:100%}
       .bet-control-box{margin:0 0 12px;padding:12px;border-radius:14px;background:#f8fafc;border:1px solid #eaecf0}
       .bet-control-title{font-size:13px;font-weight:900;color:#344054;margin-bottom:8px}
       .bet-control-grid{display:grid;grid-template-columns:180px 1fr;gap:12px;align-items:end}
@@ -2347,6 +2531,21 @@ def render_layout(title, body_html):
         getRaceCheckboxes(raceId).forEach(el => { el.checked = false; });
         const hidden = document.getElementById('selected-hidden-' + raceId);
         if(hidden){ hidden.value = ''; }
+        updateSelectionSummary(raceId, false);
+      }
+      function setAmountPerPoint(raceId, amount){
+        const select = document.getElementById('amount-select-' + raceId);
+        if(select){ select.value = String(amount || 100); }
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        if(formEl){ formEl.setAttribute('data-amount', String(amount || 100)); }
+      }
+      function applyRecommendedBet(raceId, count, amount){
+        setAmountPerPoint(raceId, amount || 100);
+        if(parseInt(count || 0, 10) <= 0){
+          clearPickSelection(raceId);
+          return;
+        }
+        selectTopPicks(raceId, parseInt(count, 10));
         updateSelectionSummary(raceId, false);
       }
       function updateAmountPerPoint(raceId){
