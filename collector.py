@@ -117,7 +117,7 @@ def is_past_race(time_str):
 
 
 RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "180"))
-RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "8"))
+RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -3612,7 +3612,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_timeheavy_settle_restore")
+    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_payout_priority_fix")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -3708,9 +3708,20 @@ def build_candidates():
         elif pending_settle and is_recent_past_race(deadline):
             settle_rows.append(row)
 
-    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "99:99"))
+    # 締切後の結果反映は、新しく締切を過ぎたレースから優先する
+    # これで、直近の締切後レースが古いレースに押し出されて未反映になるのを防ぐ。
+    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
     if len(settle_rows) > RESULT_PENDING_LIMIT:
         settle_rows = settle_rows[:RESULT_PENDING_LIMIT]
+
+    if settle_rows:
+        log(
+            "[settle_priority] "
+            + ", ".join([
+                f"{r.get('venue')}#{r.get('race_no')}@{r.get('time')}"
+                for r in settle_rows
+            ])
+        )
 
     rows = latest_rows + settle_rows
     log(
