@@ -44,6 +44,7 @@ RETRY_SLEEP_SEC = 0.8
 OFFICIAL_MAX_WORKERS = 3
 BEFOREINFO_MAX_WORKERS = 4
 RESULT_MAX_WORKERS = 4
+RESULT_PAGE_MAX_WORKERS = 4
 
 ONLY_UPCOMING_HOURS = int(os.environ.get("ONLY_UPCOMING_HOURS", "2"))
 SKIP_PAST_RACES = os.environ.get("SKIP_PAST_RACES", "1").strip() == "1"
@@ -116,7 +117,7 @@ def is_past_race(time_str):
 
 
 RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "180"))
-RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "16"))
+RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "8"))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -1075,50 +1076,77 @@ def parse_payout_from_text(text):
         except Exception:
             return 0
 
+    def valid_money(val):
+        return 100 <= int(val or 0) <= 5000000
+
     # まず 3連単 / 三連単 の近くにある払戻を最優先で拾う
     targeted_patterns = [
-        r"(?:3連単|三連単)[^0-9円]{0,30}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
-        r"(?:払戻金|払戻|払戻金額)[^0-9円]{0,20}(?:3連単|三連単)[^0-9円]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
-        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9円]{0,30}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+        r"(?:3連単|三連単)[^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
+        r"(?:払戻金|払戻|払戻金額)[^0-9]{0,20}(?:3連単|三連単)[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
+        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
     ]
     for pat in targeted_patterns:
         m = re.search(pat, compact, re.I)
         if m:
             val = to_int(m.group(1))
-            if val >= 100:
+            if valid_money(val):
                 return val
 
-    # 「結果 1-4-2 6,740円」のような形も拾う
-    triplet_then_yen = re.search(
-        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9円]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
-        compact,
-        re.I,
-    )
-    if triplet_then_yen:
-        val = to_int(triplet_then_yen.group(4))
-        if val >= 100:
-            return val
+    # 「1-4-2 6,740円」「1-4-2 6740 12人気」のような形も拾う
+    triplet_then_money_patterns = [
+        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
+        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?[0-9]{1,2}人気",
+    ]
+    for pat in triplet_then_money_patterns:
+        m = re.search(pat, compact, re.I)
+        if m:
+            val = to_int(m.group(4))
+            if valid_money(val):
+                return val
 
-    # 行単位で 3連単 を含むところがあれば、その行内の円表記を優先
+    # 行単位で 3連単 を含むところの数値を優先
     line_candidates = []
     for raw_line in s.splitlines():
         line = re.sub(r"\s+", "", raw_line)
-        if "3連単" in line or "三連単" in line:
-            for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", line):
+        if "3連単" not in line and "三連単" not in line and not parse_result_triplet_from_text(line):
+            continue
+
+        for pat in [
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})円",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})人気",
+            r"¥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
+            r"￥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?![0-9])",
+        ]:
+            for m in re.finditer(pat, line):
                 val = to_int(m.group(1))
-                if val >= 100:
+                if valid_money(val):
                     line_candidates.append(val)
     if line_candidates:
         return max(line_candidates)
 
-    # 最後の保険。複数払戻が混ざる時は大きい金額を優先
-    fallback = []
-    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", compact):
-        val = to_int(m.group(1))
-        if val >= 100:
-            fallback.append(val)
+    # 明示的な通貨表記
+    explicit_money = []
+    for pat in [
+        r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+        r"¥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
+        r"￥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
+    ]:
+        for m in re.finditer(pat, compact, re.I):
+            val = to_int(m.group(1))
+            if valid_money(val):
+                explicit_money.append(val)
+    if explicit_money:
+        return max(explicit_money)
 
-    return max(fallback) if fallback else 0
+    # 最後の保険: 4桁以上の数値を候補にする（レース番号や人気を避ける）
+    loose_candidates = []
+    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})", compact):
+        val = to_int(m.group(1))
+        if valid_money(val):
+            loose_candidates.append(val)
+
+    return max(loose_candidates) if loose_candidates else 0
 
 
 def parse_resultlist_for_jcd(jcd):
@@ -1256,6 +1284,68 @@ def fetch_day_results_parallel(venue_targets):
             jcd, venue_results = future.result()
             for race_no, info in (venue_results or {}).items():
                 results[(jcd, race_no)] = info
+    return results
+
+
+def parse_raceresult_for_key(jcd, race_no):
+    url = build_result_url(jcd, race_no)
+    try:
+        html = fetch_html(url, timeout=(6, 12), max_retries=2)
+    except Exception as e:
+        log(f"[raceresult_error] jcd={jcd} race_no={race_no} err={e}")
+        return (jcd, race_no), {}
+
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    lines = normalize_lines_from_soup(soup)
+
+    tri = parse_result_triplet_from_text(text)
+    pay = parse_payout_from_text(text)
+    kim = parse_kimarite_from_text(text)
+
+    if not tri:
+        for line in lines:
+            tri = parse_result_triplet_from_text(line)
+            if tri:
+                break
+
+    if pay <= 0:
+        for line in lines:
+            pay = parse_payout_from_text(line)
+            if pay > 0:
+                break
+
+    if not kim:
+        for line in lines:
+            kim = parse_kimarite_from_text(line)
+            if kim:
+                break
+
+    if not tri and pay <= 0:
+        log(f"[raceresult_empty] jcd={jcd} race_no={race_no}")
+        return (jcd, race_no), {}
+
+    out = {
+        "triplet": tri,
+        "kimarite": kim,
+        "trifecta_payout": int(pay or 0),
+    }
+    log(f"[raceresult_ok] jcd={jcd} race_no={race_no} triplet={tri} payout={int(pay or 0)}")
+    return (jcd, race_no), out
+
+
+def fetch_raceresult_parallel(keys):
+    results = {}
+    keys = sorted(set(keys))
+    if not keys:
+        return results
+
+    with ThreadPoolExecutor(max_workers=RESULT_PAGE_MAX_WORKERS) as ex:
+        futures = [ex.submit(parse_raceresult_for_key, jcd, race_no) for (jcd, race_no) in keys]
+        for future in as_completed(futures):
+            key, info = future.result()
+            if info:
+                results[key] = info
     return results
 
 
@@ -3353,7 +3443,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore_priorityfix")
+    log("[collector_version] collector_latest_rankgate_v10_22_tsu_fix_timeheavy_settle_restore")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -3449,12 +3539,9 @@ def build_candidates():
         elif pending_settle and is_recent_past_race(deadline):
             settle_rows.append(row)
 
-    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
+    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "99:99"))
     if len(settle_rows) > RESULT_PENDING_LIMIT:
         settle_rows = settle_rows[:RESULT_PENDING_LIMIT]
-
-    if settle_rows:
-        log("[settle_priority] " + ", ".join([f"{r['venue']}{r['race_no']}@{r.get('time','')}" for r in settle_rows[:RESULT_PENDING_LIMIT]]))
 
     rows = latest_rows + settle_rows
     log(
@@ -3484,6 +3571,28 @@ def build_candidates():
         venue_targets[jcd] = max(venue_targets.get(jcd, 0), int(race_no or 0))
     day_result_cache = fetch_day_results_parallel(venue_targets) if venue_targets else {}
 
+    payout_fallback_keys = []
+    for key in sorted(settle_keys):
+        info = day_result_cache.get(key) or {}
+        if str(info.get("triplet") or "").strip() and int(info.get("trifecta_payout") or 0) <= 0:
+            payout_fallback_keys.append(key)
+
+    if payout_fallback_keys:
+        log(
+            "[raceresult_fallback_targets] "
+            + ", ".join([f"{JCD_NAME_MAP.get(jcd, jcd)}{race_no}" for jcd, race_no in payout_fallback_keys])
+        )
+        result_page_cache = fetch_raceresult_parallel(payout_fallback_keys)
+        for key, info in result_page_cache.items():
+            merged = dict(day_result_cache.get(key) or {})
+            if not str(merged.get("triplet") or "").strip() and str(info.get("triplet") or "").strip():
+                merged["triplet"] = str(info.get("triplet") or "").strip()
+            if int(merged.get("trifecta_payout") or 0) <= 0 and int(info.get("trifecta_payout") or 0) > 0:
+                merged["trifecta_payout"] = int(info.get("trifecta_payout") or 0)
+            if not str(merged.get("kimarite") or "").strip() and str(info.get("kimarite") or "").strip():
+                merged["kimarite"] = str(info.get("kimarite") or "").strip()
+            day_result_cache[key] = merged
+
     results = []
     skipped_no_base = 0
 
@@ -3508,9 +3617,7 @@ def build_candidates():
         if not is_live_target:
             result_text = str(result_info.get("triplet") or "").strip()
             result_payout = int(result_info.get("trifecta_payout") or 0)
-            log(f"[settle_candidate] venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}")
             if not result_text and result_payout <= 0:
-                log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
                 continue
 
             candidate = {
