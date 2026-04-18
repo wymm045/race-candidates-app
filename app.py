@@ -110,7 +110,7 @@ END
 
 AUTO_PAYOUT_SQL = f"""
 CASE
-    WHEN {AUTO_HIT_SQL} = 1 THEN COALESCE(result_trifecta_payout, 0)
+    WHEN {AUTO_HIT_SQL} = 1 THEN CAST(ROUND(COALESCE(result_trifecta_payout, 0) * COALESCE(NULLIF(amount, 0), 100) / 100.0) AS INTEGER)
     ELSE 0
 END
 """
@@ -235,6 +235,36 @@ def yen(n):
         return "0円"
 
 
+def normalize_amount_per_point(value, default=100):
+    try:
+        v = int(str(value or "").replace("円", "").replace(",", "").strip())
+    except Exception:
+        v = int(default or 100)
+
+    # 基本は100円/200円。将来増やす時に備えて100円単位だけ許可。
+    if 100 <= v <= 5000 and v % 100 == 0:
+        return v
+    return int(default or 100)
+
+
+def scale_payout_by_amount(base_payout, amount_per_point):
+    try:
+        payout = int(base_payout or 0)
+    except Exception:
+        payout = 0
+    amount = normalize_amount_per_point(amount_per_point, 100)
+    return int(round(payout * amount / 100.0))
+
+
+def render_amount_options(current_amount):
+    current = normalize_amount_per_point(current_amount, 100)
+    options = ""
+    for value in [100, 200]:
+        selected = "selected" if value == current else ""
+        options += f'<option value="{value}" {selected}>{value}円</option>'
+    return options
+
+
 def signed_yen(n):
     try:
         v = int(n)
@@ -327,7 +357,7 @@ def get_selected_count_from_text(selection_text):
 
 
 def get_selected_total_amount(race):
-    return int(race.get("amount") or 0) * get_selected_count_from_text(
+    return normalize_amount_per_point(race.get("amount"), 100) * get_selected_count_from_text(
         race.get("purchased_selection_text", "")
     )
 
@@ -921,6 +951,73 @@ def render_selection_column(
     return f'<div class="selection-chip-grid compact-grid">{chips}</div>'
 
 
+def render_ai_selection_column(
+    ai_items,
+    overlap_items,
+    race_id_key="",
+    selected_items=None,
+    form_id="",
+):
+    if not ai_items:
+        return '<div class="selection-chip-empty">未取得</div>'
+
+    selected_items = {normalize_pick_text(x) for x in (selected_items or set())}
+    overlap_set = set(overlap_items)
+
+    def render_ai_chip(item, idx, role_class):
+        item_clean = normalize_pick_text(item)
+        chip_kind = "overlap" if item_clean in overlap_set else "ai"
+        checked = "checked" if item_clean in selected_items else ""
+        item_id = f"cmp-ai-{race_id_key}-{idx}"
+        return f"""
+        <label class="selection-choice-chip selection-choice-chip-{chip_kind} {role_class}" for="{item_id}">
+          <input
+            class="selection-choice-input"
+            type="checkbox"
+            id="{item_id}"
+            name="selected_ai"
+            value="{item_clean}"
+            data-pick-value="{item_clean}"
+            data-race-group="{race_id_key}"
+            form="{form_id}"
+            {checked}
+            onchange="syncSelectionValue(this, '{race_id_key}'); updateSelectionSummary('{race_id_key}', false)"
+          >
+          <span class="selection-choice-body selection-choice-body-{chip_kind}">{render_colored_pick_html(item_clean)}</span>
+        </label>
+        """
+
+    core_items = ai_items[:3]
+    cover_items = ai_items[3:6]
+
+    core_html = "".join([render_ai_chip(item, idx, "selection-choice-core") for idx, item in enumerate(core_items)])
+    cover_html = "".join([render_ai_chip(item, idx + 3, "selection-choice-cover") for idx, item in enumerate(cover_items)])
+
+    cover_block = ""
+    if cover_items:
+        cover_block = f"""
+        <div class="selection-section selection-section-cover">
+          <div class="selection-section-title">相手入れ替え・保険3点</div>
+          <div class="selection-chip-grid compact-grid">{cover_html}</div>
+        </div>
+        """
+
+    return f"""
+    <div class="ai-selection-block">
+      <div class="quick-select-row">
+        <button type="button" class="quick-select-btn quick-select-main" onclick="selectTopPicks('{race_id_key}', 3)">本線3点を選択</button>
+        <button type="button" class="quick-select-btn" onclick="selectTopPicks('{race_id_key}', 6)">全6点</button>
+        <button type="button" class="quick-select-btn quick-select-clear" onclick="clearPickSelection('{race_id_key}')">クリア</button>
+      </div>
+      <div class="selection-section selection-section-core">
+        <div class="selection-section-title">AI本線3点</div>
+        <div class="selection-chip-grid compact-grid">{core_html}</div>
+      </div>
+      {cover_block}
+    </div>
+    """
+
+
 def render_selection_compare_html(r, race_id_key):
     official_text = r.get("selection", "")
     ai_text = r.get("ai_selection", "")
@@ -929,11 +1026,9 @@ def render_selection_compare_html(r, race_id_key):
 
     data = build_selection_compare_data(official_text, ai_text)
 
-    ai_html = render_selection_column(
+    ai_html = render_ai_selection_column(
         data["ai_items"],
         data["overlap"],
-        "ai",
-        "未取得",
         race_id_key=race_id_key,
         selected_items=selected_items,
         form_id=form_id,
@@ -1055,12 +1150,13 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     return rows
 
 
-def update_race_result(race_id, selected_text, hit, payout, memo):
+def update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=100):
     ensure_db_initialized()
     selected_text = " / ".join(
         unique_preserve([normalize_pick_text(x) for x in selection_items(selected_text)])
     )
     purchased = 1 if selected_text else 0
+    amount_per_point = normalize_amount_per_point(amount_per_point, 100)
     if purchased == 0:
         hit = 0
         payout = 0
@@ -1068,14 +1164,14 @@ def update_race_result(race_id, selected_text, hit, payout, memo):
     conn = db_connect()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE races SET purchased = %s, purchased_selection_text = %s, hit = %s, payout = %s, memo = %s WHERE id = %s",
-        (purchased, selected_text, hit, payout, memo, race_id),
+        "UPDATE races SET purchased = %s, purchased_selection_text = %s, amount = %s, hit = %s, payout = %s, memo = %s WHERE id = %s",
+        (purchased, selected_text, amount_per_point, hit, payout, memo, race_id),
     )
     conn.commit()
     cur.close()
     conn.close()
     log(
-        f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} hit={hit} payout={payout} memo={memo}"
+        f"update_race_result race_id={race_id} purchased={purchased} selected={selected_text} amount={amount_per_point} hit={hit} payout={payout} memo={memo}"
     )
 
 
@@ -1332,8 +1428,9 @@ def build_card_html(r, is_history=False, race_date=""):
 
     result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
     result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+    amount_per_point = normalize_amount_per_point(r.get("amount"), 100)
     auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
-    auto_payout = result_trifecta_payout if auto_hit else 0
+    auto_payout = scale_payout_by_amount(result_trifecta_payout, amount_per_point) if auto_hit else 0
     display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
     display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
     checked_hit = "checked" if display_hit_value == 1 else ""
@@ -1458,16 +1555,17 @@ def build_card_html(r, is_history=False, race_date=""):
         <span class="metric-badge"><span class="metric-badge-label">券種</span><span class="metric-badge-value">{r['bet_type']}</span></span>
         <span class="metric-badge"><span class="metric-badge-label">選択点数</span><span class="metric-badge-value" id="selected-count-badge-{race_id_key}">{selected_count}点</span></span>
         <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
+        <span class="metric-badge"><span class="metric-badge-label">1点</span><span class="metric-badge-value" id="amount-per-point-badge-{race_id_key}">{yen(amount_per_point)}</span></span>
         <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
       </div>
 
       <div class="info-box">
         <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
-        <div class="row"><span class="label">1点あたり</span><span class="value">{yen(r['amount'])}</span></div>
+        <div class="row"><span class="label">1点あたり</span><span class="value"><span id="amount-inline-{race_id_key}">{yen(amount_per_point)}</span></span></div>
         <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
         <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
-        <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
+        <div class="row"><span class="label">公式払戻</span><span class="value">{(yen(result_trifecta_payout) + '（100円あたり）') if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
@@ -1475,10 +1573,27 @@ def build_card_html(r, is_history=False, race_date=""):
         {ai_reason_html}
       </div>
 
-      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{int(r['amount'])}">
+      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{amount_per_point}">
         <input type="hidden" name="race_id" value="{r['id']}">
         <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
+
+        <div class="bet-control-box">
+          <div class="bet-control-title">購入設定</div>
+          <div class="bet-control-grid">
+            <div class="bet-control-item">
+              <label for="amount-select-{race_id_key}">1点あたり</label>
+              <select class="stake-select" id="amount-select-{race_id_key}" name="amount_per_point" onchange="updateAmountPerPoint('{race_id_key}')">
+                {render_amount_options(amount_per_point)}
+              </select>
+            </div>
+            <div class="bet-control-item bet-control-hint">
+              <div>おすすめ</div>
+              <strong>上位3点 × 100円</strong><br>
+              <span>良さそうな買い強めだけ200円</span>
+            </div>
+          </div>
+        </div>
 
         <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
           <div class="auto-result-note">
@@ -1535,8 +1650,9 @@ def build_export_rows(rows):
 
         result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
         result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
+        amount_per_point = normalize_amount_per_point(r.get("amount"), 100)
         auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
-        auto_payout = result_trifecta_payout if auto_hit else 0
+        auto_payout = scale_payout_by_amount(result_trifecta_payout, amount_per_point) if auto_hit else 0
         display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
         display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
         auto_profit_value = display_payout_value - selected_total_amount if selected_count > 0 else 0
@@ -1581,7 +1697,7 @@ def build_export_rows(rows):
             "official_rating": csv_safe(r.get("rating")),
             "bet_type": csv_safe(r.get("bet_type")),
             "official_selection": csv_safe(r.get("selection")),
-            "amount_per_point": int(r.get("amount") or 0),
+            "amount_per_point": amount_per_point,
             "ai_score": round(ai_score_value, 2),
             "ai_rating": csv_safe(display_ai_rating),
             "ai_selection": csv_safe(display_ai_selection),
@@ -1971,6 +2087,24 @@ def render_layout(title, body_html):
       .selection-compare-col{background:#f8fafc;border:1px solid #eaecf0;border-radius:10px;padding:8px}
       .selection-col-title{font-size:12px;color:#667085;margin-bottom:6px;font-weight:700}
       .selection-chip-grid{display:flex;gap:6px;flex-wrap:wrap}
+      .ai-selection-block{display:flex;flex-direction:column;gap:10px}
+      .quick-select-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+      .quick-select-btn{border:1px solid #d0d5dd;background:#fff;color:#344054;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:800;cursor:pointer}
+      .quick-select-main{background:#101828;color:#fff;border-color:#101828}
+      .quick-select-clear{background:#f2f4f7;color:#667085}
+      .selection-section{border-radius:12px;padding:8px;border:1px solid #eaecf0;background:#fff}
+      .selection-section-core{background:#fff7ed;border-color:#fed7aa}
+      .selection-section-cover{background:#f8fafc}
+      .selection-section-title{font-size:12px;font-weight:900;color:#344054;margin-bottom:7px}
+      .selection-choice-core .selection-choice-body{border-width:2px}
+      .selection-choice-cover .selection-choice-body{opacity:.92}
+      .bet-control-box{margin:0 0 12px;padding:12px;border-radius:14px;background:#f8fafc;border:1px solid #eaecf0}
+      .bet-control-title{font-size:13px;font-weight:900;color:#344054;margin-bottom:8px}
+      .bet-control-grid{display:grid;grid-template-columns:180px 1fr;gap:12px;align-items:end}
+      .bet-control-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px;font-weight:700}
+      .stake-select{font-weight:900;background:#fff}
+      .bet-control-hint{font-size:12px;color:#667085;line-height:1.45}
+      .bet-control-hint strong{color:#101828}
       .selection-choice-chip{display:inline-block;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
       .selection-view-chip{display:inline-block}
       .selection-choice-body-view{cursor:default}
@@ -2091,7 +2225,7 @@ def render_layout(title, body_html):
         .topbar-status{width:100%;justify-content:flex-start;}
         .top-pill{width:100%;border-radius:12px;}
         .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
-        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid{grid-template-columns:1fr;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid,.bet-control-grid{grid-template-columns:1fr;}
         .row{grid-template-columns:1fr;gap:8px;}
         .race-venue,.race-rno{font-size:20px}
         .time{font-size:22px}
@@ -2164,14 +2298,27 @@ def render_layout(title, body_html):
         hidden.value = values.join(' / ');
         return true;
       }
+      function getAmountPerPoint(raceId){
+        const select = document.getElementById('amount-select-' + raceId);
+        if(select){
+          const v = parseInt(select.value || '100', 10);
+          return isNaN(v) ? 100 : v;
+        }
+        const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
+        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '100', 10);
+        return isNaN(amount) ? 100 : amount;
+      }
       function updateSelectionSummary(raceId, preserveHiddenWhenEmpty=true){
         const root = getCardRootByRaceId(raceId);
         if(!root){ return; }
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
+        const amountBadgeEl = document.getElementById('amount-per-point-badge-' + raceId);
+        const amountInlineEl = document.getElementById('amount-inline-' + raceId);
         const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
-        const amount = parseInt((formEl && formEl.getAttribute('data-amount')) || '0', 10);
+        const amount = getAmountPerPoint(raceId);
+        if(formEl){ formEl.setAttribute('data-amount', String(amount)); }
         const hidden = document.getElementById('selected-hidden-' + raceId);
         let values = getCheckedValues(raceId);
         if(values.length === 0 && hidden && preserveHiddenWhenEmpty){
@@ -2186,7 +2333,24 @@ def render_layout(title, body_html):
         }
         if(countEl){ countEl.textContent = values.length + '点'; }
         if(totalEl){ totalEl.textContent = (amount * values.length).toLocaleString('ja-JP') + '円'; }
+        if(amountBadgeEl){ amountBadgeEl.textContent = amount.toLocaleString('ja-JP') + '円'; }
+        if(amountInlineEl){ amountInlineEl.textContent = amount.toLocaleString('ja-JP') + '円'; }
         if(hidden && (values.length > 0 || !preserveHiddenWhenEmpty)){ hidden.value = values.join(' / '); }
+      }
+      function selectTopPicks(raceId, count){
+        const boxes = getRaceCheckboxes(raceId);
+        boxes.forEach((el, idx) => { el.checked = idx < count; });
+        syncSelectionValue(null, raceId);
+        updateSelectionSummary(raceId, false);
+      }
+      function clearPickSelection(raceId){
+        getRaceCheckboxes(raceId).forEach(el => { el.checked = false; });
+        const hidden = document.getElementById('selected-hidden-' + raceId);
+        if(hidden){ hidden.value = ''; }
+        updateSelectionSummary(raceId, false);
+      }
+      function updateAmountPerPoint(raceId){
+        updateSelectionSummary(raceId, false);
       }
       function toggleFormState(raceId){ return true; }
       function updateBulkDeleteCount(){
@@ -2406,7 +2570,7 @@ def upsert_base_candidates(cleaned):
                     rating = %s,
                     bet_type = %s,
                     selection = %s,
-                    amount = %s,
+                    amount = CASE WHEN COALESCE(purchased, 0) = 1 THEN amount ELSE %s END,
                     player_names_text = %s,
                     class_history_text = %s,
                     player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
@@ -2675,10 +2839,11 @@ def save():
     if not race:
         return redirect("/?type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
+    amount_per_point = normalize_amount_per_point(request.form.get("amount_per_point"), 100)
     hit = 0
     payout = 0
     memo = ""
-    update_race_result(race_id, selected_text, hit, payout, memo)
+    update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=amount_per_point)
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
     return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
@@ -2692,10 +2857,11 @@ def update_record():
     if not race:
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
+    amount_per_point = normalize_amount_per_point(request.form.get("amount_per_point"), 100)
     hit = 0
     payout = 0
     memo = ""
-    update_race_result(race_id, selected_text, hit, payout, memo)
+    update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=amount_per_point)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
 
