@@ -98,6 +98,32 @@ CASE
 END
 """
 
+AUTO_HIT_SQL = """
+CASE
+    WHEN COALESCE(BTRIM(result_trifecta_text), '') <> '' THEN
+        CASE
+            WHEN result_trifecta_text = ANY(
+                string_to_array(REPLACE(COALESCE(purchased_selection_text, ''), ' / ', '/'), '/')
+            ) THEN 1
+            ELSE 0
+        END
+    ELSE COALESCE(hit, 0)
+END
+"""
+
+AUTO_PAYOUT_SQL = """
+CASE
+    WHEN COALESCE(BTRIM(result_trifecta_text), '') <> '' THEN
+        CASE
+            WHEN result_trifecta_text = ANY(
+                string_to_array(REPLACE(COALESCE(purchased_selection_text, ''), ' / ', '/'), '/')
+            ) THEN COALESCE(result_trifecta_payout, 0)
+            ELSE 0
+        END
+    ELSE COALESCE(payout, 0)
+END
+"""
+
 ALLOWED_GROUP_COLUMNS = {
     "rating": "rating",
     "venue": "venue",
@@ -313,6 +339,27 @@ def get_selected_total_amount(race):
     return int(race.get("amount") or 0) * get_selected_count_from_text(
         race.get("purchased_selection_text", "")
     )
+
+
+def get_auto_result_values(race):
+    result_trifecta_text = normalize_pick_text(race.get("result_trifecta_text", ""))
+    result_trifecta_payout = int(race.get("result_trifecta_payout") or 0)
+    purchased_items = selection_items(race.get("purchased_selection_text", ""))
+
+    auto_hit = 1 if result_trifecta_text and result_trifecta_text in purchased_items else 0
+    auto_payout = result_trifecta_payout if auto_hit else 0
+
+    display_hit_value = auto_hit if result_trifecta_text else int(race.get("hit") or 0)
+    display_payout_value = auto_payout if result_trifecta_text else int(race.get("payout") or 0)
+
+    return {
+        "result_trifecta_text": result_trifecta_text,
+        "result_trifecta_payout": result_trifecta_payout,
+        "auto_hit": auto_hit,
+        "auto_payout": auto_payout,
+        "display_hit_value": display_hit_value,
+        "display_payout_value": display_payout_value,
+    }
 
 
 def make_race_key(race_date, venue, race_no):
@@ -1102,8 +1149,8 @@ def get_summary_by_date(race_date):
             COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
             COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
             COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
-            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
         FROM races
         WHERE race_date = %s
@@ -1153,10 +1200,10 @@ def get_group_summary(race_date, group_key):
         SELECT
             COALESCE(NULLIF(BTRIM({group_sql}), ''), '(空白)') AS group_name,
             COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
-            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
             COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
-            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -1220,8 +1267,8 @@ def get_history_date_summaries():
             COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
             COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
             COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
-            COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
-            COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
+            COALESCE(SUM({AUTO_PAYOUT_SQL}), 0) AS total_payout,
+            COALESCE(SUM(CASE WHEN {AUTO_HIT_SQL} = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
         FROM races
         WHERE venue <> 'テスト会場'
@@ -1272,7 +1319,7 @@ def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_onl
     if purchased_only:
         filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
     if hit_only:
-        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+        filtered = [r for r in filtered if get_auto_result_values(r)["display_hit_value"] == 1]
     return filtered
 
 
@@ -1297,12 +1344,13 @@ def build_card_html(r, is_history=False, race_date=""):
     selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
     selected_total_amount = get_selected_total_amount(r)
 
-    result_trifecta_text = normalize_pick_text(r.get("result_trifecta_text", ""))
-    result_trifecta_payout = int(r.get("result_trifecta_payout") or 0)
-    auto_hit = 1 if result_trifecta_text and result_trifecta_text in selection_items(r.get("purchased_selection_text", "")) else 0
-    auto_payout = result_trifecta_payout if auto_hit else 0
-    display_hit_value = auto_hit if result_trifecta_text else int(r.get("hit") or 0)
-    display_payout_value = auto_payout if result_trifecta_text else int(r.get("payout") or 0)
+    auto_result = get_auto_result_values(r)
+    result_trifecta_text = auto_result["result_trifecta_text"]
+    result_trifecta_payout = auto_result["result_trifecta_payout"]
+    auto_hit = auto_result["auto_hit"]
+    auto_payout = auto_result["auto_payout"]
+    display_hit_value = auto_result["display_hit_value"]
+    display_payout_value = auto_result["display_payout_value"]
     checked_hit = "checked" if display_hit_value == 1 else ""
     payout_value = display_payout_value if display_payout_value else ""
     memo_value = r["memo"] if r["memo"] else ""
@@ -1311,7 +1359,7 @@ def build_card_html(r, is_history=False, race_date=""):
     settled_at_text = str(r.get("settled_at") or "").strip()
 
     card_class = "card history-edit-card" if is_history else "card"
-    if int(r.get("hit") or 0) == 1:
+    if display_hit_value == 1:
         card_class += " card-hit"
     elif selected_count > 0:
         card_class += " card-purchased"
@@ -2783,6 +2831,7 @@ def api_base_map_today():
         '''
         SELECT
             race_date,
+            time,
             venue,
             race_no,
             rating,
@@ -2793,7 +2842,10 @@ def api_base_map_today():
             final_ai_score,
             final_ai_rating,
             final_ai_selection,
-            latest_reason_text
+            latest_reason_text,
+            result_trifecta_text,
+            result_trifecta_payout,
+            settled_flag
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -2808,6 +2860,7 @@ def api_base_map_today():
     for row in rows:
         key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
         base_map[key] = {
+            "time": str(row.get("time") or "").strip(),
             "rating": str(row.get("rating") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
@@ -2817,6 +2870,9 @@ def api_base_map_today():
             "final_ai_rating": str(row.get("final_ai_rating") or "").strip(),
             "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
             "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
+            "result_trifecta_text": str(row.get("result_trifecta_text") or "").strip(),
+            "result_trifecta_payout": int(row.get("result_trifecta_payout") or 0),
+            "settled_flag": int(row.get("settled_flag") or 0),
         }
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
 
