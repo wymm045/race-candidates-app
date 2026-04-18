@@ -1444,20 +1444,9 @@ def build_card_html(r, is_history=False, race_date=""):
         <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
-        <div id="detail-{race_id_key}" class="detail-box">
-          <label class="checkline">
-            <input type="checkbox" id="hit-{race_id_key}" name="hit" value="1" {checked_hit} onchange="toggleFormState('{race_id_key}')">
-            的中した
-          </label>
-
-          <div class="input-row">
-            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
-            <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
-          </div>
-
-          <div class="input-row">
-            <label>メモ</label>
-            <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
+        <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
+          <div class="auto-result-note">
+            的中・払戻は公式結果から自動反映されます
           </div>
         </div>
 
@@ -2022,6 +2011,8 @@ def render_layout(title, body_html):
       .current-class-chip .class-chip-main{font-size:15px}
       .form{margin-top:12px}
       .detail-box{display:flex;flex-direction:column;gap:10px}
+      .detail-box-simple{gap:0}
+      .auto-result-note{padding:10px 12px;border-radius:10px;background:#f8fafc;border:1px solid #eaecf0;color:#475467;font-size:13px;font-weight:700}
       .checkline{display:flex;align-items:center;gap:8px;font-weight:700}
       .input-row label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
       .save-btn{width:100%;margin-top:10px}
@@ -2624,18 +2615,9 @@ def save():
     if not race:
         return redirect("/?type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
-    purchased = 1 if selected_text else 0
-    hit = 1 if request.form.get("hit") == "1" else 0
-    payout_raw = request.form.get("payout", "").strip()
-    payout = int(payout_raw) if payout_raw else 0
-    memo = request.form.get("memo", "").strip()
-    if purchased == 0:
-        hit = 0
-        payout = 0
-    if purchased == 1 and hit == 1 and payout <= 0:
-        redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
-        sep = "&" if "?" in redirect_base else "?"
-        return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+    hit = 0
+    payout = 0
+    memo = ""
     update_race_result(race_id, selected_text, hit, payout, memo)
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
@@ -2650,16 +2632,9 @@ def update_record():
     if not race:
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
-    purchased = 1 if selected_text else 0
-    hit = 1 if request.form.get("hit") == "1" else 0
-    payout_raw = request.form.get("payout", "").strip()
-    payout = int(payout_raw) if payout_raw else 0
-    memo = request.form.get("memo", "").strip()
-    if purchased == 0:
-        hit = 0
-        payout = 0
-    if purchased == 1 and hit == 1 and payout <= 0:
-        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
+    hit = 0
+    payout = 0
+    memo = ""
     update_race_result(race_id, selected_text, hit, payout, memo)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
@@ -2791,13 +2766,7 @@ def api_base_map_today():
             final_ai_score,
             final_ai_rating,
             final_ai_selection,
-            latest_reason_text,
-            time,
-            result_trifecta_text,
-            result_trifecta_payout,
-            result_source_url,
-            settled_flag,
-            settled_at
+            latest_reason_text
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -2821,12 +2790,6 @@ def api_base_map_today():
             "final_ai_rating": str(row.get("final_ai_rating") or "").strip(),
             "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
             "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
-            "time": str(row.get("time") or "").strip(),
-            "result_trifecta_text": str(row.get("result_trifecta_text") or "").strip(),
-            "result_trifecta_payout": int(row.get("result_trifecta_payout") or 0),
-            "result_source_url": str(row.get("result_source_url") or "").strip(),
-            "settled_flag": int(row.get("settled_flag") or 0),
-            "settled_at": str(row.get("settled_at") or "").strip(),
         }
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
 
