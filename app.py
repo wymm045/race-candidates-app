@@ -41,8 +41,6 @@ CARD_SELECT_COLUMNS = '''
     race_no,
     race_no_num,
     rating,
-    series_day,
-    race_phase,
     bet_type,
     selection,
     amount,
@@ -808,44 +806,6 @@ def final_rank_badge(rank_text):
     return ""
 
 
-def format_series_day_label(series_day):
-    try:
-        day = int(series_day or 0)
-    except Exception:
-        day = 0
-    if day <= 0:
-        return ""
-    if day == 1:
-        return "初日"
-    return f"{day}日目"
-
-
-def normalize_race_phase_label_for_badge(race_phase):
-    s = str(race_phase or "").strip()
-    if not s:
-        return ""
-    if "優勝戦" in s:
-        return "優勝戦"
-    if "準優勝戦" in s or "準優" in s:
-        return "準優"
-    if "ドリーム戦" in s or "ドリーム" in s:
-        return "ドリーム"
-    return ""
-
-
-def render_series_phase_badges(series_day, race_phase):
-    badges = []
-    day_label = format_series_day_label(series_day)
-    if day_label:
-        badges.append(f'<span class="series-phase-badge series-phase-badge-day">{day_label}</span>')
-
-    phase_label = normalize_race_phase_label_for_badge(race_phase)
-    if phase_label:
-        badges.append(f'<span class="series-phase-badge series-phase-badge-phase">{phase_label}</span>')
-
-    return "".join(badges)
-
-
 def render_ai_rating_filter_options(current_value):
     html = '<option value="">すべて</option>'
     for value in AI_RATING_OPTIONS:
@@ -1408,7 +1368,6 @@ def build_card_html(r, is_history=False, race_date=""):
         r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
     final_rank_html = final_rank_badge(r.get("final_rank"))
-    series_phase_badges_html = render_series_phase_badges(r.get("series_day"), r.get("race_phase"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
     form_id = f"race-form-{race_id_key}"
@@ -1448,7 +1407,6 @@ def build_card_html(r, is_history=False, race_date=""):
               <span class="race-venue">{r['venue']}</span>
               <span class="race-rno">{r['race_no']}</span>
             </span>
-            {series_phase_badges_html}
           </div>
         </div>
         {status_html}
@@ -1476,13 +1434,6 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row"><span class="label">公式払戻</span><span class="value">{yen(result_trifecta_payout) if result_trifecta_payout > 0 else '未反映'}</span></div>
         <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
         <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
-        <div class="row row-gpt-review">
-          <span class="label">精査</span>
-          <span class="value">
-            <button type="button" class="gpt-review-btn" data-race-id="{r['id']}">ChatGPTで精査</button>
-            <div id="gpt-review-{r['id']}" class="gpt-review-box" style="display:none;"></div>
-          </span>
-        </div>
         <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
         <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
         {ai_reason_html}
@@ -1493,7 +1444,17 @@ def build_card_html(r, is_history=False, race_date=""):
         <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
-        <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
+        <div id="detail-{race_id_key}" class="detail-box">
+          <label class="checkline">
+            <input type="checkbox" id="hit-{race_id_key}" name="hit" value="1" {checked_hit} onchange="toggleFormState('{race_id_key}')">
+            的中した
+          </label>
+
+          <div class="input-row">
+            <label>{'払戻額' if is_history else '払戻額（選んだ買い目全体の合計）'}</label>
+            <input type="number" id="payout-{race_id_key}" name="payout" value="{payout_value}" placeholder="例: 870" min="0">
+          </div>
+
           <div class="input-row">
             <label>メモ</label>
             <input type="text" name="memo" value="{memo_value}" placeholder="見送り、締切、様子見など">
@@ -1593,8 +1554,6 @@ def build_export_rows(rows):
             "venue": csv_safe(r.get("venue")),
             "race_no": csv_safe(r.get("race_no")),
             "official_rating": csv_safe(r.get("rating")),
-            "series_day": int(r.get("series_day") or 0),
-            "race_phase": csv_safe(r.get("race_phase")),
             "bet_type": csv_safe(r.get("bet_type")),
             "official_selection": csv_safe(r.get("selection")),
             "amount_per_point": int(r.get("amount") or 0),
@@ -1638,7 +1597,7 @@ def make_csv_response(rows, filename):
     output = io.StringIO()
     export_rows = build_export_rows(rows)
     fieldnames = list(export_rows[0].keys()) if export_rows else [
-        "race_date", "time", "venue", "race_no", "official_rating", "series_day", "race_phase", "bet_type",
+        "race_date", "time", "venue", "race_no", "official_rating", "bet_type",
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
         "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
@@ -1959,13 +1918,9 @@ def render_layout(title, body_html):
       .countdown-warning{background:#fff4e5;color:#b54708}
       .countdown-soon{background:#ffead5;color:#c4320a}
       .countdown-closed{background:#f2f4f7;color:#475467}
-      .race-mainline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
       .race-spot-main{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:12px;background:#101828;color:#fff;font-weight:800}
       .race-venue{font-size:22px}
       .race-rno{font-size:22px}
-      .series-phase-badge{display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:800;line-height:1}
-      .series-phase-badge-day{background:#ecfdf3;color:#067647}
-      .series-phase-badge-phase{background:#fff4e5;color:#b54708}
       .status-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .status-badge{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}
       .status-badge-saved{background:#ecfdf3;color:#067647}
@@ -2216,113 +2171,6 @@ def render_layout(title, body_html):
         document.querySelectorAll('.bulk-checkbox').forEach(el => { el.checked = checked; });
         updateBulkDeleteCount();
       }
-      function startGptReview(raceId, btn){
-        const box = document.getElementById('gpt-review-' + raceId);
-        if(!box){
-          alert('レビュー表示欄が見つかりません: ' + raceId);
-          return false;
-        }
-
-        btn.disabled = true;
-        btn.textContent = '精査中...';
-        box.style.display = 'block';
-        box.innerHTML = '<div class="gpt-review-content">読み込み中...</div>';
-
-        window.__gptReviewWatchdog = window.__gptReviewWatchdog || {};
-        if(window.__gptReviewWatchdog[raceId]){
-          clearTimeout(window.__gptReviewWatchdog[raceId]);
-        }
-        window.__gptReviewWatchdog[raceId] = setTimeout(function(){
-          const currentBox = document.getElementById('gpt-review-' + raceId);
-          if(currentBox && currentBox.innerHTML.indexOf('読み込み中...') !== -1){
-            currentBox.innerHTML = '<div class="gpt-review-error">タイムアウトしました</div>';
-          }
-          btn.disabled = false;
-          btn.textContent = 'ChatGPTで精査';
-        }, 10000);
-
-        return loadGptReview(raceId, btn);
-      }
-
-      function loadGptReview(raceId, btn){
-        const box = document.getElementById('gpt-review-' + raceId);
-        if(!box){
-          btn.disabled = false;
-          btn.textContent = 'ChatGPTで精査';
-          return false;
-        }
-
-        const done = function(){
-          window.__gptReviewWatchdog = window.__gptReviewWatchdog || {};
-          if(window.__gptReviewWatchdog[raceId]){
-            clearTimeout(window.__gptReviewWatchdog[raceId]);
-            delete window.__gptReviewWatchdog[raceId];
-          }
-          btn.disabled = false;
-          btn.textContent = 'ChatGPTで精査';
-        };
-
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', '/api/gpt_race_review?race_id=' + encodeURIComponent(raceId), true);
-        xhr.setRequestHeader('Accept', 'application/json');
-        xhr.timeout = 10000;
-
-        xhr.onreadystatechange = function(){
-          if(xhr.readyState !== 4){
-            return;
-          }
-
-          if(xhr.status < 200 || xhr.status >= 300){
-            box.style.display = 'block';
-            box.innerHTML = '<div class="gpt-review-error">通信失敗: HTTP ' + xhr.status + '</div>';
-            done();
-            return;
-          }
-
-          let data;
-          try{
-            data = JSON.parse(xhr.responseText || '{}');
-          }catch(e){
-            box.style.display = 'block';
-            box.innerHTML = '<div class="gpt-review-error">JSON変換失敗</div><div class="gpt-review-content">' + String(xhr.responseText || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
-            done();
-            return;
-          }
-
-          if(!data.ok){
-            box.style.display = 'block';
-            box.innerHTML = '<div class="gpt-review-error">取得失敗: ' + (data.error || 'unknown error') + '</div>';
-            done();
-            return;
-          }
-
-          const escaped = String(data.review_text || '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\n/g, '<br>');
-
-          box.style.display = 'block';
-          box.innerHTML = '<div class="gpt-review-content">' + escaped + '</div>';
-          done();
-        };
-
-        xhr.onerror = function(){
-          box.style.display = 'block';
-          box.innerHTML = '<div class="gpt-review-error">通信エラーが発生しました</div>';
-          done();
-        };
-
-        xhr.ontimeout = function(){
-          box.style.display = 'block';
-          box.innerHTML = '<div class="gpt-review-error">タイムアウトしました</div>';
-          done();
-        };
-
-        xhr.send();
-        return false;
-      }
-
       function confirmBulkDelete(){
         const count = document.querySelectorAll('.bulk-checkbox:checked').length;
         if(count <= 0){ alert('削除するデータを選んでください'); return false; }
@@ -2335,16 +2183,6 @@ def render_layout(title, body_html):
           updateSelectionSummary(raceId, true);
           form.addEventListener('submit', function(){ syncSelectionValue(null, raceId); });
         });
-
-        document.addEventListener('click', function(e){
-          const btn = e.target.closest('.gpt-review-btn');
-          if(!btn){ return; }
-          const raceId = btn.getAttribute('data-race-id');
-          if(!raceId){ return; }
-          e.preventDefault();
-          startGptReview(raceId, btn);
-        });
-
         updateBulkDeleteCount();
       });
     </script>
@@ -2396,8 +2234,6 @@ def init_db():
             race_no TEXT NOT NULL,
             race_no_num INTEGER NOT NULL DEFAULT 0,
             rating TEXT NOT NULL DEFAULT '',
-            series_day INTEGER NOT NULL DEFAULT 0,
-            race_phase TEXT NOT NULL DEFAULT '',
             bet_type TEXT NOT NULL DEFAULT '',
             selection TEXT NOT NULL DEFAULT '',
             amount INTEGER NOT NULL DEFAULT 100,
@@ -2462,8 +2298,6 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_rank TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE races ADD COLUMN IF NOT EXISTS series_day INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_phase TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_reasons JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS exhibition_rank TEXT NOT NULL DEFAULT ''",
@@ -2543,8 +2377,6 @@ def upsert_base_candidates(cleaned):
                     time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
                     race_no_num = %s,
                     rating = %s,
-                    series_day = %s,
-                    race_phase = %s,
                     bet_type = %s,
                     selection = %s,
                     amount = %s,
@@ -2565,8 +2397,6 @@ def upsert_base_candidates(cleaned):
                     str(r.get('time') or '').strip(),
                     int(r.get('race_no_num') or 0),
                     str(r.get('rating') or '').strip(),
-                    int(r.get('series_day') or 0),
-                    str(r.get('race_phase') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
                     int(r.get('amount') or 100),
@@ -2591,14 +2421,14 @@ def upsert_base_candidates(cleaned):
                 '''
                 INSERT INTO races (
                     race_date, time, venue, race_no, race_no_num,
-                    rating, series_day, race_phase, bet_type, selection, amount,
+                    rating, bet_type, selection, amount,
                     player_names_text, class_history_text, player_stat_text, player_reason_text,
                     base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
@@ -2611,8 +2441,6 @@ def upsert_base_candidates(cleaned):
                     str(r.get('race_no') or '').strip(),
                     int(r.get('race_no_num') or 0),
                     str(r.get('rating') or '').strip(),
-                    int(r.get('series_day') or 0),
-                    str(r.get('race_phase') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
                     int(r.get('amount') or 100),
@@ -2680,6 +2508,26 @@ def upsert_latest_candidates(cleaned):
                 final_rank = %s,
                 latest_reason_text = %s,
                 latest_updated_at = %s,
+                result_trifecta_text = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE result_trifecta_text
+                END,
+                result_trifecta_payout = CASE
+                    WHEN COALESCE(%s, 0) > 0 THEN %s
+                    ELSE result_trifecta_payout
+                END,
+                result_source_url = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE result_source_url
+                END,
+                settled_flag = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN 1
+                    ELSE settled_flag
+                END,
+                settled_at = CASE
+                    WHEN COALESCE(%s, '') <> '' THEN %s
+                    ELSE settled_at
+                END,
                 imported_at = %s
             WHERE id = %s
             ''',
@@ -2705,6 +2553,15 @@ def upsert_latest_candidates(cleaned):
                 str(r.get('final_rank') or '').strip(),
                 str(r.get('latest_reason_text') or '').strip(),
                 str(r.get('latest_updated_at') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                int(r.get('result_trifecta_payout') or 0),
+                int(r.get('result_trifecta_payout') or 0),
+                str(r.get('result_source_url') or '').strip(),
+                str(r.get('result_source_url') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                str(r.get('result_trifecta_text') or '').strip(),
+                jst_now_str(),
                 jst_now_str(),
                 existing['id'],
             )
@@ -2768,12 +2625,17 @@ def save():
         return redirect("/?type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
-    hit = 0
-    payout = 0
+    hit = 1 if request.form.get("hit") == "1" else 0
+    payout_raw = request.form.get("payout", "").strip()
+    payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
     if purchased == 0:
         hit = 0
         payout = 0
+    if purchased == 1 and hit == 1 and payout <= 0:
+        redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+        sep = "&" if "?" in redirect_base else "?"
+        return redirect(redirect_base + sep + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
     update_race_result(race_id, selected_text, hit, payout, memo)
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
@@ -2789,12 +2651,15 @@ def update_record():
         return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("データが見つかりません"))
     selected_text = parse_selected_from_request()
     purchased = 1 if selected_text else 0
-    hit = 0
-    payout = 0
+    hit = 1 if request.form.get("hit") == "1" else 0
+    payout_raw = request.form.get("payout", "").strip()
+    payout = int(payout_raw) if payout_raw else 0
     memo = request.form.get("memo", "").strip()
     if purchased == 0:
         hit = 0
         payout = 0
+    if purchased == 1 and hit == 1 and payout <= 0:
+        return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=error&msg=" + quote("的中にした場合は払戻額を入力してください"))
     update_race_result(race_id, selected_text, hit, payout, memo)
     return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
 
@@ -2881,8 +2746,6 @@ def import_base_candidates():
                 "race_no": str(r.get("race_no") or "").strip(),
                 "race_no_num": int(r.get("race_no_num") or 0),
                 "rating": str(r.get("rating") or "").strip(),
-                "series_day": int(r.get("series_day") or 0),
-                "race_phase": str(r.get("race_phase") or "").strip(),
                 "bet_type": str(r.get("bet_type") or "").strip(),
                 "selection": str(r.get("selection") or "").strip(),
                 "amount": int(r.get("amount") or 100),
@@ -2921,8 +2784,6 @@ def api_base_map_today():
             venue,
             race_no,
             rating,
-            series_day,
-            race_phase,
             base_ai_score,
             base_ai_rating,
             base_ai_selection,
@@ -2930,7 +2791,13 @@ def api_base_map_today():
             final_ai_score,
             final_ai_rating,
             final_ai_selection,
-            latest_reason_text
+            latest_reason_text,
+            time,
+            result_trifecta_text,
+            result_trifecta_payout,
+            result_source_url,
+            settled_flag,
+            settled_at
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
@@ -2946,8 +2813,6 @@ def api_base_map_today():
         key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
         base_map[key] = {
             "rating": str(row.get("rating") or "").strip(),
-            "series_day": int(row.get("series_day") or 0),
-            "race_phase": str(row.get("race_phase") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
             "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
@@ -2956,6 +2821,12 @@ def api_base_map_today():
             "final_ai_rating": str(row.get("final_ai_rating") or "").strip(),
             "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
             "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
+            "time": str(row.get("time") or "").strip(),
+            "result_trifecta_text": str(row.get("result_trifecta_text") or "").strip(),
+            "result_trifecta_payout": int(row.get("result_trifecta_payout") or 0),
+            "result_source_url": str(row.get("result_source_url") or "").strip(),
+            "settled_flag": int(row.get("settled_flag") or 0),
+            "settled_at": str(row.get("settled_at") or "").strip(),
         }
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
 
@@ -2999,6 +2870,9 @@ def import_latest_candidates():
                 "final_rank": str(r.get("final_rank") or "").strip(),
                 "latest_reason_text": str(r.get("latest_reason_text") or "").strip(),
                 "latest_updated_at": str(r.get("latest_updated_at") or "").strip(),
+                "result_trifecta_text": str(r.get("result_trifecta_text") or "").strip(),
+                "result_trifecta_payout": int(r.get("result_trifecta_payout") or 0),
+                "result_source_url": str(r.get("result_source_url") or "").strip(),
             }
         )
     if not cleaned:
