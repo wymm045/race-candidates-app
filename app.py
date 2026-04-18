@@ -953,25 +953,30 @@ def render_selected_summary_html(selected_text):
     return f'<div class="picked-chip-wrap">{chips}</div>'
 
 
+
 def get_races_by_date(race_date):
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
+        f"""
         SELECT {CARD_SELECT_COLUMNS}
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
+        FROM (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                {CARD_SELECT_COLUMNS}
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        ) latest
         ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
-        ''',
+        """,
         (race_date,),
     )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
-
 
 def get_race_by_id(race_id):
     ensure_db_initialized()
@@ -989,6 +994,7 @@ def get_race_by_id(race_id):
     cur.close()
     conn.close()
     return row
+
 
 
 def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
@@ -1024,19 +1030,23 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
+        f"""
         SELECT {CARD_SELECT_COLUMNS}
-        FROM races
-        WHERE {' AND '.join(where_clauses)}
+        FROM (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                {CARD_SELECT_COLUMNS}
+            FROM races
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY race_date, venue, race_no, id DESC
+        ) latest
         ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
-        ''',
+        """,
         tuple(params),
     )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
-
 
 def update_race_result(race_id, selected_text, hit, payout, memo):
     ensure_db_initialized()
@@ -1091,12 +1101,21 @@ def delete_races_bulk(race_ids):
     return deleted
 
 
+
 def get_summary_by_date(race_date):
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        )
         SELECT
             COUNT(*) AS total_rows,
             COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
@@ -1105,10 +1124,8 @@ def get_summary_by_date(race_date):
             COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
             COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
-        ''',
+        FROM latest
+        """,
         (race_date,),
     )
     row = cur.fetchone() or {}
@@ -1149,7 +1166,15 @@ def get_group_summary(race_date, group_key):
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        )
         SELECT
             COALESCE(NULLIF(BTRIM({group_sql}), ''), '(空白)') AS group_name,
             COALESCE(SUM(CASE WHEN {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_bets,
@@ -1157,12 +1182,10 @@ def get_group_summary(race_date, group_key):
             COALESCE(SUM({POINT_COUNT_SQL}), 0) AS total_points,
             COALESCE(SUM(amount * ({POINT_COUNT_SQL})), 0) AS total_investment,
             COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
+        FROM latest
         GROUP BY 1
         ORDER BY 1 ASC
-        ''',
+        """,
         (race_date,),
     )
     rows = cur.fetchall()
@@ -1194,7 +1217,6 @@ def get_group_summary(race_date, group_key):
         )
     return results
 
-
 def get_history_dates():
     ensure_db_initialized()
     conn = db_connect()
@@ -1208,12 +1230,20 @@ def get_history_dates():
     return [row[0] for row in rows]
 
 
+
 def get_history_date_summaries():
     ensure_db_initialized()
     conn = db_connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
-        f'''
+        f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        )
         SELECT
             race_date,
             COUNT(*) AS total_rows,
@@ -1223,11 +1253,10 @@ def get_history_date_summaries():
             COALESCE(SUM(COALESCE(payout, 0)), 0) AS total_payout,
             COALESCE(SUM(CASE WHEN COALESCE(hit, 0) = 1 AND {POINT_COUNT_SQL} > 0 THEN 1 ELSE 0 END), 0) AS total_hits,
             COALESCE(MAX(imported_at), '') AS last_imported_at
-        FROM races
-        WHERE venue <> 'テスト会場'
+        FROM latest
         GROUP BY race_date
         ORDER BY race_date DESC
-        '''
+        """
     )
     rows = cur.fetchall()
     cur.close()
@@ -1261,7 +1290,6 @@ def get_history_date_summaries():
             }
         )
     return results
-
 
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
     filtered = list(rows)
@@ -2771,6 +2799,7 @@ def import_base_candidates():
     return jsonify({"ok": True, "received": len(cleaned), "inserted": result["inserted"], "updated": result["updated"], "imported_at": jst_now_str()})
 
 
+
 @app.route("/api/base_map_today", methods=["GET"])
 def api_base_map_today():
     if not is_valid_read_token(request):
@@ -2798,9 +2827,14 @@ def api_base_map_today():
             result_trifecta_text,
             result_trifecta_payout,
             settled_flag
-        FROM races
-        WHERE race_date = %s
-          AND venue <> 'テスト会場'
+        FROM (
+            SELECT DISTINCT ON (race_date, venue, race_no)
+                *
+            FROM races
+            WHERE race_date = %s
+              AND venue <> 'テスト会場'
+            ORDER BY race_date, venue, race_no, id DESC
+        ) latest
         """,
         (race_date,),
     )
@@ -2827,7 +2861,6 @@ def api_base_map_today():
             "settled_flag": int(row.get("settled_flag") or 0),
         }
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
-
 
 @app.route("/api/import_latest_candidates", methods=["POST"])
 def import_latest_candidates():
