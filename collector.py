@@ -1068,20 +1068,57 @@ def parse_payout_from_text(text):
         return 0
 
     compact = re.sub(r"\s+", "", s)
-    candidates = []
-    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", compact):
+
+    def to_int(num_text):
         try:
-            val = int(m.group(1).replace(",", ""))
-            if val >= 100:
-                candidates.append(val)
+            return int(str(num_text).replace(",", ""))
         except Exception:
-            pass
+            return 0
 
-    if not candidates:
-        return 0
+    # まず 3連単 / 三連単 の近くにある払戻を最優先で拾う
+    targeted_patterns = [
+        r"(?:3連単|三連単)[^0-9円]{0,30}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+        r"(?:払戻金|払戻|払戻金額)[^0-9円]{0,20}(?:3連単|三連単)[^0-9円]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9円]{0,30}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+    ]
+    for pat in targeted_patterns:
+        m = re.search(pat, compact, re.I)
+        if m:
+            val = to_int(m.group(1))
+            if val >= 100:
+                return val
 
-    # 3連単の払戻として大きめの金額を優先
-    return max(candidates)
+    # 「結果 1-4-2 6,740円」のような形も拾う
+    triplet_then_yen = re.search(
+        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9円]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+        compact,
+        re.I,
+    )
+    if triplet_then_yen:
+        val = to_int(triplet_then_yen.group(4))
+        if val >= 100:
+            return val
+
+    # 行単位で 3連単 を含むところがあれば、その行内の円表記を優先
+    line_candidates = []
+    for raw_line in s.splitlines():
+        line = re.sub(r"\s+", "", raw_line)
+        if "3連単" in line or "三連単" in line:
+            for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", line):
+                val = to_int(m.group(1))
+                if val >= 100:
+                    line_candidates.append(val)
+    if line_candidates:
+        return max(line_candidates)
+
+    # 最後の保険。複数払戻が混ざる時は大きい金額を優先
+    fallback = []
+    for m in re.finditer(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円", compact):
+        val = to_int(m.group(1))
+        if val >= 100:
+            fallback.append(val)
+
+    return max(fallback) if fallback else 0
 
 
 def parse_resultlist_for_jcd(jcd):
@@ -1128,10 +1165,14 @@ def parse_resultlist_for_jcd(jcd):
                     "kimarite": parse_kimarite_from_text(compact_row),
                     "trifecta_payout": parse_payout_from_text(row_text),
                 }
-            elif current_race_no in results and not results[current_race_no].get("kimarite"):
+            elif current_race_no in results:
                 kim = parse_kimarite_from_text(compact_row)
-                if kim:
+                if kim and not results[current_race_no].get("kimarite"):
                     results[current_race_no]["kimarite"] = kim
+
+                pay = parse_payout_from_text(row_text)
+                if pay and pay > int(results[current_race_no].get("trifecta_payout") or 0):
+                    results[current_race_no]["trifecta_payout"] = pay
 
     # 2) lines ベースで不足分を補完
     current_race_no = None
@@ -1161,13 +1202,11 @@ def parse_resultlist_for_jcd(jcd):
             results[current_race_no]["kimarite"] = kim
 
         pay = parse_payout_from_text(compact_line)
-        if pay and current_race_no in results and not results[current_race_no].get("trifecta_payout"):
+        if pay and current_race_no in results and pay > int(results[current_race_no].get("trifecta_payout") or 0):
             results[current_race_no]["trifecta_payout"] = pay
 
     # 3) それでも不足なら HTML 全体からレースごとにざっくり拾う
     for race_no in range(1, 13):
-        if race_no in results:
-            continue
         m = re.search(
             rf"{race_no}R(.*?)(?:{race_no + 1}R|締切予定時刻|進入コース別結果|艇番別結果|$)",
             compact_html,
@@ -1176,6 +1215,16 @@ def parse_resultlist_for_jcd(jcd):
             continue
         chunk = m.group(1)
         tri = parse_result_triplet_from_text(chunk)
+        pay = parse_payout_from_text(chunk)
+        kim = parse_kimarite_from_text(chunk)
+
+        if race_no in results:
+            if pay and pay > int(results[race_no].get("trifecta_payout") or 0):
+                results[race_no]["trifecta_payout"] = pay
+            if kim and not results[race_no].get("kimarite"):
+                results[race_no]["kimarite"] = kim
+            continue
+
         if not tri:
             continue
         try:
@@ -1187,8 +1236,8 @@ def parse_resultlist_for_jcd(jcd):
             "head": a,
             "second": b,
             "third": c,
-            "kimarite": parse_kimarite_from_text(chunk),
-            "trifecta_payout": parse_payout_from_text(chunk),
+            "kimarite": kim,
+            "trifecta_payout": pay,
         }
 
     log(f"[resultlist_ok] jcd={jcd} count={len(results)}")
