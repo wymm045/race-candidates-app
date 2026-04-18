@@ -115,6 +115,31 @@ def is_past_race(time_str):
         return False
 
 
+RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "180"))
+RESULT_PENDING_LIMIT = int(os.environ.get("RESULT_PENDING_LIMIT", "8"))
+
+
+def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
+    if not hhmm:
+        return False
+    try:
+        now_min = to_minutes(current_hhmm())
+        target_min = to_minutes(hhmm)
+        diff = now_min - target_min
+        return 0 <= diff <= lookback_minutes
+    except Exception:
+        return False
+
+
+def is_settle_pending(base_info):
+    if not base_info:
+        return False
+    settled_flag = int(base_info.get("settled_flag") or 0)
+    result_text = str(base_info.get("result_trifecta_text") or "").strip()
+    result_payout = int(base_info.get("result_trifecta_payout") or 0)
+    return settled_flag != 1 and result_text == "" and result_payout <= 0
+
+
 def fetch_html(url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES):
     last_err = None
     for attempt in range(1, max_retries + 1):
@@ -3090,8 +3115,13 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy")
-    log(f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} SKIP_PAST_RACES={SKIP_PAST_RACES}")
+    log("[collector_version] collector_latest_rankgate_v10_21_timeheavy_settlelight")
+    log(
+        f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
+        f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
+        f"RESULT_LOOKBACK_MINUTES={RESULT_LOOKBACK_MINUTES} "
+        f"RESULT_PENDING_LIMIT={RESULT_PENDING_LIMIT}"
+    )
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
@@ -3124,38 +3154,59 @@ def build_candidates():
     deadlines_cache = fetch_deadlines_parallel(needed_jcds)
     deadlines_cache = fill_missing_deadlines(rows, deadlines_cache)
 
-    venue_targets = {}
-    for row in rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if not jcd:
-            continue
-        venue_targets[jcd] = max(venue_targets.get(jcd, 0), int(row.get("race_no") or 0))
-    day_result_cache = fetch_day_results_parallel(venue_targets) if venue_targets else {}
+    latest_rows = []
+    settle_rows = []
 
-    filtered_rows = []
     for row in rows:
         venue = row["venue"]
         race_no = row["race_no"]
         jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
+
         deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
         row["time"] = deadline
+
+        race_key = f"{venue}|{race_no}R"
+        base_info = base_map.get(race_key) or {}
+        pending_settle = is_settle_pending(base_info)
+
         if is_target_deadline(deadline):
-            filtered_rows.append(row)
+            latest_rows.append(row)
+        elif pending_settle and is_recent_past_race(deadline):
+            settle_rows.append(row)
 
-    rows = filtered_rows
-    log(f"[target_races_summary] count={len(rows)}")
+    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "99:99"))
+    if len(settle_rows) > RESULT_PENDING_LIMIT:
+        settle_rows = settle_rows[:RESULT_PENDING_LIMIT]
 
-    all_keys = set()
-    for row in rows:
+    rows = latest_rows + settle_rows
+    log(
+        f"[target_races_summary] latest={len(latest_rows)} "
+        f"settle_pending={len(settle_rows)} total={len(rows)}"
+    )
+
+    live_keys = set()
+    settle_keys = set()
+    for row in latest_rows:
         venue = row["venue"]
         race_no = row["race_no"]
         jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
         if jcd:
-            all_keys.add((jcd, race_no))
+            live_keys.add((jcd, race_no))
+    for row in settle_rows:
+        venue = row["venue"]
+        race_no = row["race_no"]
+        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        if jcd:
+            settle_keys.add((jcd, race_no))
 
-    beforeinfo_cache = fetch_beforeinfo_parallel(all_keys) if all_keys else {}
+    beforeinfo_cache = fetch_beforeinfo_parallel(live_keys) if live_keys else {}
+
+    venue_targets = {}
+    for jcd, race_no in settle_keys:
+        venue_targets[jcd] = max(venue_targets.get(jcd, 0), int(race_no or 0))
+    day_result_cache = fetch_day_results_parallel(venue_targets) if venue_targets else {}
 
     results = []
     skipped_no_base = 0
@@ -3175,6 +3226,28 @@ def build_candidates():
             log(f"[skip_no_base] key={race_key}")
             continue
 
+        result_info = day_result_cache.get((jcd, race_no), {}) if (jcd, race_no) in settle_keys else {}
+        is_live_target = (jcd, race_no) in live_keys
+
+        if not is_live_target:
+            result_text = str(result_info.get("triplet") or "").strip()
+            result_payout = int(result_info.get("trifecta_payout") or 0)
+            if not result_text and result_payout <= 0:
+                continue
+
+            candidate = {
+                "race_date": today_text(),
+                "venue": venue,
+                "race_no": f"{race_no}R",
+                "time": deadline,
+                "result_trifecta_text": result_text,
+                "result_trifecta_payout": result_payout,
+                "result_source_url": build_resultlist_url(jcd),
+                "latest_updated_at": jst_now_str(),
+            }
+            results.append(candidate)
+            continue
+
         base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
         base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
         base_reason_text = str(base_info.get("base_reason_text") or "").strip()
@@ -3190,11 +3263,27 @@ def build_candidates():
 
         foot_material = build_foot_material(exhibition_info, start_info, weather_info)
         signal_metrics = calculate_latest_signal_metrics(exhibition_info, foot_material)
-        analyzed = analyze_latest(base_ai_score, exhibition_info, weather_info, foot_material, signal_metrics=signal_metrics)
-        scenario_factor = scenario_strength_factor(exhibition_info, foot_material, signal_metrics=signal_metrics)
+        analyzed = analyze_latest(
+            base_ai_score,
+            exhibition_info,
+            weather_info,
+            foot_material,
+            signal_metrics=signal_metrics,
+        )
+        scenario_factor = scenario_strength_factor(
+            exhibition_info,
+            foot_material,
+            signal_metrics=signal_metrics,
+        )
 
-        day_trend_bias = build_day_trend_bias(jcd, race_no, day_result_cache)
-        role_maps = build_role_score_maps(venue, exhibition_info, weather_info, foot_material, day_trend_bias=day_trend_bias)
+        day_trend_bias = build_day_trend_bias(jcd, race_no, {})
+        role_maps = build_role_score_maps(
+            venue,
+            exhibition_info,
+            weather_info,
+            foot_material,
+            day_trend_bias=day_trend_bias,
+        )
         role_maps = apply_phase_material_to_role_maps(role_maps, phase_material=phase_material)
         scenario_material = build_turn_scenario_material(
             venue,
@@ -3216,10 +3305,6 @@ def build_candidates():
             latest_reason_parts.append("朝評価をやや優先")
         if scenario_material.get("scenario_text"):
             latest_reason_parts.append(f"隊形:{scenario_material['scenario_text']}")
-        if day_trend_bias.get("trend_text"):
-            latest_reason_parts.append(f"当日傾向:{day_trend_bias['trend_text']}")
-        elif day_trend_bias.get("observe_text"):
-            latest_reason_parts.append(day_trend_bias.get("observe_text"))
         if phase_material.get("reason_text"):
             latest_reason_parts.append(f"開催:{phase_material['reason_text']}")
 
@@ -3244,7 +3329,6 @@ def build_candidates():
         final_ai_score = round(final_ai_score + float(phase_material.get("score_adjust", 0) or 0), 2)
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
 
-        result_info = day_result_cache.get((jcd, race_no), {}) if is_past_race(deadline) else {}
         candidate = {
             "race_date": today_text(),
             "venue": venue,
@@ -3258,8 +3342,8 @@ def build_candidates():
             "wind_type": str(weather_info.get("wind_type") or "").strip(),
             "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
             "water_state_score": float(weather_info.get("water_state_score") or 0),
-            "day_trend_text": str(day_trend_bias.get("trend_text") or "").strip(),
-            "day_trend_sample": int(day_trend_bias.get("sample_size") or 0),
+            "day_trend_text": "",
+            "day_trend_sample": 0,
             "series_day": series_day,
             "race_phase": race_phase,
             "ai_lane_score_text": ai_lane_score_text,
@@ -3279,9 +3363,6 @@ def build_candidates():
             ),
             "latest_reason_text": " / ".join(latest_reason_parts[:10]),
             "latest_updated_at": jst_now_str(),
-            "result_trifecta_text": str(result_info.get("triplet") or "").strip(),
-            "result_trifecta_payout": int(result_info.get("trifecta_payout") or 0),
-            "result_source_url": build_resultlist_url(jcd) if result_info else "",
         }
         results.append(candidate)
 
@@ -3297,7 +3378,6 @@ def build_candidates():
     log(f"build_candidates final_count={len(results)}")
     log("========== build_candidates end ==========")
     return results
-
 
 def send_to_render(races):
     if not RENDER_IMPORT_URL:
