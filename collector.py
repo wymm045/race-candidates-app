@@ -379,6 +379,15 @@ def normalize_race_no_value(race_no):
         return int(m.group(1)) if m else 0
 
 
+def parse_base_map_race_key(race_key):
+    s = str(race_key or "").strip()
+    if "|" not in s:
+        return "", 0
+    venue, race_no_text = s.split("|", 1)
+    race_no = normalize_race_no_value(race_no_text)
+    return venue.strip(), race_no
+
+
 def is_exhibition_time_value(val):
     return isinstance(val, (int, float)) and 6.2 <= float(val) <= 8.5
 
@@ -3192,8 +3201,37 @@ def build_candidates():
         key = (row["venue"], row["race_no"])
         if key not in dedup:
             dedup[key] = row
+
+    extra_settle_seed = 0
+    for race_key, base_info in base_map.items():
+        venue, race_no = parse_base_map_race_key(race_key)
+        if not venue or not race_no:
+            continue
+        key = (venue, race_no)
+        if key in dedup:
+            continue
+        if not is_settle_pending(base_info):
+            continue
+
+        deadline = str(base_info.get("time") or "").strip()
+        if not deadline or not is_recent_past_race(deadline):
+            continue
+
+        jcd = NAME_JCD_MAP.get(venue, "")
+        if not jcd:
+            continue
+
+        dedup[key] = {
+            "venue": venue,
+            "jcd": jcd,
+            "race_no": race_no,
+            "selection": str(base_info.get("final_ai_selection") or base_info.get("base_ai_selection") or "").strip(),
+            "time": deadline,
+        }
+        extra_settle_seed += 1
+
     rows = list(dedup.values())
-    log(f"[dedup_summary] count={len(rows)}")
+    log(f"[dedup_summary] count={len(rows)} extra_settle_seed={extra_settle_seed}")
 
     base_keys = set(base_map.keys())
     filtered_by_base = []
@@ -3223,7 +3261,7 @@ def build_candidates():
         if not jcd:
             continue
 
-        deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
+        deadline = deadlines_cache.get(jcd, {}).get(race_no, "") or str(row.get("time") or "").strip()
         row["time"] = deadline
 
         race_key = f"{venue}|{race_no}R"
