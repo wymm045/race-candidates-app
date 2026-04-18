@@ -1009,6 +1009,13 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
 
 def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_key=""):
     guide = build_bet_guide_data(final_rank, ai_selection, official_selection)
+    guide_icon_map = {
+        "strong": "🔥",
+        "buy": "🎯",
+        "watch": "👀",
+        "skip": "⏸️",
+    }
+    guide_icon = guide_icon_map.get(guide.get("tone"), "🎯")
     condition_html = ""
     for label, ok in guide["conditions"]:
         cls = "guide-check guide-check-ok" if ok else "guide-check guide-check-ng"
@@ -1030,9 +1037,12 @@ def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_
     return f'''
     <div class="bet-guide-box bet-guide-{guide['tone']}">
       <div class="bet-guide-head">
-        <div>
-          <div class="bet-guide-kicker">買い方メモ</div>
-          <div class="bet-guide-title">{guide['title']}</div>
+        <div class="bet-guide-title-wrap">
+          <div class="bet-guide-icon">{guide_icon}</div>
+          <div>
+            <div class="bet-guide-kicker">買い方メモ</div>
+            <div class="bet-guide-title">{guide['title']}</div>
+          </div>
         </div>
         <div class="bet-guide-recommend">{guide['recommend_text']}</div>
       </div>
@@ -1600,6 +1610,16 @@ def build_card_html(r, is_history=False, race_date=""):
     elif selected_count > 0:
         card_class += " card-purchased"
 
+    rank_for_class = str(r.get("final_rank") or "").strip()
+    if rank_for_class == "買い強め":
+        card_class += " card-rank-strong"
+    elif rank_for_class == "買い":
+        card_class += " card-rank-buy"
+    elif rank_for_class == "様子見":
+        card_class += " card-rank-watch"
+    elif rank_for_class:
+        card_class += " card-rank-skip"
+
     status_parts = []
     if selected_count > 0:
         status_parts.append(f'<span class="status-badge status-badge-saved">購入済み {selected_count}点</span>')
@@ -1963,6 +1983,17 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="sub">現在の絞り込み: {filter_status_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
+        <div class="daily-rule-panel">
+          <div class="daily-rule-main">
+            <div class="daily-rule-kicker">今日の買い方</div>
+            <div class="daily-rule-title">本線3点中心。200円は条件が揃う買い強めだけ。</div>
+          </div>
+          <div class="daily-rule-steps">
+            <span>買い/買い強め → 本線3点</span>
+            <span>様子見 → 条件付き</span>
+            <span>見送り寄り → 買わない</span>
+          </div>
+        </div>
         <form method="get" action="/" class="filter-box">
           <div class="filter-grid">
             <div class="filter-item filter-item-wide">
@@ -2436,6 +2467,138 @@ def render_layout(title, body_html):
         .bottom-nav-item{border-radius:12px}
         .bottom-nav-item.active{background:none;box-shadow:none;color:#175cd3;}
       }
+
+
+      /* v10.28 UI polish */
+      :root{
+        --brand:#175cd3;
+        --ink:#101828;
+        --muted:#667085;
+        --line:#e6eaf2;
+        --surface:#ffffff;
+        --soft:#f8fafc;
+        --good:#027a48;
+        --warn:#b54708;
+        --bad:#b42318;
+      }
+      body{
+        background:
+          radial-gradient(circle at top left, rgba(47,91,210,.10), transparent 28%),
+          radial-gradient(circle at top right, rgba(2,122,72,.08), transparent 24%),
+          #f5f7fb;
+      }
+      .topbar{
+        position:sticky;
+        top:calc(8px + env(safe-area-inset-top,0px));
+        z-index:40;
+        backdrop-filter:blur(14px);
+        background:rgba(255,255,255,.88);
+        border:1px solid rgba(230,234,242,.9);
+      }
+      .brand-logo{
+        width:42px;height:42px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+        background:linear-gradient(135deg,#eef4ff,#ecfdf3);
+        box-shadow:inset 0 0 0 1px rgba(255,255,255,.8);
+      }
+      .hero-strong{
+        border:1px solid rgba(230,234,242,.9);
+        background:
+          linear-gradient(180deg,rgba(255,255,255,.96),rgba(248,251,255,.94)),
+          radial-gradient(circle at top right,rgba(47,91,210,.12),transparent 35%);
+      }
+      .daily-rule-panel{
+        margin-top:12px;
+        display:grid;
+        grid-template-columns:1.1fr 1.5fr;
+        gap:10px;
+        align-items:center;
+        border:1px solid #dbe7ff;
+        background:linear-gradient(135deg,#eef4ff,#ffffff 58%,#ecfdf3);
+        border-radius:16px;
+        padding:12px;
+      }
+      .daily-rule-kicker{font-size:12px;font-weight:900;color:#175cd3;letter-spacing:.04em}
+      .daily-rule-title{font-size:16px;font-weight:900;color:#101828;margin-top:2px;line-height:1.35}
+      .daily-rule-steps{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+      .daily-rule-steps span{display:inline-flex;border:1px solid #d0d5dd;background:#fff;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:800;color:#344054}
+      .card{
+        position:relative;
+        overflow:hidden;
+        border:1px solid rgba(230,234,242,.95);
+        box-shadow:0 10px 30px rgba(16,24,40,.07);
+        transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+      }
+      .card:hover{transform:translateY(-1px);box-shadow:0 16px 38px rgba(16,24,40,.10)}
+      .card:before{
+        content:"";
+        position:absolute;left:0;top:0;bottom:0;width:6px;
+        background:#d0d5dd;
+      }
+      .card-rank-strong:before{background:linear-gradient(180deg,#12b76a,#175cd3)}
+      .card-rank-buy:before{background:linear-gradient(180deg,#2e90fa,#175cd3)}
+      .card-rank-watch:before{background:linear-gradient(180deg,#f79009,#fdb022)}
+      .card-rank-skip:before{background:linear-gradient(180deg,#98a2b3,#d0d5dd)}
+      .card-hit{box-shadow:0 16px 42px rgba(193,21,116,.10);border-color:#f5c2da}
+      .card-purchased{box-shadow:0 16px 42px rgba(6,118,71,.10);border-color:#abefc6}
+      .card-top-main{padding:4px 0 2px 6px;}
+      .race-spot-main{background:linear-gradient(135deg,#101828,#263245);box-shadow:0 8px 18px rgba(16,24,40,.16);}
+      .time{letter-spacing:-.03em}
+      .badge-row,.metric-badge-row{padding-left:6px}
+      .metric-badge{border-color:#e6eaf2;background:rgba(248,250,252,.88);}
+      .metric-badge-strong{background:linear-gradient(135deg,#eef4ff,#ffffff);border-color:#cfe0ff;color:#124fc2;}
+      .info-box{border:1px solid #edf0f5;background:#fff;border-radius:16px;padding:2px 12px;}
+      .row-selection-highlight{background:linear-gradient(180deg,#fbfcff,#ffffff);margin:0 -6px;padding-left:6px;padding-right:6px;border-radius:14px;}
+      .selection-compare-wrap{grid-template-columns:minmax(0,1.18fr) minmax(0,.82fr);}
+      .selection-compare-col{border-color:#e6eaf2;background:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.7);}
+      .selection-compare-col-ai{background:linear-gradient(180deg,#fffaf2,#ffffff);border-color:#f6d6a6;}
+      .selection-col-title{display:flex;align-items:center;gap:6px;font-size:13px;color:#344054;}
+      .selection-col-title-ai:before{content:"◎";color:#b54708;font-weight:900}
+      .selection-col-title-official:before{content:"参";display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;background:#eef4ff;color:#175cd3;font-size:11px;font-weight:900}
+      .quick-select-row{position:sticky;top:74px;z-index:8;background:rgba(255,250,242,.88);backdrop-filter:blur(10px);border:1px solid #f6d6a6;padding:8px;border-radius:14px;margin-bottom:10px;}
+      .quick-select-btn{box-shadow:0 3px 10px rgba(16,24,40,.06);}
+      .quick-select-main{background:linear-gradient(135deg,#101828,#175cd3);border-color:#175cd3;}
+      .selection-section{border-radius:14px;padding:9px;}
+      .selection-section-core{background:#fff7ea;border:1px solid #f6d6a6;}
+      .selection-section-cover{margin-top:8px;background:#f8fafc;border:1px dashed #d0d5dd;}
+      .selection-section-title{margin-bottom:7px;font-size:12px;font-weight:900;color:#344054;}
+      .selection-section-core .selection-section-title:before{content:"本命 ";color:#b54708}
+      .selection-section-cover .selection-section-title:before{content:"保険 ";color:#667085}
+      .selection-choice-body{border-radius:14px;box-shadow:0 2px 8px rgba(16,24,40,.04);}
+      .selection-choice-core .selection-choice-body{padding:10px 12px;border-color:#f2b96b;background:#fff;}
+      .selection-choice-cover .selection-choice-body{background:#ffffff;border-color:#d8dee8;}
+      .selection-choice-input:checked + .selection-choice-body{transform:translateY(-1px);}
+      .bet-guide-box{padding:14px;border-radius:18px;box-shadow:0 10px 26px rgba(16,24,40,.06);}
+      .bet-guide-title-wrap{display:flex;align-items:center;gap:10px}
+      .bet-guide-icon{width:38px;height:38px;border-radius:14px;display:flex;align-items:center;justify-content:center;background:#fff;box-shadow:0 6px 14px rgba(16,24,40,.08);font-size:20px;flex:0 0 auto}
+      .bet-guide-recommend{background:linear-gradient(135deg,#101828,#175cd3);box-shadow:0 8px 18px rgba(23,92,211,.18);}
+      .bet-guide-strong .bet-guide-recommend{background:linear-gradient(135deg,#027a48,#12b76a)}
+      .bet-guide-watch .bet-guide-recommend{background:linear-gradient(135deg,#b54708,#f79009)}
+      .bet-guide-skip .bet-guide-recommend{background:#667085}
+      .guide-check{box-shadow:0 2px 8px rgba(16,24,40,.04)}
+      .quick-select-recommend{border-radius:14px;padding:12px 14px;font-size:14px;box-shadow:0 10px 24px rgba(16,24,40,.12);}
+      .bet-control-box{background:linear-gradient(180deg,#ffffff,#f8fafc);border-color:#e6eaf2;box-shadow:0 8px 22px rgba(16,24,40,.05);}
+      .stake-select{border:2px solid #cfe0ff;background:#fff;font-size:16px;color:#101828}
+      .save-btn{background:linear-gradient(135deg,#175cd3,#101828);border-radius:14px;min-height:48px;box-shadow:0 12px 26px rgba(23,92,211,.22);transition:transform .14s ease, box-shadow .14s ease;}
+      .save-btn:active{transform:scale(.99);box-shadow:0 6px 16px rgba(23,92,211,.18)}
+      .bottom-nav{box-shadow:0 -10px 28px rgba(16,24,40,.08);}
+      .bottom-nav-item.active{color:#175cd3;}
+      @media (max-width:760px){
+        .topbar{top:calc(6px + env(safe-area-inset-top,0px));border-radius:18px}
+        .daily-rule-panel{grid-template-columns:1fr}
+        .daily-rule-steps{justify-content:flex-start}
+        .selection-compare-wrap{grid-template-columns:1fr}
+        .quick-select-row{top:82px}
+        .metric-badge-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding-left:0}
+        .metric-badge{justify-content:space-between;border-radius:14px;width:100%}
+        .bet-guide-head{flex-direction:column}
+        .bet-guide-recommend{width:100%;justify-content:center;text-align:center;border-radius:14px}
+        .bet-guide-row{grid-template-columns:1fr;gap:6px}
+        .bet-control-grid{grid-template-columns:1fr}
+        .save-btn{position:sticky;bottom:calc(76px + env(safe-area-inset-bottom,0px));z-index:20}
+        .info-box{padding:2px 10px}
+        .card:before{width:5px}
+      }
+
     </style>
     """
 
