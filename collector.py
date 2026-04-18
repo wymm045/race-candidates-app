@@ -122,10 +122,10 @@ RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "480"))
 RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
 
 # DBに誤った公式結果/払戻が入った時だけ使う修復モード。
-# この修復専用ファイルではデフォルトON。通常運用に戻す時は RESULT_REPAIR_MODE=0 にするか通常版へ戻す。
-RESULT_REPAIR_MODE = os.environ.get("RESULT_REPAIR_MODE", "1").strip() == "1"
+# 通常CronではデフォルトOFF。誤データ修復だけ PC実行や一時Cron で RESULT_REPAIR_MODE=1 にする。
+RESULT_REPAIR_MODE = os.environ.get("RESULT_REPAIR_MODE", "0").strip() == "1"
 RESULT_REPAIR_LOOKBACK_MINUTES = int(os.environ.get("RESULT_REPAIR_LOOKBACK_MINUTES", "720"))
-RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "120"))
+RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "48"))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -3732,7 +3732,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_result_repair_safe_payout")
+    log("[collector_version] collector_latest_rankgate_v10_23_cron_safe_3digit_fix")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
