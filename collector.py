@@ -4114,7 +4114,7 @@ def generate_top_triplets(
     return " / ".join(dedup)
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_24_core_cover_ai")
+    log("[collector_version] collector_latest_rankgate_v10_25_core_cover_keep_display_after_settle")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4257,7 +4257,11 @@ def build_candidates():
         if jcd:
             settle_keys.add((jcd, race_no))
 
-    beforeinfo_cache = fetch_beforeinfo_parallel(live_keys) if live_keys else {}
+    # 締切後の結果反映時にも、展示/気象表示を空で上書きしないように、
+    # settle対象も beforeinfo を軽く取得する。
+    # settle_rows は RESULT_PENDING_LIMIT で絞っているため、取得数は増えすぎない。
+    beforeinfo_keys = set(live_keys) | set(settle_keys)
+    beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
 
     venue_targets = {}
     for jcd, race_no in settle_keys:
@@ -4318,11 +4322,30 @@ def build_candidates():
                 log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
                 continue
 
+            # 結果だけを送ると app 側の保存処理によって、
+            # 展示タイム/展示順位/風/波などの表示が空で上書きされることがある。
+            # そのため、締切後の結果反映でも beforeinfo から取れる表示材料を一緒に送る。
+            beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
+            exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
+            weather_info = beforeinfo.get("weather", {})
+            start_info = beforeinfo.get("start_info", {"st_map": {}})
+            foot_material = build_foot_material(exhibition_info, start_info, weather_info)
+            ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
+
             candidate = {
                 "race_date": today_text(),
                 "venue": venue,
                 "race_no": f"{race_no}R",
                 "time": deadline,
+                "exhibition": exhibition_info.get("times", []),
+                "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
+                "weather": str(weather_info.get("weather") or "").strip(),
+                "wind_speed": weather_info.get("wind_speed"),
+                "wave_height": weather_info.get("wave_height"),
+                "wind_type": str(weather_info.get("wind_type") or "").strip(),
+                "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
+                "water_state_score": float(weather_info.get("water_state_score") or 0),
+                "ai_lane_score_text": ai_lane_score_text,
                 "result_trifecta_text": result_text,
                 "result_trifecta_payout": result_payout,
                 "result_source_url": build_resultlist_url(jcd),
