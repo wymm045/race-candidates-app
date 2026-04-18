@@ -116,7 +116,10 @@ def is_past_race(time_str):
         return False
 
 
-RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "180"))
+# 結果・払戻の自動反映用。
+# 1Rなど古いレースの「結果は入ったが払戻だけ未反映」も拾えるように長め。
+# 実際の取得件数は RESULT_PENDING_LIMIT で絞るので重くなりすぎない。
+RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "480"))
 RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
 
 
@@ -1081,9 +1084,9 @@ def parse_payout_from_text(text):
 
     # まず 3連単 / 三連単 の近くにある払戻を最優先で拾う
     targeted_patterns = [
-        r"(?:3連単|三連単)[^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
-        r"(?:払戻金|払戻|払戻金額)[^0-9]{0,20}(?:3連単|三連単)[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
-        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
+        r"(?:3連単|三連単)[^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
+        r"(?:払戻金|払戻|払戻金額)[^0-9]{0,20}(?:3連単|三連単)[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
+        r"(?:3連単|三連単)[^0-9]{0,10}[1-6][-=][1-6][-=][1-6][^0-9]{0,24}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
     ]
     for pat in targeted_patterns:
         m = re.search(pat, compact, re.I)
@@ -1094,8 +1097,8 @@ def parse_payout_from_text(text):
 
     # 「1-4-2 6,740円」「1-4-2 6740 12人気」のような形も拾う
     triplet_then_money_patterns = [
-        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?",
-        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:円)?[0-9]{1,2}人気",
+        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?",
+        r"([1-6])[-=]([1-6])[-=]([1-6])[^0-9]{0,12}([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?:円)?[0-9]{1,2}人気",
     ]
     for pat in triplet_then_money_patterns:
         m = re.search(pat, compact, re.I)
@@ -1112,11 +1115,11 @@ def parse_payout_from_text(text):
             continue
 
         for pat in [
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})円",
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})人気",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})円",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})人気",
             r"¥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
             r"￥([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?![0-9])",
+            r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})(?![0-9])",
         ]:
             for m in re.finditer(pat, line):
                 val = to_int(m.group(1))
@@ -1149,6 +1152,77 @@ def parse_payout_from_text(text):
     return max(loose_candidates) if loose_candidates else 0
 
 
+def parse_result_triplet_from_cells(cell_texts):
+    """
+    公式結果ページの table cell から3連単を拾う補助。
+    例: ["3連単", "1", "4", "2", "780", "2人気"] のように
+    号艇が別セルになっている場合に対応する。
+    """
+    texts = [str(x or "").strip() for x in (cell_texts or [])]
+    joined = " ".join(texts)
+
+    tri = parse_result_triplet_from_text(joined)
+    if tri:
+        return tri
+
+    start_idx = 0
+    for i, txt in enumerate(texts):
+        if "3連単" in txt or "三連単" in txt:
+            start_idx = i + 1
+            break
+
+    digits = []
+    for txt in texts[start_idx:]:
+        found = re.findall(r"\b([1-6])\b", txt)
+        for d in found:
+            digits.append(d)
+            if len(digits) >= 3:
+                break
+        if len(digits) >= 3:
+            break
+
+    if len(digits) >= 3:
+        return normalize_triplet(digits[0], digits[1], digits[2])
+    return ""
+
+
+def parse_payout_from_cells(cell_texts):
+    """
+    公式結果ページの table cell から3連単払戻を拾う補助。
+    780円のような3桁払戻や、円表記なしの別セルに対応する。
+    人気・艇番・R番号は除外し、3連単行だけを対象にする。
+    """
+    texts = [str(x or "").strip() for x in (cell_texts or [])]
+    if not texts:
+        return 0
+
+    joined = " ".join(texts)
+    if ("3連単" not in joined) and ("三連単" not in joined) and not parse_result_triplet_from_cells(texts):
+        return 0
+
+    candidates = []
+    for txt in texts:
+        s = str(txt or "").strip()
+        if not s:
+            continue
+        if "人気" in s:
+            continue
+        s = s.replace("円", "").replace("¥", "").replace("￥", "").replace(",", "").strip()
+        if not re.fullmatch(r"\d{3,7}", s):
+            continue
+        try:
+            val = int(s)
+        except Exception:
+            continue
+        if 100 <= val <= 5000000:
+            candidates.append(val)
+
+    if candidates:
+        return max(candidates)
+
+    return parse_payout_from_text(joined)
+
+
 def parse_resultlist_for_jcd(jcd):
     url = build_resultlist_url(jcd)
     try:
@@ -1178,27 +1252,28 @@ def parse_resultlist_for_jcd(jcd):
         if m_race:
             current_race_no = int(m_race.group(1))
 
-        tri = parse_result_triplet_from_text(compact_row)
+        tri = parse_result_triplet_from_cells(cell_texts) or parse_result_triplet_from_text(compact_row)
         if tri and current_race_no:
             try:
                 a, b, c = [int(x) for x in tri.split("-")]
             except Exception:
                 a = b = c = None
             if a is not None and current_race_no not in results:
+                cell_pay = parse_payout_from_cells(cell_texts)
                 results[current_race_no] = {
                     "triplet": tri,
                     "head": a,
                     "second": b,
                     "third": c,
                     "kimarite": parse_kimarite_from_text(compact_row),
-                    "trifecta_payout": parse_payout_from_text(row_text),
+                    "trifecta_payout": cell_pay or parse_payout_from_text(row_text),
                 }
             elif current_race_no in results:
                 kim = parse_kimarite_from_text(compact_row)
                 if kim and not results[current_race_no].get("kimarite"):
                     results[current_race_no]["kimarite"] = kim
 
-                pay = parse_payout_from_text(row_text)
+                pay = parse_payout_from_cells(cell_texts) or parse_payout_from_text(row_text)
                 if pay and pay > int(results[current_race_no].get("trifecta_payout") or 0):
                     results[current_race_no]["trifecta_payout"] = pay
 
@@ -1302,6 +1377,28 @@ def parse_raceresult_for_key(jcd, race_no):
     tri = parse_result_triplet_from_text(text)
     pay = parse_payout_from_text(text)
     kim = parse_kimarite_from_text(text)
+
+    # table cell が分かれている3連単行を優先して確認。
+    # 3桁払戻や円なし表記でも拾えるようにする。
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if not cells:
+            continue
+        cell_texts = [c.get_text(" ", strip=True) for c in cells]
+        row_text = " ".join(cell_texts)
+        if "3連単" not in row_text and "三連単" not in row_text:
+            continue
+        cell_tri = parse_result_triplet_from_cells(cell_texts)
+        cell_pay = parse_payout_from_cells(cell_texts)
+        cell_kim = parse_kimarite_from_text(row_text)
+        if cell_tri:
+            tri = cell_tri
+        if cell_pay > 0:
+            pay = cell_pay
+        if cell_kim and not kim:
+            kim = cell_kim
+        if tri and pay > 0:
+            break
 
     if not tri:
         for line in lines:
@@ -3612,7 +3709,7 @@ def generate_top_triplets(
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_payout_priority_fix")
+    log("[collector_version] collector_latest_rankgate_v10_23_lane1support_payout_priority_3digit_fix")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
