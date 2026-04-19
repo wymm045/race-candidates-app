@@ -4194,8 +4194,46 @@ def generate_top_triplets(
 
     return " / ".join(dedup)
 
+
+
+def normalize_candidate_source(value):
+    s = str(value or "").strip()
+    if s == "shadow_ai":
+        return "shadow_ai"
+    return "official_star"
+
+
+def make_base_map_source_key(venue, race_no, candidate_source="official_star"):
+    return f"{str(venue or '').strip()}|{normalize_race_no_value(race_no)}R|{normalize_candidate_source(candidate_source)}"
+
+
+def make_base_map_legacy_key(venue, race_no):
+    return f"{str(venue or '').strip()}|{normalize_race_no_value(race_no)}R"
+
+
+def parse_base_map_key(key):
+    parts = str(key or "").split("|")
+    if len(parts) < 2:
+        return "", 0, "official_star", False
+    venue = parts[0].strip()
+    race_no = normalize_race_no_value(parts[1])
+    has_source = len(parts) >= 3
+    source = normalize_candidate_source(parts[2] if has_source else "official_star")
+    return venue, race_no, source, has_source
+
+
+def get_base_info_for_source(base_map, venue, race_no, candidate_source="official_star"):
+    source = normalize_candidate_source(candidate_source)
+    info = base_map.get(make_base_map_source_key(venue, race_no, source))
+    if info:
+        return info
+    # 旧app.py互換。公式候補だけは従来キーも見る。
+    if source == "official_star":
+        return base_map.get(make_base_map_legacy_key(venue, race_no), {}) or {}
+    return {}
+
 def build_candidates():
-    log("[collector_version] collector_latest_v10_27_more_hit_lines_keep_display_after_settle")
+    log("[collector_version] collector_latest_v10_36_shadow_ai_source")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4208,63 +4246,67 @@ def build_candidates():
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
 
     base_map = fetch_base_map_today()
+
+    # 公式★ページは「公式買い目の参考」として使う。
+    # 対象レース自体は base_map に保存済みのものを正とする。
     raw_rows = parse_rating_page()
-
-    dedup = {}
+    official_selection_map = {}
     for row in raw_rows:
-        key = (row["venue"], row["race_no"])
-        if key not in dedup:
-            dedup[key] = row
-    rows = list(dedup.values())
-
-    base_keys = set(base_map.keys())
-    filtered_by_base = []
-    existing_row_keys = set()
-    for row in rows:
-        race_key = f"{row['venue']}|{row['race_no']}R"
-        if race_key in base_keys:
-            filtered_by_base.append(row)
-            existing_row_keys.add((row["venue"], int(row["race_no"])))
-    rows = filtered_by_base
-
-    extra_settle_seed = 0
-    for race_key, base_info in base_map.items():
-        try:
-            venue, race_no_text = str(race_key).split("|", 1)
-        except Exception:
-            continue
-
-        race_no = normalize_race_no_value(race_no_text)
+        venue = str(row.get("venue") or "").strip()
+        race_no = normalize_race_no_value(row.get("race_no"))
         if not venue or race_no <= 0:
             continue
-        if (venue, race_no) in existing_row_keys:
+        official_selection_map[(venue, race_no)] = {
+            "selection": str(row.get("selection") or "").strip(),
+            "jcd": str(row.get("jcd") or NAME_JCD_MAP.get(venue, "")).strip(),
+        }
+
+    # base_map は新app.pyでは venue|race_no|candidate_source を返す。
+    # 旧app.py互換で venue|race_no だけの場合も official_star として扱う。
+    has_source_keys = any(parse_base_map_key(k)[3] for k in base_map.keys())
+    row_map = {}
+    legacy_skipped = 0
+
+    for base_key, base_info in (base_map or {}).items():
+        venue, race_no, candidate_source, has_source = parse_base_map_key(base_key)
+        if not venue or race_no <= 0:
             continue
 
-        pending_settle = is_settle_pending(base_info)
-        base_time = str(base_info.get("time") or "").strip()
-        repair_target = RESULT_REPAIR_MODE and is_recent_past_race(
-            base_time,
-            lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
-        )
-        if not ((pending_settle and is_recent_past_race(base_time)) or repair_target):
+        # 新app.pyでは公式候補に legacy key も返るので、二重処理しない。
+        if has_source_keys and not has_source:
+            legacy_skipped += 1
             continue
 
         jcd = NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
 
-        rows.append({
+        official_info = official_selection_map.get((venue, race_no), {})
+        selection_from_rating_page = str(official_info.get("selection") or "").strip()
+        if not jcd and official_info.get("jcd"):
+            jcd = official_info.get("jcd")
+
+        row_key = (venue, race_no, candidate_source)
+        if row_key in row_map:
+            continue
+
+        row_map[row_key] = {
             "venue": venue,
             "jcd": jcd,
             "race_no": race_no,
-            "selection": "",
-            "time": base_time,
-        })
-        existing_row_keys.add((venue, race_no))
-        extra_settle_seed += 1
+            "candidate_source": candidate_source,
+            "selection": selection_from_rating_page,
+            "rating": str((base_info or {}).get("rating") or "").strip(),
+            "time": str((base_info or {}).get("time") or "").strip(),
+        }
 
-    log(f"[dedup_summary] count={len(dedup)} extra_settle_seed={extra_settle_seed}")
-    log(f"[base_match_summary] count={len(rows)}")
+    rows = list(row_map.values())
+    official_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
+    shadow_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
+    log(
+        f"[base_source_rows] official={official_rows_count} "
+        f"shadow_ai={shadow_rows_count} legacy_skipped={legacy_skipped} total={len(rows)}"
+    )
 
     needed_jcds = set()
     for row in rows:
@@ -4280,14 +4322,18 @@ def build_candidates():
 
     for row in rows:
         venue = row["venue"]
-        race_no = row["race_no"]
+        race_no = int(row["race_no"])
+        candidate_source = normalize_candidate_source(row.get("candidate_source"))
         jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
 
-        race_key = f"{venue}|{race_no}R"
-        base_info = base_map.get(race_key) or {}
-        deadline = str(row.get("time") or "").strip() or str(base_info.get("time") or "").strip() or deadlines_cache.get(jcd, {}).get(race_no, "")
+        base_info = get_base_info_for_source(base_map, venue, race_no, candidate_source)
+        deadline = (
+            str(row.get("time") or "").strip()
+            or str((base_info or {}).get("time") or "").strip()
+            or deadlines_cache.get(jcd, {}).get(race_no, "")
+        )
         row["time"] = deadline
 
         pending_settle = is_settle_pending(base_info)
@@ -4301,8 +4347,8 @@ def build_candidates():
         elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
             settle_rows.append(row)
 
-    # 締切後の結果反映は、新しく締切を過ぎたレースから優先する
-    # 修復モードでは、既に誤結果/誤払戻が入っている可能性があるので多めに再確認する
+    # 締切後の結果反映は、新しく締切を過ぎたレースから優先する。
+    # 同一レースに official_star / shadow_ai がある場合も両方更新できるよう、sourceは保持する。
     settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
     effective_pending_limit = RESULT_REPAIR_LIMIT if RESULT_REPAIR_MODE else RESULT_PENDING_LIMIT
     if len(settle_rows) > effective_pending_limit:
@@ -4312,35 +4358,37 @@ def build_candidates():
         log(
             "[settle_priority] "
             + ", ".join([
-                f"{r.get('venue')}#{r.get('race_no')}@{r.get('time')}"
+                f"{r.get('venue')}#{r.get('race_no')}@{r.get('time')}[{normalize_candidate_source(r.get('candidate_source'))}]"
                 for r in settle_rows
             ])
         )
 
     rows = latest_rows + settle_rows
+    latest_official = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
+    latest_shadow = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
+    settle_official = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
+    settle_shadow = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
     log(
-        f"[target_races_summary] latest={len(latest_rows)} "
-        f"settle_pending={len(settle_rows)} total={len(rows)}"
+        f"[target_races_summary] latest={len(latest_rows)}(official={latest_official},shadow={latest_shadow}) "
+        f"settle_pending={len(settle_rows)}(official={settle_official},shadow={settle_shadow}) total={len(rows)}"
     )
 
     live_keys = set()
     settle_keys = set()
     for row in latest_rows:
         venue = row["venue"]
-        race_no = row["race_no"]
+        race_no = int(row["race_no"])
         jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if jcd:
             live_keys.add((jcd, race_no))
     for row in settle_rows:
         venue = row["venue"]
-        race_no = row["race_no"]
+        race_no = int(row["race_no"])
         jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if jcd:
             settle_keys.add((jcd, race_no))
 
-    # 締切後の結果反映時にも、展示/気象表示を空で上書きしないように、
-    # settle対象も beforeinfo を軽く取得する。
-    # settle_rows は RESULT_PENDING_LIMIT で絞っているため、取得数は増えすぎない。
+    # 同じレースに複数sourceがあっても、beforeinfo/result取得はレース単位で1回だけ。
     beforeinfo_keys = set(live_keys) | set(settle_keys)
     beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
 
@@ -4379,17 +4427,17 @@ def build_candidates():
 
     for row in rows:
         venue = row["venue"]
-        race_no = row["race_no"]
+        race_no = int(row["race_no"])
+        candidate_source = normalize_candidate_source(row.get("candidate_source"))
         selection_from_rating_page = row.get("selection", "")
         jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         deadline = row.get("time", "")
 
-        race_key = f"{venue}|{race_no}R"
-        base_info = base_map.get(race_key)
+        base_info = get_base_info_for_source(base_map, venue, race_no, candidate_source)
 
         if not base_info:
             skipped_no_base += 1
-            log(f"[skip_no_base] key={race_key}")
+            log(f"[skip_no_base] key={make_base_map_source_key(venue, race_no, candidate_source)}")
             continue
 
         result_info = day_result_cache.get((jcd, race_no), {}) if (jcd, race_no) in settle_keys else {}
@@ -4398,14 +4446,16 @@ def build_candidates():
         if not is_live_target:
             result_text = str(result_info.get("triplet") or "").strip()
             result_payout = int(result_info.get("trifecta_payout") or 0)
-            log(f"[settle_candidate] venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}")
+            log(
+                f"[settle_candidate] source={candidate_source} "
+                f"venue={venue} race_no={race_no} result_text={result_text} payout={result_payout}"
+            )
             if not result_text and result_payout <= 0:
-                log(f"[settle_skip_empty] venue={venue} race_no={race_no}")
+                log(f"[settle_skip_empty] source={candidate_source} venue={venue} race_no={race_no}")
                 continue
 
             # 結果だけを送ると app 側の保存処理によって、
             # 展示タイム/展示順位/風/波などの表示が空で上書きされることがある。
-            # そのため、締切後の結果反映でも beforeinfo から取れる表示材料を一緒に送る。
             beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
             exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
             weather_info = beforeinfo.get("weather", {})
@@ -4417,6 +4467,7 @@ def build_candidates():
                 "race_date": today_text(),
                 "venue": venue,
                 "race_no": f"{race_no}R",
+                "candidate_source": candidate_source,
                 "time": deadline,
                 "exhibition": exhibition_info.get("times", []),
                 "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
@@ -4482,6 +4533,8 @@ def build_candidates():
         )
 
         latest_reason_parts = []
+        if candidate_source == "shadow_ai":
+            latest_reason_parts.append("裏AI候補")
         if base_reason_text:
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
@@ -4522,6 +4575,7 @@ def build_candidates():
             "race_date": today_text(),
             "venue": venue,
             "race_no": f"{race_no}R",
+            "candidate_source": candidate_source,
             "time": deadline,
             "exhibition": exhibition_info.get("times", []),
             "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
@@ -4560,11 +4614,14 @@ def build_candidates():
             to_minutes(x["time"]) if x["time"] else 9999,
             x["venue"],
             int(str(x["race_no"]).replace("R", "")),
+            normalize_candidate_source(x.get("candidate_source")),
         )
     )
 
+    final_official = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "official_star")
+    final_shadow = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "shadow_ai")
     log(f"[skip_no_base_summary] count={skipped_no_base}")
-    log(f"build_candidates final_count={len(results)}")
+    log(f"build_candidates final_count={len(results)} official={final_official} shadow_ai={final_shadow}")
     log("========== build_candidates end ==========")
     return results
 
