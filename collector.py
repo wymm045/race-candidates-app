@@ -8,6 +8,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
+# collector_latest_v10_26_wide_cover_keep_display_after_settle.py
+# v10.26: 保険3点を「公式寄せ」ではなく「別頭・相手抜けカバー」へ調整。
+
 JST = timezone(timedelta(hours=9))
 
 RENDER_IMPORT_URL = os.environ.get(
@@ -3495,6 +3498,7 @@ def build_core_cover_triplets(
         cover.append(tri)
 
     # 1) 本線の2・3着入れ替えを優先
+    #    頭は同じまま、相手抜けを拾う。
     for tri in main:
         try:
             a, b, c = tri.split("-")
@@ -3503,15 +3507,8 @@ def build_core_cover_triplets(
         swap = f"{a}-{c}-{b}"
         add_cover(swap)
 
-    # 2) 公式上位2点はAI補正材料として保険に入れる
-    for tri in official_triplets[:2]:
-        add_cover(tri)
-
-    # 3) 朝/baseの上位も1〜2点残す
-    for tri in base_triplets[:3]:
-        add_cover(tri)
-
-    # 4) 本線と同じ頭で、2・3着違いを補充
+    # 2) AIの2番手・3番手頭を保険側で拾う
+    #    公式へ寄せるのではなく、直前材料で出た別頭シナリオを残す。
     main_heads = []
     for tri in main:
         try:
@@ -3521,6 +3518,60 @@ def build_core_cover_triplets(
         if h not in main_heads:
             main_heads.append(h)
 
+    for head in head_ranked[:4]:
+        if len(cover) >= 3:
+            break
+        try:
+            head = int(head)
+        except Exception:
+            continue
+        if head in main_heads:
+            continue
+        if is_outer_head_too_loose(head, exhibition_info, foot_material, lane_score_map):
+            continue
+        tri = pick_best_triplet_by_condition(
+            scored_rows,
+            lambda a, b, c, t, head=head: a == head,
+            exclude_triplets=selected + cover,
+        )
+        add_cover(tri)
+
+    # 3) 展示・足色上位は頭だけでなく2着/3着にも残す
+    #    外枠が良く見える時も、いきなり頭固定にせず相手側でカバーする。
+    strong_lanes = [lane for lane, _score in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)[:3]]
+    for lane in strong_lanes:
+        if len(cover) >= 3:
+            break
+        try:
+            lane = int(lane)
+        except Exception:
+            continue
+        tri = pick_best_triplet_by_condition(
+            scored_rows,
+            lambda a, b, c, t, lane=lane: (b == lane or c == lane),
+            exclude_triplets=selected + cover,
+        )
+        add_cover(tri)
+
+    # 4) 朝/baseの上位も1〜2点残す
+    #    直前材料が弱い時の戻し先として使う。
+    for tri in base_triplets[:3]:
+        if len(cover) >= 3:
+            break
+        add_cover(tri)
+
+    # 5) 公式は答えではなく安全確認用。
+    #    強制採用はせず、AIスコア上位に残っている場合だけ最後の候補として扱う。
+    top_score_values = [score for _tri, score in scored_rows[:12]]
+    soft_line = min(top_score_values) if top_score_values else None
+    for tri in official_triplets[:2]:
+        if len(cover) >= 3:
+            break
+        if soft_line is not None and score_map.get(tri, -999) < soft_line:
+            continue
+        add_cover(tri)
+
+    # 6) 本線と同じ頭で、2・3着違いを補充
     for head in main_heads:
         for tri, _score in scored_rows:
             if len(cover) >= 3:
@@ -3534,7 +3585,7 @@ def build_core_cover_triplets(
         if len(cover) >= 3:
             break
 
-    # 5) 最後に通常スコア上位で埋める
+    # 7) 最後に通常スコア上位で埋める
     for tri, _score in scored_rows:
         if len(cover) >= 3:
             break
@@ -4036,7 +4087,7 @@ def generate_top_triplets(
         if len(initial_top) >= 6:
             break
 
-    # v10.24: AI6点を「本線3点 + 相手入れ替え3点」に再構成
+    # v10.26: AI6点を「本線3点 + 別頭/相手抜けカバー3点」に再構成
     top = build_core_cover_triplets(
         initial_top,
         scored,
@@ -4104,7 +4155,7 @@ def generate_top_triplets(
     kept_official_count = len([tri for tri in dedup if tri in official_triplets])
 
     log(
-        f"[selection_regen_v10_24_core_cover] venue={venue} "
+        f"[selection_regen_v10_26_wide_cover] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
         f"official_keep={kept_official_count}/{len(official_triplets)} "
@@ -4114,7 +4165,7 @@ def generate_top_triplets(
     return " / ".join(dedup)
 
 def build_candidates():
-    log("[collector_version] collector_latest_rankgate_v10_25_core_cover_keep_display_after_settle")
+    log("[collector_version] collector_latest_v10_26_wide_cover_keep_display_after_settle")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
