@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_26_wide_cover_keep_display_after_settle.py
+# collector_latest_v10_27_more_hit_lines_keep_display_after_settle.py
 # v10.26: 保険3点を「公式寄せ」ではなく「別頭・相手抜けカバー」へ調整。
 
 JST = timezone(timedelta(hours=9))
@@ -3389,8 +3389,8 @@ def build_core_cover_triplets(
     base_hold_strength=0.0,
 ):
     """
-    AI6点を「本線3点 + 相手入れ替え3点」に整える。
-    1着候補を広げすぎず、2・3着の取りこぼしを減らす。
+    AI6点を「本線3点 + 別頭/相手抜けカバー3点」に整える。
+    まずAI6点内に結果が入りやすくなるよう、保険3点は頭違い・相手違いを優先する。
     """
     base_triplets = base_triplets or []
     official_triplets = official_triplets or []
@@ -3497,18 +3497,8 @@ def build_core_cover_triplets(
             return
         cover.append(tri)
 
-    # 1) 本線の2・3着入れ替えを優先
-    #    頭は同じまま、相手抜けを拾う。
-    for tri in main:
-        try:
-            a, b, c = tri.split("-")
-        except Exception:
-            continue
-        swap = f"{a}-{c}-{b}"
-        add_cover(swap)
-
-    # 2) AIの2番手・3番手頭を保険側で拾う
-    #    公式へ寄せるのではなく、直前材料で出た別頭シナリオを残す。
+    # 1) AIの2番手・3番手頭を先に保険側で拾う
+    #    v10.27: 先にスワップで埋めると別頭が入らないため、別頭を最優先にする。
     main_heads = []
     for tri in main:
         try:
@@ -3518,8 +3508,9 @@ def build_core_cover_triplets(
         if h not in main_heads:
             main_heads.append(h)
 
-    for head in head_ranked[:4]:
-        if len(cover) >= 3:
+    alt_head_added = 0
+    for head in head_ranked[:5]:
+        if len(cover) >= 3 or alt_head_added >= 2:
             break
         try:
             head = int(head)
@@ -3527,6 +3518,7 @@ def build_core_cover_triplets(
             continue
         if head in main_heads:
             continue
+        # 5/6頭は強い根拠が弱い時は無理に頭で拾わない
         if is_outer_head_too_loose(head, exhibition_info, foot_material, lane_score_map):
             continue
         tri = pick_best_triplet_by_condition(
@@ -3534,13 +3526,17 @@ def build_core_cover_triplets(
             lambda a, b, c, t, head=head: a == head,
             exclude_triplets=selected + cover,
         )
+        before = len(cover)
         add_cover(tri)
+        if len(cover) > before:
+            alt_head_added += 1
 
-    # 3) 展示・足色上位は頭だけでなく2着/3着にも残す
-    #    外枠が良く見える時も、いきなり頭固定にせず相手側でカバーする。
-    strong_lanes = [lane for lane, _score in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)[:3]]
+    # 2) 展示・足色上位は頭だけでなく2着/3着にも残す
+    #    当たり筋を増やすため、外枠の好気配も連絡みとして拾う。
+    strong_lanes = [lane for lane, _score in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)[:4]]
+    strong_line_added = 0
     for lane in strong_lanes:
-        if len(cover) >= 3:
+        if len(cover) >= 3 or strong_line_added >= 2:
             break
         try:
             lane = int(lane)
@@ -3551,16 +3547,50 @@ def build_core_cover_triplets(
             lambda a, b, c, t, lane=lane: (b == lane or c == lane),
             exclude_triplets=selected + cover,
         )
+        before = len(cover)
+        add_cover(tri)
+        if len(cover) > before:
+            strong_line_added += 1
+
+    # 3) 1号艇を完全に消しすぎないため、頭以外でも1を含む筋を1点だけ残す
+    #    ただし本線/保険にすでに1が絡んでいれば追加しない。
+    has_lane1_any = any('1' in tri.split('-') for tri in selected + cover if tri.count('-') == 2)
+    if len(cover) < 3 and not has_lane1_any:
+        tri = pick_best_triplet_by_condition(
+            scored_rows,
+            lambda a, b, c, t: (a == 1 or b == 1 or c == 1),
+            exclude_triplets=selected + cover,
+        )
         add_cover(tri)
 
-    # 4) 朝/baseの上位も1〜2点残す
-    #    直前材料が弱い時の戻し先として使う。
-    for tri in base_triplets[:3]:
-        if len(cover) >= 3:
+    # 4) 本線の2・3着入れ替えを1〜2点だけ入れる
+    #    頭は同じまま相手抜けを拾うが、これだけで保険3点を埋めない。
+    swap_added = 0
+    for tri in main:
+        if len(cover) >= 3 or swap_added >= 2:
             break
-        add_cover(tri)
+        try:
+            a, b, c = tri.split("-")
+        except Exception:
+            continue
+        swap = f"{a}-{c}-{b}"
+        before = len(cover)
+        add_cover(swap)
+        if len(cover) > before:
+            swap_added += 1
 
-    # 5) 公式は答えではなく安全確認用。
+    # 5) 朝/baseの上位も1〜2点残す
+    #    直前材料が弱い時の戻し先として使う。
+    base_added = 0
+    for tri in base_triplets[:4]:
+        if len(cover) >= 3 or base_added >= 2:
+            break
+        before = len(cover)
+        add_cover(tri)
+        if len(cover) > before:
+            base_added += 1
+
+    # 6) 公式は答えではなく安全確認用。
     #    強制採用はせず、AIスコア上位に残っている場合だけ最後の候補として扱う。
     top_score_values = [score for _tri, score in scored_rows[:12]]
     soft_line = min(top_score_values) if top_score_values else None
@@ -3571,7 +3601,7 @@ def build_core_cover_triplets(
             continue
         add_cover(tri)
 
-    # 6) 本線と同じ頭で、2・3着違いを補充
+    # 7) 本線と同じ頭で、2・3着違いを補充
     for head in main_heads:
         for tri, _score in scored_rows:
             if len(cover) >= 3:
@@ -4087,7 +4117,7 @@ def generate_top_triplets(
         if len(initial_top) >= 6:
             break
 
-    # v10.26: AI6点を「本線3点 + 別頭/相手抜けカバー3点」に再構成
+    # v10.27: AI6点を「本線3点 + 別頭/相手抜けカバー3点」に再構成。保険側の別筋を優先。
     top = build_core_cover_triplets(
         initial_top,
         scored,
@@ -4155,7 +4185,7 @@ def generate_top_triplets(
     kept_official_count = len([tri for tri in dedup if tri in official_triplets])
 
     log(
-        f"[selection_regen_v10_26_wide_cover] venue={venue} "
+        f"[selection_regen_v10_27_more_hit_lines] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
         f"official_keep={kept_official_count}/{len(official_triplets)} "
@@ -4165,7 +4195,7 @@ def generate_top_triplets(
     return " / ".join(dedup)
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_26_wide_cover_keep_display_after_settle")
+    log("[collector_version] collector_latest_v10_27_more_hit_lines_keep_display_after_settle")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
