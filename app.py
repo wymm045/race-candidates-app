@@ -1846,48 +1846,44 @@ def build_card_html(r, is_history=False, race_date=""):
 
       {bet_guide_html}
 
-      <div class="info-box">
-        <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
-        <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
-        <div class="row"><span class="label">1点あたり</span><span class="value"><span id="amount-inline-{race_id_key}">{yen(amount_per_point)}</span></span></div>
-        <div class="row result-row-compact"><span class="label">結果/収支</span><span class="value">
-          <div class="result-mini-grid">
-            <div><span class="mini-label">結果</span><span class="mini-value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
-            <div><span class="mini-label">払戻</span><span class="mini-value">{(yen(result_trifecta_payout) + ' /100円') if result_trifecta_payout > 0 else '未反映'}</span></div>
-            <div><span class="mini-label">収支</span><span class="mini-value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
-          </div>
-        </span></div>
-
-        <details class="detail-accordion">
-          <summary>展示・水面・選手材料を開く</summary>
-          <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
-          <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
-          <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
-          <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
-          {ai_reason_html}
-        </details>
-      </div>
-
-      <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{amount_per_point}">
+      <form id="{form_id}" method="post" action="{action_url}" class="form form-compact-save {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{amount_per_point}">
         <input type="hidden" name="race_id" value="{r['id']}">
         <input type="hidden" name="selected_text" id="selected-hidden-{race_id_key}" value="{r.get('purchased_selection_text', '')}">
         {history_hidden}
 
-        <div class="bet-control-box">
-          <div class="bet-control-title">購入設定</div>
-          <div class="bet-control-grid">
-            <div class="bet-control-item">
-              <label for="amount-select-{race_id_key}">1点あたり</label>
-              <select class="stake-select" id="amount-select-{race_id_key}" name="amount_per_point" onchange="updateAmountPerPoint('{race_id_key}')">
-                {render_amount_options(amount_per_point)}
-              </select>
-            </div>
-            <div class="bet-control-item bet-control-hint">
-              <div>基本ルール</div>
-              <strong>AI本線3点中心</strong><br>
-              <span>200円は条件が揃う買い強めだけ</span>
-            </div>
+        <div class="quick-save-panel">
+          <div class="quick-save-left">
+            <label for="amount-select-{race_id_key}">1点</label>
+            <select class="stake-select stake-select-compact" id="amount-select-{race_id_key}" name="amount_per_point" onchange="updateAmountPerPoint('{race_id_key}')">
+              {render_amount_options(amount_per_point)}
+            </select>
           </div>
+          <div class="quick-save-middle">
+            <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
+            <div class="quick-save-rule">AI本線3点中心</div>
+          </div>
+          <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
+        </div>
+
+        <div class="info-box info-box-picks-first">
+          <div class="row row-selection-highlight"><span class="label">買い目</span><span class="value">{selection_compare_html}</span></div>
+          <div class="row row-selected-compact"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
+          <div class="row result-row-compact"><span class="label">結果/収支</span><span class="value">
+            <div class="result-mini-grid">
+              <div><span class="mini-label">結果</span><span class="mini-value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
+              <div><span class="mini-label">払戻</span><span class="mini-value">{(yen(result_trifecta_payout) + ' /100円') if result_trifecta_payout > 0 else '未反映'}</span></div>
+              <div><span class="mini-label">収支</span><span class="mini-value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
+            </div>
+          </span></div>
+
+          <details class="detail-accordion">
+            <summary>展示・水面・選手材料を開く</summary>
+            <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
+            <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+            <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+            <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+            {ai_reason_html}
+          </details>
         </div>
 
         <div id="detail-{race_id_key}" class="detail-box detail-box-simple">
@@ -1895,8 +1891,6 @@ def build_card_html(r, is_history=False, race_date=""):
             的中・払戻は公式結果から自動反映されます
           </div>
         </div>
-
-        <button type="submit" class="save-btn {'half-btn' if is_history else ''}">保存</button>
       </form>
       {delete_form}
     </div>
@@ -2789,12 +2783,66 @@ def render_layout(title, body_html):
       /* v10.31 compact UI fix: iPhoneでヘッダー/保存ボタンがカードに重なる問題を解消 */
       .topbar{position:static;top:auto;z-index:auto;}
       .save-btn{position:static;bottom:auto;z-index:auto;}
-       (max-width:760px){
+      @media (max-width:760px){
         .topbar{position:static;top:auto;z-index:auto;margin-bottom:8px;}
-        .save-btn{position:static !important;bottom:auto !important;z-index:auto !important;margin-top:10px;}
+        .save-btn{position:static !important;bottom:auto !important;z-index:auto !important;}
         .bet-control-box{margin-bottom:8px;}
         .bottom-nav{z-index:60;}
       }
+
+
+      /* v10.35: 買い目と保存を同じ画面に置く */
+      .form-compact-save{margin-top:8px}
+      .quick-save-panel{display:grid;grid-template-columns:auto 1fr minmax(120px,180px);gap:10px;align-items:center;margin:8px 0 10px;padding:10px;border:1px solid #dbe7ff;background:linear-gradient(180deg,#f8fbff,#ffffff);border-radius:16px;box-shadow:0 8px 22px rgba(16,24,40,.05)}
+      .quick-save-left label{display:block;font-size:11px;font-weight:900;color:#667085;margin-bottom:3px}
+      .stake-select-compact{min-height:38px;font-size:15px;border-radius:12px;padding:6px 26px 6px 10px}
+      .quick-save-count{font-size:14px;font-weight:950;color:#101828;line-height:1.15}
+      .quick-save-rule{font-size:11px;font-weight:800;color:#667085;margin-top:2px}
+      .save-btn-compact{min-height:42px;margin:0;padding:10px 14px;width:100%}
+      .info-box-picks-first{margin-top:0}
+      .row-selected-compact{padding-top:6px;padding-bottom:6px}
+      .row-selected-compact .selection-chip-empty{padding:5px 8px;font-size:12px}
+      .info-box-picks-first .result-row-compact{display:none}
+      .selection-compare-wrap{grid-template-columns:minmax(0,1.14fr) minmax(0,.86fr);gap:8px}
+      .selection-section-title{font-size:11px;margin-bottom:5px}
+      .selection-section{padding:7px}
+      .selection-section-cover{margin-top:6px}
+      .selection-choice-body{padding:7px 8px;font-size:13px;border-radius:12px}
+      .selection-choice-core .selection-choice-body{padding:8px 9px}
+      .quick-select-row{padding:6px;margin-bottom:6px;gap:6px}
+      .quick-select-btn{padding:6px 8px;font-size:11px}
+      .selection-col-title{font-size:12px;margin-bottom:5px}
+      @media (max-width:760px){
+        .form-compact-save{margin-top:6px}
+        .quick-save-panel{grid-template-columns:86px 1fr 96px;gap:7px;padding:8px;border-radius:14px;margin:7px 0 8px}
+        .stake-select-compact{min-height:36px;font-size:14px;padding-left:8px}
+        .quick-save-count{font-size:13px}
+        .quick-save-rule{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .save-btn-compact{min-height:38px;border-radius:12px;font-size:14px;padding:8px 10px}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr)!important;gap:7px}
+        .selection-compare-col{padding:6px;border-radius:12px}
+        .selection-col-title{font-size:11px;line-height:1.25}
+        .selection-section{padding:6px;border-radius:12px}
+        .selection-section-title{font-size:10px;margin-bottom:5px}
+        .selection-chip-grid{gap:5px}
+        .selection-choice-body{padding:6px 7px;font-size:12px;border-width:1.5px;border-radius:10px}
+        .selection-choice-core .selection-choice-body{padding:7px 7px}
+        .quick-select-row{gap:5px;padding:5px;margin-bottom:5px}
+        .quick-select-btn{padding:5px 7px;font-size:10px}
+        .row{grid-template-columns:52px 1fr;gap:6px;padding:6px 0}
+        .label{font-size:11px}
+        .info-box{padding:0 8px}
+        .result-row-compact{display:none}
+      }
+      @media (max-width:390px){
+        .quick-save-panel{grid-template-columns:78px 1fr 86px;gap:6px;padding:7px}
+        .quick-save-count{font-size:12px}
+        .save-btn-compact{font-size:13px}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr)!important;gap:6px}
+        .selection-choice-body{font-size:11px;padding:5px 6px}
+        .quick-select-btn{font-size:10px;padding:5px 6px}
+      }
+
 </style>
     """
 
@@ -2857,6 +2905,8 @@ def render_layout(title, body_html):
         const summaryEl = document.getElementById('selected-summary-' + raceId);
         const countEl = document.getElementById('selected-count-badge-' + raceId);
         const totalEl = document.getElementById('selected-total-badge-' + raceId);
+        const countInlineEl = document.getElementById('selected-count-inline-' + raceId);
+        const totalInlineEl = document.getElementById('selected-total-inline-' + raceId);
         const amountBadgeEl = document.getElementById('amount-per-point-badge-' + raceId);
         const amountInlineEl = document.getElementById('amount-inline-' + raceId);
         const formEl = document.querySelector('form[data-race-id="' + raceId + '"]');
