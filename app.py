@@ -29,9 +29,14 @@ AI_RATING_OPTIONS = [
 
 OFFICIAL_RATING_FILTER_OPTIONS = [
     ("pickup", "公式★5+★4"),
+    ("all", "公式★1〜★5すべて"),
     ("★★★★★", "公式★5のみ"),
     ("★★★★☆", "公式★4のみ"),
+    ("★★★☆☆", "公式★3のみ"),
+    ("★★☆☆☆", "公式★2のみ"),
+    ("★☆☆☆☆", "公式★1のみ"),
 ]
+OFFICIAL_RATING_VALUES = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
 
 CARD_SELECT_COLUMNS = '''
     id,
@@ -1362,7 +1367,7 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     ensure_db_initialized()
 
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
-    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+    if official_rating_filter not in OFFICIAL_RATING_VALUES:
         official_rating_filter = "pickup"
 
     where_clauses = [
@@ -1374,15 +1379,25 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     if official_rating_filter == "pickup":
         official_rating_sql = "rating IN (%s, %s)"
         official_rating_params = ["★★★★★", "★★★★☆"]
+        shadow_rating_sql = "TRUE"
+        shadow_rating_params = []
+    elif official_rating_filter == "all":
+        official_rating_sql = "rating IN (%s, %s, %s, %s, %s)"
+        official_rating_params = ["★★★★★", "★★★★☆", "★★★☆☆", "★★☆☆☆", "★☆☆☆☆"]
+        shadow_rating_sql = official_rating_sql
+        shadow_rating_params = list(official_rating_params)
     else:
         official_rating_sql = "rating = %s"
         official_rating_params = [official_rating_filter]
+        shadow_rating_sql = official_rating_sql
+        shadow_rating_params = list(official_rating_params)
 
     # 通常は今まで通り公式★4/★5候補だけ。
     # show_shadow=1 の時だけ、公式★条件に加えて検証用の裏AI候補も表示する。
     if show_shadow:
-        where_clauses.append(f"((candidate_source = 'official_star' AND {official_rating_sql}) OR candidate_source = 'shadow_ai')")
+        where_clauses.append(f"((candidate_source = 'official_star' AND {official_rating_sql}) OR (candidate_source = 'shadow_ai' AND {shadow_rating_sql}))")
         params.extend(official_rating_params)
+        params.extend(shadow_rating_params)
     else:
         where_clauses.append("candidate_source = 'official_star'")
         where_clauses.append(official_rating_sql)
@@ -1865,7 +1880,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <div class="badge-row">
         {source_badge_html}
-        <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
+        <span class="rating">{display_text(r.get('rating'), '公式★未取得' if source_value == 'shadow_ai' else '公式評価なし')}</span>
         <span class="ai-rating">{display_ai_rating}</span>
         {final_rank_html}
       </div>
@@ -2114,11 +2129,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_shadow_text = "裏AI候補も表示中" if show_shadow else "公式候補のみ"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
-    official_label_map = {
-        "pickup": "公式★5+★4",
-        "★★★★★": "公式★5のみ",
-        "★★★★☆": "公式★4のみ",
-    }
+    official_label_map = dict(OFFICIAL_RATING_FILTER_OPTIONS)
     filter_official_text = official_label_map.get(official_rating_filter, "公式★5+★4")
     content = f'''
     <div class="app-shell">
