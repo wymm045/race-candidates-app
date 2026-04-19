@@ -40,6 +40,7 @@ CARD_SELECT_COLUMNS = '''
     venue,
     race_no,
     race_no_num,
+    candidate_source,
     rating,
     bet_type,
     selection,
@@ -120,6 +121,7 @@ ALLOWED_GROUP_COLUMNS = {
     "venue": "venue",
     "ai_rating": "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, ''), '')",
     "final_rank": "final_rank",
+    "candidate_source": "candidate_source",
 }
 
 
@@ -214,6 +216,27 @@ def safe_float(value, default=0.0):
         return float(s)
     except Exception:
         return float(default)
+
+
+def normalize_candidate_source(value):
+    s = str(value or "").strip()
+    if s in {"shadow_ai", "official_star"}:
+        return s
+    return "official_star"
+
+
+def candidate_source_label(value):
+    source = normalize_candidate_source(value)
+    if source == "shadow_ai":
+        return "裏AI候補"
+    return "公式候補"
+
+
+def candidate_source_short_label(value):
+    source = normalize_candidate_source(value)
+    if source == "shadow_ai":
+        return "裏AI"
+    return "公式"
 
 
 def effective_ai_score(row):
@@ -398,11 +421,12 @@ def get_selected_total_amount(race):
     )
 
 
-def make_race_key(race_date, venue, race_no):
+def make_race_key(race_date, venue, race_no, candidate_source="official_star"):
     return (
         str(race_date or "").strip(),
         str(venue or "").strip(),
         str(race_no or "").strip(),
+        normalize_candidate_source(candidate_source),
     )
 
 
@@ -413,7 +437,7 @@ def get_existing_race_map_by_date(race_date):
     cur.execute(
         '''
         SELECT
-            id, race_date, venue, race_no, time,
+            id, race_date, venue, race_no, time, candidate_source,
             final_ai_score, final_ai_rating, final_ai_selection, final_rank,
             latest_reason_text, latest_updated_at
         FROM races
@@ -429,7 +453,7 @@ def get_existing_race_map_by_date(race_date):
 
     race_map = {}
     for row in rows:
-        key = make_race_key(row['race_date'], row['venue'], row['race_no'])
+        key = make_race_key(row['race_date'], row['venue'], row['race_no'], row.get('candidate_source'))
         if key not in race_map:
             race_map[key] = row
     return race_map
@@ -1306,7 +1330,7 @@ def get_races_by_date(race_date):
         FROM races
         WHERE race_date = %s
           AND venue <> 'テスト会場'
-        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
+        ORDER BY time ASC, venue ASC, race_no_num ASC, candidate_source ASC, id ASC
         ''',
         (race_date,),
     )
@@ -1322,7 +1346,7 @@ def get_race_by_id(race_id):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         '''
-        SELECT id, time, venue, race_no
+        SELECT id, time, venue, race_no, candidate_source
         FROM races
         WHERE id = %s
         ''',
@@ -1334,7 +1358,7 @@ def get_race_by_id(race_id):
     return row
 
 
-def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False):
     ensure_db_initialized()
 
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
@@ -1348,11 +1372,21 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     params = [today_text()]
 
     if official_rating_filter == "pickup":
-        where_clauses.append("rating IN (%s, %s)")
-        params.extend(["★★★★★", "★★★★☆"])
+        official_rating_sql = "rating IN (%s, %s)"
+        official_rating_params = ["★★★★★", "★★★★☆"]
     else:
-        where_clauses.append("rating = %s")
-        params.append(official_rating_filter)
+        official_rating_sql = "rating = %s"
+        official_rating_params = [official_rating_filter]
+
+    # 通常は今まで通り公式★4/★5候補だけ。
+    # show_shadow=1 の時だけ、公式★条件に加えて検証用の裏AI候補も表示する。
+    if show_shadow:
+        where_clauses.append(f"((candidate_source = 'official_star' AND {official_rating_sql}) OR candidate_source = 'shadow_ai')")
+        params.extend(official_rating_params)
+    else:
+        where_clauses.append("candidate_source = 'official_star'")
+        where_clauses.append(official_rating_sql)
+        params.extend(official_rating_params)
 
     if ai_rating_filter:
         where_clauses.append(
@@ -1371,7 +1405,7 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
         SELECT {CARD_SELECT_COLUMNS}
         FROM races
         WHERE {' AND '.join(where_clauses)}
-        ORDER BY time ASC, venue ASC, race_no_num ASC, id ASC
+        ORDER BY time ASC, venue ASC, race_no_num ASC, candidate_source ASC, id ASC
         ''',
         tuple(params),
     )
@@ -1442,12 +1476,12 @@ def get_summary_by_date(race_date):
     cur.execute(
         f"""
         WITH latest AS (
-            SELECT DISTINCT ON (race_date, venue, race_no)
+            SELECT DISTINCT ON (race_date, venue, race_no, candidate_source)
                 *
             FROM races
             WHERE race_date = %s
               AND venue <> 'テスト会場'
-            ORDER BY race_date, venue, race_no, id DESC
+            ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
             COUNT(*) AS total_rows,
@@ -1501,12 +1535,12 @@ def get_group_summary(race_date, group_key):
     cur.execute(
         f"""
         WITH latest AS (
-            SELECT DISTINCT ON (race_date, venue, race_no)
+            SELECT DISTINCT ON (race_date, venue, race_no, candidate_source)
                 *
             FROM races
             WHERE race_date = %s
               AND venue <> 'テスト会場'
-            ORDER BY race_date, venue, race_no, id DESC
+            ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
             COALESCE(NULLIF(BTRIM({group_sql}), ''), '(空白)') AS group_name,
@@ -1537,7 +1571,7 @@ def get_group_summary(race_date, group_key):
         roi = round((total_payout / total_investment * 100), 1) if total_investment else 0
         results.append(
             {
-                "group_name": str(row.get("group_name") or "(空白)"),
+                "group_name": candidate_source_label(row.get("group_name")) if group_key == "candidate_source" else str(row.get("group_name") or "(空白)"),
                 "total_bets": total_bets,
                 "total_hits": total_hits,
                 "total_points": total_points,
@@ -1570,11 +1604,11 @@ def get_history_date_summaries():
     cur.execute(
         f"""
         WITH latest AS (
-            SELECT DISTINCT ON (race_date, venue, race_no)
+            SELECT DISTINCT ON (race_date, venue, race_no, candidate_source)
                 *
             FROM races
             WHERE venue <> 'テスト会場'
-            ORDER BY race_date, venue, race_no, id DESC
+            ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
             race_date,
@@ -1677,6 +1711,10 @@ def build_card_html(r, is_history=False, race_date=""):
     elif selected_count > 0:
         card_class += " card-purchased"
 
+    source_value = normalize_candidate_source(r.get("candidate_source"))
+    if source_value == "shadow_ai":
+        card_class += " card-source-shadow"
+
     rank_for_class = str(r.get("final_rank") or "").strip()
     if rank_for_class == "買い強め":
         card_class += " card-rank-strong"
@@ -1778,6 +1816,13 @@ def build_card_html(r, is_history=False, race_date=""):
         race_id_key=race_id_key,
     )
 
+    source_value = normalize_candidate_source(r.get("candidate_source"))
+    source_badge_html = (
+        '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
+        if source_value == "shadow_ai"
+        else '<span class="source-badge source-badge-official">公式候補</span>'
+    )
+
     top_checkbox = ""
     if is_history:
         top_checkbox = f'''
@@ -1819,6 +1864,7 @@ def build_card_html(r, is_history=False, race_date=""):
       </div>
 
       <div class="badge-row">
+        {source_badge_html}
         <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
         <span class="ai-rating">{display_ai_rating}</span>
         {final_rank_html}
@@ -1980,6 +2026,8 @@ def build_export_rows(rows):
 
         export_rows.append({
             "race_date": csv_safe(r.get("race_date")),
+            "candidate_source": csv_safe(normalize_candidate_source(r.get("candidate_source"))),
+            "candidate_source_label": csv_safe(candidate_source_label(r.get("candidate_source"))),
             "time": csv_safe(r.get("time")),
             "venue": csv_safe(r.get("venue")),
             "race_no": csv_safe(r.get("race_no")),
@@ -2027,7 +2075,7 @@ def make_csv_response(rows, filename):
     output = io.StringIO()
     export_rows = build_export_rows(rows)
     fieldnames = list(export_rows[0].keys()) if export_rows else [
-        "race_date", "time", "venue", "race_no", "official_rating", "bet_type",
+        "race_date", "candidate_source", "candidate_source_label", "time", "venue", "race_no", "official_rating", "bet_type",
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
         "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
@@ -2049,7 +2097,7 @@ def make_csv_response(rows, filename):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup"):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
@@ -2057,12 +2105,14 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     else:
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
+    checked_show_shadow = "checked" if show_shadow else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
     cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★4以上候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
+    filter_shadow_text = "裏AI候補も表示中" if show_shadow else "公式候補のみ"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
     official_label_map = {
         "pickup": "公式★5+★4",
@@ -2087,7 +2137,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
         <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
-        <div class="sub">現在の絞り込み: {filter_status_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / {filter_shadow_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
         <div class="daily-rule-panel">
@@ -2107,6 +2157,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
               <label class="filter-check">
                 <input type="checkbox" name="show_closed" value="1" {checked_show_closed}>
                 締切後も表示する
+              </label>
+            </div>
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_shadow" value="1" {checked_show_shadow}>
+                裏AI候補も表示
               </label>
             </div>
             <div class="filter-item">
@@ -2142,7 +2198,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     return render_layout("今日の買い候補", content)
 
 
-def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank):
+def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_final_rank, by_candidate_source):
     def make_table(rows):
         if not rows:
             return '<div class="empty">データがありません</div>'
@@ -2200,6 +2256,13 @@ def render_stats_page(race_date, summary, by_rating, by_venue, by_ai_rating, by_
           <div class="header"><div class="section-title">最終判定別集計</div></div>
           {make_table(by_final_rank)}
         </div>
+        <div>
+          <div class="header"><div class="section-title">候補タイプ別集計</div></div>
+          {make_table(by_candidate_source)}
+        </div>
+      </div>
+
+      <div class="stats-grid">
         <div>
           <div class="header"><div class="section-title">会場別集計</div></div>
           {make_table(by_venue)}
@@ -2342,7 +2405,7 @@ def render_layout(title, body_html):
       .profit-minus{color:#d92d20}
       .profit-zero{color:#344054}
       .filter-box,.info-box{margin-top:10px}
-      .filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:10px;align-items:end}
+      .filter-grid{display:grid;grid-template-columns:1.1fr 1.1fr 1fr 1fr auto;gap:10px;align-items:end}
       .filter-item label{display:block;font-size:12px;color:#667085;margin-bottom:4px}
       .filter-check{display:flex;align-items:center;gap:8px}
       select,input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}
@@ -2367,7 +2430,9 @@ def render_layout(title, body_html):
       .status-badge-saved{background:#ecfdf3;color:#067647}
       .status-badge-hit{background:#fff1f3;color:#c11574}
       .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-      .rating,.ai-rating,.final-rank,.metric-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating,.ai-rating,.final-rank,.metric-badge,.source-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .source-badge-official{background:#f2f4f7;color:#344054}
+      .source-badge-shadow{background:#f4ebff;color:#6941c6;border:1px solid #d6bbfb}
       .rating{background:#fff6e5;color:#b54708}
       .ai-rating{background:#eef4ff;color:#175cd3}
       .final-rank-strong{background:#ecfdf3;color:#027a48}
@@ -2660,6 +2725,8 @@ def render_layout(title, body_html):
       .card-rank-buy:before{background:linear-gradient(180deg,#2e90fa,#175cd3)}
       .card-rank-watch:before{background:linear-gradient(180deg,#f79009,#fdb022)}
       .card-rank-skip:before{background:linear-gradient(180deg,#98a2b3,#d0d5dd)}
+      .card-source-shadow:before{background:linear-gradient(180deg,#7f56d9,#175cd3)}
+      .card-source-shadow{border-color:#d6bbfb}
       .card-hit{box-shadow:0 16px 42px rgba(193,21,116,.10);border-color:#f5c2da}
       .card-purchased{box-shadow:0 16px 42px rgba(6,118,71,.10);border-color:#abefc6}
       .card-top-main{padding:4px 0 2px 6px;}
@@ -3091,6 +3158,7 @@ def init_db():
             venue TEXT NOT NULL,
             race_no TEXT NOT NULL,
             race_no_num INTEGER NOT NULL DEFAULT 0,
+            candidate_source TEXT NOT NULL DEFAULT 'official_star',
             rating TEXT NOT NULL DEFAULT '',
             bet_type TEXT NOT NULL DEFAULT '',
             selection TEXT NOT NULL DEFAULT '',
@@ -3152,6 +3220,7 @@ def init_db():
 
     alter_sqls = [
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_no_num INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS candidate_source TEXT NOT NULL DEFAULT 'official_star'",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_label TEXT NOT NULL DEFAULT ''",
@@ -3203,9 +3272,11 @@ def init_db():
     for sql in alter_sqls:
         cur.execute(sql)
 
+    cur.execute("UPDATE races SET candidate_source = 'official_star' WHERE candidate_source IS NULL OR BTRIM(candidate_source) = ''")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_today_view ON races (race_date, rating, time, venue, race_no_num)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_races_source_view ON races (race_date, candidate_source, time, venue, race_no_num)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_history_view ON races (race_date, venue, race_no_num, hit)")
 
     conn.commit()
@@ -3225,7 +3296,8 @@ def upsert_base_candidates(cleaned):
     inserted = 0
     updated = 0
     for r in cleaned:
-        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
+        candidate_source_value = normalize_candidate_source(r.get('candidate_source'))
+        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'), candidate_source_value)
         existing = existing_map.get(key)
         if existing:
             cur.execute(
@@ -3234,6 +3306,7 @@ def upsert_base_candidates(cleaned):
                 SET
                     time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
                     race_no_num = %s,
+                    candidate_source = %s,
                     rating = %s,
                     bet_type = %s,
                     selection = %s,
@@ -3254,6 +3327,7 @@ def upsert_base_candidates(cleaned):
                     str(r.get('time') or '').strip(),
                     str(r.get('time') or '').strip(),
                     int(r.get('race_no_num') or 0),
+                    candidate_source_value,
                     str(r.get('rating') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
@@ -3278,14 +3352,14 @@ def upsert_base_candidates(cleaned):
             cur.execute(
                 '''
                 INSERT INTO races (
-                    race_date, time, venue, race_no, race_no_num,
+                    race_date, time, venue, race_no, race_no_num, candidate_source,
                     rating, bet_type, selection, amount,
                     player_names_text, class_history_text, player_stat_text, player_reason_text,
                     base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
@@ -3298,6 +3372,7 @@ def upsert_base_candidates(cleaned):
                     str(r.get('venue') or '').strip(),
                     str(r.get('race_no') or '').strip(),
                     int(r.get('race_no_num') or 0),
+                    candidate_source_value,
                     str(r.get('rating') or '').strip(),
                     str(r.get('bet_type') or '').strip(),
                     str(r.get('selection') or '').strip(),
@@ -3339,7 +3414,8 @@ def upsert_latest_candidates(cleaned):
     updated = 0
     skipped = 0
     for r in cleaned:
-        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'))
+        candidate_source_value = normalize_candidate_source(r.get('candidate_source'))
+        key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'), candidate_source_value)
         existing = existing_map.get(key)
         if not existing:
             skipped += 1
@@ -3465,6 +3541,7 @@ def healthz():
 @app.route("/")
 def index():
     show_closed = request.args.get("show_closed", "").strip() == "1"
+    show_shadow = request.args.get("show_shadow", "").strip() == "1"
     ai_rating_filter = request.args.get("ai_rating", "").strip()
     official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
     if ai_rating_filter not in AI_RATING_OPTIONS:
@@ -3475,6 +3552,7 @@ def index():
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
+        show_shadow=show_shadow,
     )
     summary = get_summary_by_date(today_text())
     return render_home(
@@ -3485,6 +3563,7 @@ def index():
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
+        show_shadow=show_shadow,
     )
 
 
@@ -3511,7 +3590,12 @@ def save():
     payout = 0
     memo = ""
     update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=amount_per_point)
-    redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
+    redirect_params = []
+    if not is_not_started(race["time"]):
+        redirect_params.append("show_closed=1")
+    if normalize_candidate_source(race.get("candidate_source")) == "shadow_ai":
+        redirect_params.append("show_shadow=1")
+    redirect_base = "/" + (("?" + "&".join(redirect_params)) if redirect_params else "")
     sep = "&" if "?" in redirect_base else "?"
     # 保存後にページ最上部へ戻らないよう、保存したカード位置へ戻す。
     # URLフラグメントはクエリ文字列の後ろに付ける必要がある。
@@ -3576,6 +3660,7 @@ def stats():
         get_group_summary(race_date, "venue"),
         get_group_summary(race_date, "ai_rating"),
         get_group_summary(race_date, "final_rank"),
+        get_group_summary(race_date, "candidate_source"),
     )
 
 
@@ -3627,6 +3712,7 @@ def import_base_candidates():
                 "venue": str(r.get("venue") or "").strip(),
                 "race_no": str(r.get("race_no") or "").strip(),
                 "race_no_num": int(r.get("race_no_num") or 0),
+                "candidate_source": normalize_candidate_source(r.get("candidate_source")),
                 "rating": str(r.get("rating") or "").strip(),
                 "bet_type": str(r.get("bet_type") or "").strip(),
                 "selection": str(r.get("selection") or "").strip(),
@@ -3665,6 +3751,7 @@ def api_base_map_today():
             race_date,
             venue,
             race_no,
+            candidate_source,
             rating,
             base_ai_score,
             base_ai_rating,
@@ -3686,8 +3773,11 @@ def api_base_map_today():
 
     base_map = {}
     for row in rows:
-        key = f"{str(row['venue']).strip()}|{str(row['race_no']).strip()}"
-        base_map[key] = {
+        venue = str(row['venue']).strip()
+        race_no = str(row['race_no']).strip()
+        source = normalize_candidate_source(row.get("candidate_source"))
+        item = {
+            "candidate_source": source,
             "rating": str(row.get("rating") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
@@ -3698,6 +3788,12 @@ def api_base_map_today():
             "final_ai_selection": str(row.get("final_ai_selection") or "").strip(),
             "latest_reason_text": str(row.get("latest_reason_text") or "").strip(),
         }
+        key = f"{venue}|{race_no}|{source}"
+        base_map[key] = item
+        # 既存の collector_latest.py 互換用。公式候補だけ従来キーも返す。
+        if source == "official_star":
+            legacy_key = f"{venue}|{race_no}"
+            base_map[legacy_key] = item
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
 
 
@@ -3722,6 +3818,7 @@ def import_latest_candidates():
                 "race_date": str(r.get("race_date") or "").strip(),
                 "venue": str(r.get("venue") or "").strip(),
                 "race_no": str(r.get("race_no") or "").strip(),
+                "candidate_source": normalize_candidate_source(r.get("candidate_source")),
                 "time": str(r.get("time") or "").strip(),
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
