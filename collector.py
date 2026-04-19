@@ -59,7 +59,14 @@ JCD_NAME_MAP = {
     "23": "唐津", "24": "大村",
 }
 NAME_JCD_MAP = {v: k for k, v in JCD_NAME_MAP.items()}
-RATING_PAGE_MAP = {"★★★★★": "s5", "★★★★☆": "s4"}
+RATING_PAGE_MAP = {
+    "★★★★★": "s5",
+    "★★★★☆": "s4",
+    "★★★☆☆": "s3",
+    "★★☆☆☆": "s2",
+    "★☆☆☆☆": "s1",
+}
+ALL_OFFICIAL_RATINGS = list(RATING_PAGE_MAP.keys())
 
 
 def log(msg):
@@ -292,6 +299,7 @@ def parse_rating_page_dom(rating_text):
             "venue": info["venue"],
             "jcd": info["jcd"],
             "race_no": info["race_no"],
+            "rating": rating_text,
             "selection": " / ".join(triplets[:6]),
         })
     dedup = {}
@@ -302,9 +310,10 @@ def parse_rating_page_dom(rating_text):
     return list(dedup.values())
 
 
-def parse_rating_page():
+def parse_rating_page(rating_texts=None):
+    rating_texts = list(rating_texts or ALL_OFFICIAL_RATINGS)
     rows = []
-    for rating_text in ["★★★★★", "★★★★☆"]:
+    for rating_text in rating_texts:
         rows.extend(parse_rating_page_dom(rating_text))
     dedup = {}
     for r in rows:
@@ -312,7 +321,7 @@ def parse_rating_page():
         if key not in dedup:
             dedup[key] = r
     merged = list(dedup.values())
-    log(f"[rating_page_summary] count={len(merged)}")
+    log(f"[rating_page_summary] ratings={','.join(rating_texts)} count={len(merged)}")
     return merged
 
 
@@ -4258,6 +4267,7 @@ def build_candidates():
             continue
         official_selection_map[(venue, race_no)] = {
             "selection": str(row.get("selection") or "").strip(),
+            "rating": str(row.get("rating") or "").strip(),
             "jcd": str(row.get("jcd") or NAME_JCD_MAP.get(venue, "")).strip(),
         }
 
@@ -4296,7 +4306,7 @@ def build_candidates():
             "race_no": race_no,
             "candidate_source": candidate_source,
             "selection": selection_from_rating_page,
-            "rating": str((base_info or {}).get("rating") or "").strip(),
+            "rating": str((base_info or {}).get("rating") or official_info.get("rating") or "").strip(),
             "time": str((base_info or {}).get("time") or "").strip(),
         }
 
