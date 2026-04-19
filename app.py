@@ -2515,7 +2515,8 @@ def render_layout(title, body_html):
         .topbar-status{width:100%;justify-content:flex-start;}
         .top-pill{width:100%;border-radius:12px;}
         .header,.card,.history-item,.bulk-toolbar,.history-filter-box{padding:14px;border-radius:18px;}
-        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.selection-compare-wrap,.history-filter-grid,.bet-control-grid{grid-template-columns:1fr;}
+        .summary,.summary.six,.history-mini,.stats-grid,.filter-grid,.history-filter-grid,.bet-control-grid{grid-template-columns:1fr;}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:8px;}
         .row{grid-template-columns:1fr;gap:8px;}
         .race-venue,.race-rno{font-size:20px}
         .time{font-size:22px}
@@ -2738,92 +2739,6 @@ def render_layout(title, body_html):
         .bet-control-box{margin-bottom:8px;}
         .bottom-nav{z-index:60;}
       }
-
-
-      /* v10.32 compact UI: iPhoneでも公式買い目を下に落とさず、AI買い目の右側へ寄せる */
-      @media (max-width:760px){
-        .row-selection-highlight{
-          display:block;
-          padding-top:8px;
-        }
-        .row-selection-highlight>.label{
-          display:block;
-          margin-bottom:8px;
-          font-size:13px;
-        }
-        .row-selection-highlight>.value{
-          display:block;
-          width:100%;
-        }
-        .selection-compare-wrap,
-        .summary .selection-compare-wrap{
-          display:grid !important;
-          grid-template-columns:minmax(0,1.08fr) minmax(104px,.78fr) !important;
-          gap:8px !important;
-          align-items:start;
-        }
-        .selection-compare-col{
-          min-width:0;
-          padding:7px;
-        }
-        .selection-col-title{
-          font-size:11px;
-          line-height:1.25;
-          margin-bottom:6px;
-        }
-        .ai-selection-block{
-          gap:7px;
-        }
-        .quick-select-row{
-          gap:6px;
-          padding:5px;
-        }
-        .quick-select-btn{
-          padding:6px 8px;
-          font-size:11px;
-        }
-        .selection-section{
-          padding:7px;
-          border-radius:12px;
-        }
-        .selection-section-title{
-          font-size:11px;
-          line-height:1.25;
-        }
-        .compact-grid{
-          display:grid;
-          grid-template-columns:1fr;
-          gap:6px;
-        }
-        .selection-choice-body,
-        .selection-choice-core .selection-choice-body{
-          width:100%;
-          justify-content:flex-start;
-          padding:7px 8px;
-          border-radius:12px;
-          font-size:12px;
-        }
-        .selection-view-chip,
-        .selection-choice-chip{
-          width:100%;
-        }
-        .selection-compare-col-official .selection-choice-body,
-        .selection-compare-col-official .selection-choice-body-view{
-          padding:6px 7px;
-          font-size:11px;
-        }
-      }
-
-      @media (max-width:390px){
-        .selection-compare-wrap{
-          grid-template-columns:minmax(0,1fr) minmax(92px,.66fr) !important;
-          gap:6px !important;
-        }
-        .quick-select-btn{padding:5px 7px;font-size:10px;}
-        .selection-choice-body{font-size:11px;padding:6px 7px;}
-        .selection-compare-col-official .selection-choice-body{font-size:10px;}
-      }
-
 </style>
     """
 
@@ -3433,7 +3348,15 @@ def save():
     update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=amount_per_point)
     redirect_base = "/?show_closed=1" if not is_not_started(race["time"]) else "/"
     sep = "&" if "?" in redirect_base else "?"
-    return redirect(redirect_base + sep + "type=success&msg=" + quote("保存しました"))
+    # 保存後にページ最上部へ戻らないよう、保存したカード位置へ戻す。
+    # URLフラグメントはクエリ文字列の後ろに付ける必要がある。
+    return redirect(
+        redirect_base
+        + sep
+        + "type=success&msg="
+        + quote("保存しました")
+        + f"#race-card-{race_id}"
+    )
 
 
 @app.route("/update_record", methods=["POST"])
@@ -3449,7 +3372,13 @@ def update_record():
     payout = 0
     memo = ""
     update_race_result(race_id, selected_text, hit, payout, memo, amount_per_point=amount_per_point)
-    return redirect(redirect_to + ("&" if "?" in redirect_to else "?") + "type=success&msg=" + quote("過去データを保存しました"))
+    return redirect(
+        redirect_to
+        + ("&" if "?" in redirect_to else "?")
+        + "type=success&msg="
+        + quote("過去データを保存しました")
+        + f"#race-card-{race_id}"
+    )
 
 
 @app.route("/delete_record", methods=["POST"])
