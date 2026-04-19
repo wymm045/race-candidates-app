@@ -2727,7 +2727,18 @@ def render_layout(title, body_html):
         .save-btn{min-height:44px}
       }
 
-    </style>
+    
+
+      /* v10.31 compact UI fix: iPhoneでヘッダー/保存ボタンがカードに重なる問題を解消 */
+      .topbar{position:static;top:auto;z-index:auto;}
+      .save-btn{position:static;bottom:auto;z-index:auto;}
+       (max-width:760px){
+        .topbar{position:static;top:auto;z-index:auto;margin-bottom:8px;}
+        .save-btn{position:static !important;bottom:auto !important;z-index:auto !important;margin-top:10px;}
+        .bet-control-box{margin-bottom:8px;}
+        .bottom-nav{z-index:60;}
+      }
+</style>
     """
 
     js = """
