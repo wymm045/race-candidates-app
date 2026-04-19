@@ -81,12 +81,31 @@ def jst_now_str():
     return jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
 
 
+def target_race_date_text():
+    # 日付をまたいで前日分を修復したい時だけ使う。
+    # 例: PowerShellで $env:TARGET_RACE_DATE="2026-04-19"
+    raw = os.environ.get("TARGET_RACE_DATE", "").strip() or os.environ.get("TARGET_DATE", "").strip()
+    if not raw:
+        return jst_now().strftime("%Y-%m-%d")
+    raw = raw.replace("/", "-")
+    if re.fullmatch(r"\d{8}", raw):
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    log(f"[target_date_invalid] TARGET_RACE_DATE={raw} -> use today")
+    return jst_now().strftime("%Y-%m-%d")
+
+
+def is_target_race_date_today():
+    return target_race_date_text() == jst_now().strftime("%Y-%m-%d")
+
+
 def today_str():
-    return jst_now().strftime("%Y%m%d")
+    return target_race_date_text().replace("-", "")
 
 
 def today_text():
-    return jst_now().strftime("%Y-%m-%d")
+    return target_race_date_text()
 
 
 def current_hhmm():
@@ -99,6 +118,10 @@ def to_minutes(hhmm):
 
 
 def is_target_deadline(hhmm):
+    # 前日分などを TARGET_RACE_DATE で修復している時は、直前補正対象にはしない。
+    # 結果/払戻の取得だけを行う。
+    if not is_target_race_date_today():
+        return False
     if not hhmm:
         return False
     try:
@@ -117,6 +140,8 @@ def clamp(v, low, high):
 
 
 def is_past_race(time_str):
+    if not is_target_race_date_today():
+        return True
     if not time_str:
         return False
     try:
@@ -144,6 +169,10 @@ ALL_RACE_RESULT_PENDING_LIMIT = max(0, int(os.environ.get("ALL_RACE_RESULT_PENDI
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
+    # 日付をまたいで前日分を修復する場合、時刻差がマイナスになってしまうので
+    # TARGET_RACE_DATE が今日以外なら「取得対象」として扱う。
+    if not is_target_race_date_today():
+        return True
     if not hhmm:
         return False
     try:
@@ -4212,12 +4241,12 @@ def generate_top_triplets(
 
 def normalize_candidate_source(value):
     s = str(value or "").strip()
-    if s in {"official_star", "shadow_ai", "all_race_ai"}:
+    if s in {"official_star", "shadow_ai", "all_race_ai", "official_all"}:
         return s
-    return "official_star"
+    return "official_all"
 
 
-def make_base_map_source_key(venue, race_no, candidate_source="official_star"):
+def make_base_map_source_key(venue, race_no, candidate_source="official_all"):
     return f"{str(venue or '').strip()}|{normalize_race_no_value(race_no)}R|{normalize_candidate_source(candidate_source)}"
 
 
@@ -4228,26 +4257,26 @@ def make_base_map_legacy_key(venue, race_no):
 def parse_base_map_key(key):
     parts = str(key or "").split("|")
     if len(parts) < 2:
-        return "", 0, "official_star", False
+        return "", 0, "official_all", False
     venue = parts[0].strip()
     race_no = normalize_race_no_value(parts[1])
     has_source = len(parts) >= 3
-    source = normalize_candidate_source(parts[2] if has_source else "official_star")
+    source = normalize_candidate_source(parts[2] if has_source else "official_all")
     return venue, race_no, source, has_source
 
 
-def get_base_info_for_source(base_map, venue, race_no, candidate_source="official_star"):
+def get_base_info_for_source(base_map, venue, race_no, candidate_source="official_all"):
     source = normalize_candidate_source(candidate_source)
     info = base_map.get(make_base_map_source_key(venue, race_no, source))
     if info:
         return info
     # 旧app.py互換。公式候補だけは従来キーも見る。
-    if source == "official_star":
+    if source in {"official_star", "official_all"}:
         return base_map.get(make_base_map_legacy_key(venue, race_no), {}) or {}
     return {}
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_37_all_race_ai_source")
+    log("[collector_version] collector_latest_v10_38_official_all")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4260,6 +4289,7 @@ def build_candidates():
     )
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
+    log(f"[target_race_date] {today_text()} today_mode={is_target_race_date_today()}")
 
     base_map = fetch_base_map_today()
 
@@ -4318,11 +4348,12 @@ def build_candidates():
         }
 
     rows = list(row_map.values())
+    official_all_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "official_all")
     official_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     shadow_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
     all_race_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
     log(
-        f"[base_source_rows] official={official_rows_count} "
+        f"[base_source_rows] official_all={official_all_rows_count} official={official_rows_count} "
         f"shadow_ai={shadow_rows_count} all_race_ai={all_race_rows_count} "
         f"legacy_skipped={legacy_skipped} total={len(rows)}"
     )
@@ -4395,15 +4426,17 @@ def build_candidates():
         )
 
     rows = latest_rows + settle_rows
+    latest_official_all = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "official_all")
     latest_official = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     latest_shadow = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
     latest_all = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
+    settle_official_all = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "official_all")
     settle_official = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     settle_shadow = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
     settle_all = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
     log(
-        f"[target_races_summary] latest={len(latest_rows)}(official={latest_official},shadow={latest_shadow},all={latest_all}) "
-        f"settle_pending={len(settle_rows)}(official={settle_official},shadow={settle_shadow},all={settle_all}) total={len(rows)}"
+        f"[target_races_summary] latest={len(latest_rows)}(official_all={latest_official_all},official={latest_official},shadow={latest_shadow},all={latest_all}) "
+        f"settle_pending={len(settle_rows)}(official_all={settle_official_all},official={settle_official},shadow={settle_shadow},all={settle_all}) total={len(rows)}"
     )
 
     live_keys = set()
@@ -4578,6 +4611,8 @@ def build_candidates():
             latest_reason_parts.append("裏AI候補")
         elif candidate_source == "all_race_ai":
             latest_reason_parts.append("全レース検証")
+        elif candidate_source == "official_all" and str(base_info.get("rating") or row.get("rating") or "") in {"★★★☆☆", "★★☆☆☆", "★☆☆☆☆"}:
+            latest_reason_parts.append("公式低評価AI検証")
         if base_reason_text:
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
@@ -4661,11 +4696,12 @@ def build_candidates():
         )
     )
 
+    final_official_all = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "official_all")
     final_official = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "official_star")
     final_shadow = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "shadow_ai")
     final_all = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "all_race_ai")
     log(f"[skip_no_base_summary] count={skipped_no_base}")
-    log(f"build_candidates final_count={len(results)} official={final_official} shadow_ai={final_shadow} all_race_ai={final_all}")
+    log(f"build_candidates final_count={len(results)} official_all={final_official_all} official={final_official} shadow_ai={final_shadow} all_race_ai={final_all}")
     log("========== build_candidates end ==========")
     return results
 
