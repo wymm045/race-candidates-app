@@ -1698,6 +1698,32 @@ def build_card_html(r, is_history=False, race_date=""):
 
     ai_reasons = parse_json_array_text(r.get("ai_reasons", "[]"))
     exhibition = parse_json_array_text(r.get("exhibition", "[]"))
+
+    # 折りたたみを開かなくても、直前展示が反映済みか分かるようにする
+    exhibition_count = len([x for x in exhibition if str(x or "").strip()])
+    exhibition_rank_map_for_status = parse_exhibition_rank_map(r.get("exhibition_rank", ""))
+    has_exhibition_status = exhibition_count >= 6 or bool(exhibition_rank_map_for_status)
+    has_weather_status = bool(
+        str(r.get("weather") or "").strip()
+        or str(r.get("wind_type") or "").strip()
+        or str(r.get("wind_dir") or "").strip()
+        or r.get("wind_speed") not in [None, ""]
+        or r.get("wave_height") not in [None, ""]
+    )
+    has_lane_score_status = bool(str(r.get("ai_lane_score_text") or "").strip())
+
+    if has_exhibition_status:
+        exhibition_status_class = "ex-status-ok"
+        exhibition_status_title = "展示反映済み"
+        exhibition_status_sub = f"展示{exhibition_count}艇 / 順位{'あり' if exhibition_rank_map_for_status else '待ち'}"
+    else:
+        exhibition_status_class = "ex-status-wait"
+        exhibition_status_title = "展示待ち"
+        exhibition_status_sub = "直前データ未反映"
+
+    weather_status_text = "水面あり" if has_weather_status else "水面待ち"
+    lane_score_status_text = "補正あり" if has_lane_score_status else "補正待ち"
+
     ai_reason_html = ""
     if ai_reasons and not is_history:
         items = "".join([f"<li>{x}</li>" for x in ai_reasons])
@@ -1804,6 +1830,18 @@ def build_card_html(r, is_history=False, race_date=""):
         <span class="metric-badge metric-badge-strong"><span class="metric-badge-label">購入額</span><span class="metric-badge-value" id="selected-total-badge-{race_id_key}">{yen(selected_total_amount)}</span></span>
         <span class="metric-badge"><span class="metric-badge-label">1点</span><span class="metric-badge-value" id="amount-per-point-badge-{race_id_key}">{yen(amount_per_point)}</span></span>
         <span class="metric-badge metric-badge-score"><span class="metric-badge-label">AI補正点</span><span class="metric-badge-value">{round(ai_score_value, 2)}</span></span>
+      </div>
+
+      <div class="ex-status-strip {exhibition_status_class}">
+        <div class="ex-status-main">
+          <span class="ex-status-dot"></span>
+          <span class="ex-status-title">{exhibition_status_title}</span>
+          <span class="ex-status-sub">{exhibition_status_sub}</span>
+        </div>
+        <div class="ex-status-chips">
+          <span>{weather_status_text}</span>
+          <span>{lane_score_status_text}</span>
+        </div>
       </div>
 
       {bet_guide_html}
@@ -2347,6 +2385,20 @@ def render_layout(title, body_html):
       .metric-badge-score{background:#fff6e5}
       .metric-badge-label{color:#667085}
       .metric-badge-value{font-weight:800}
+
+      .ex-status-strip{margin-top:10px;border:1px solid #e5e7eb;border-radius:16px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f8fafc}
+      .ex-status-main{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+      .ex-status-dot{width:10px;height:10px;border-radius:999px;background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.14)}
+      .ex-status-title{font-weight:950;font-size:14px;color:#334155}
+      .ex-status-sub{font-size:12px;font-weight:800;color:#64748b}
+      .ex-status-chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+      .ex-status-chips span{border:1px solid #e2e8f0;background:#fff;border-radius:999px;padding:5px 8px;font-size:12px;font-weight:900;color:#475569;white-space:nowrap}
+      .ex-status-ok{background:#ecfdf5;border-color:#bbf7d0}
+      .ex-status-ok .ex-status-dot{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.15)}
+      .ex-status-ok .ex-status-title{color:#166534}
+      .ex-status-wait{background:#fff7ed;border-color:#fed7aa}
+      .ex-status-wait .ex-status-dot{background:#f97316;box-shadow:0 0 0 4px rgba(249,115,22,.16)}
+      .ex-status-wait .ex-status-title{color:#9a3412}
       .row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:start;padding:10px 0;border-top:1px solid #eaecf0}
       .row:first-child{border-top:none}
       .label{font-weight:700;color:#344054}
@@ -2665,6 +2717,10 @@ def render_layout(title, body_html):
         .selection-compare-wrap{grid-template-columns:1fr}
         .quick-select-row{top:82px}
         .metric-badge-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding-left:0}
+
+        .ex-status-strip{align-items:flex-start;flex-direction:column;padding:9px 10px;border-radius:14px}
+        .ex-status-title{font-size:13px}
+        .ex-status-sub,.ex-status-chips span{font-size:11px}
         .metric-badge{justify-content:space-between;border-radius:14px;width:100%}
         .bet-guide-head{flex-direction:column}
         .bet-guide-recommend{width:100%;justify-content:center;text-align:center;border-radius:14px}
