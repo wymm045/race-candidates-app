@@ -3301,6 +3301,14 @@ def init_db():
         cur.execute(sql)
 
     cur.execute("UPDATE races SET candidate_source = 'official_star' WHERE candidate_source IS NULL OR BTRIM(candidate_source) = ''")
+
+    # 旧版では (race_date, venue, race_no, selection) だけでUNIQUE制約を作っていた。
+    # 公式候補・裏AI候補・全レース検証候補は同じレース/同じ買い目でも candidate_source が違えば
+    # 別データとして保存したいので、旧UNIQUE制約を解除する。
+    # 解除しないと shadow_ai / all_race_ai の新規INSERT時に duplicate key で500になる。
+    cur.execute("ALTER TABLE races DROP CONSTRAINT IF EXISTS races_race_date_venue_race_no_selection_key")
+    cur.execute("DROP INDEX IF EXISTS races_race_date_venue_race_no_selection_key")
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_date ON races (race_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_race_key ON races (race_date, venue, race_no)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_races_today_view ON races (race_date, rating, time, venue, race_no_num)")
