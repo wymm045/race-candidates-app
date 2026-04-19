@@ -1110,12 +1110,15 @@ def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_
         </div>
         <div class="bet-guide-recommend">{guide['recommend_text']}</div>
       </div>
-      <div class="bet-guide-body">
-        <div class="bet-guide-row"><span class="bet-guide-label">AI本線3点</span><span class="bet-guide-picks">{core_html}</span></div>
-        <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
-        <div class="guide-check-wrap">{condition_html}</div>
-        <div class="bet-guide-memo">{guide['memo']}</div>
-      </div>
+      <details class="bet-guide-detail">
+        <summary>条件と中身を見る</summary>
+        <div class="bet-guide-body">
+          <div class="bet-guide-row"><span class="bet-guide-label">AI本線3点</span><span class="bet-guide-picks">{core_html}</span></div>
+          <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
+          <div class="guide-check-wrap">{condition_html}</div>
+          <div class="bet-guide-memo">{guide['memo']}</div>
+        </div>
+      </details>
       <button type="button" class="quick-select-btn quick-select-recommend" onclick="applyRecommendedBet('{race_id_key}', {guide['recommended_count']}, {guide['recommended_amount']})">{action_label}</button>
     </div>
     '''
@@ -1809,14 +1812,22 @@ def build_card_html(r, is_history=False, race_date=""):
         <div class="row row-selection-highlight"><span class="label">買い目比較</span><span class="value">{selection_compare_html}</span></div>
         <div class="row"><span class="label">選択中</span><span class="value"><div id="selected-summary-{race_id_key}">{selected_summary_html}</div></span></div>
         <div class="row"><span class="label">1点あたり</span><span class="value"><span id="amount-inline-{race_id_key}">{yen(amount_per_point)}</span></span></div>
-        <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
-        <div class="row"><span class="label">公式結果</span><span class="value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
-        <div class="row"><span class="label">公式払戻</span><span class="value">{(yen(result_trifecta_payout) + '（100円あたり）') if result_trifecta_payout > 0 else '未反映'}</span></div>
-        <div class="row"><span class="label">自動収支</span><span class="value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
-        <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
-        <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
-        <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
-        {ai_reason_html}
+        <div class="row result-row-compact"><span class="label">結果/収支</span><span class="value">
+          <div class="result-mini-grid">
+            <div><span class="mini-label">結果</span><span class="mini-value">{render_colored_pick_html(result_trifecta_text) if result_trifecta_text else '<span class="selection-chip-empty">未反映</span>'}</span></div>
+            <div><span class="mini-label">払戻</span><span class="mini-value">{(yen(result_trifecta_payout) + ' /100円') if result_trifecta_payout > 0 else '未反映'}</span></div>
+            <div><span class="mini-label">収支</span><span class="mini-value {profit_class(auto_profit_value)}">{signed_yen(auto_profit_value) if selected_count > 0 and result_trifecta_text else '未計算'}</span></div>
+          </div>
+        </span></div>
+
+        <details class="detail-accordion">
+          <summary>展示・水面・選手材料を開く</summary>
+          <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
+          <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+          <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
+          <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
+          {ai_reason_html}
+        </details>
       </div>
 
       <form id="{form_id}" method="post" action="{action_url}" class="form {'history-form' if is_history else ''}" data-race-id="{race_id_key}" data-amount="{amount_per_point}">
@@ -2661,6 +2672,59 @@ def render_layout(title, body_html):
         .save-btn{position:sticky;bottom:calc(76px + env(safe-area-inset-bottom,0px));z-index:20}
         .info-box{padding:2px 10px}
         .card:before{width:5px}
+      }
+
+      /* v10.30 compact UI */
+      .bet-guide-box{padding:10px 12px;margin-top:10px}
+      .bet-guide-head{align-items:center}
+      .bet-guide-title{font-size:16px}
+      .bet-guide-icon{width:32px;height:32px;border-radius:12px;font-size:17px}
+      .bet-guide-recommend{padding:7px 10px;font-size:12px}
+      .bet-guide-detail{margin-top:8px}
+      .bet-guide-detail summary,.detail-accordion summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #e6eaf2;background:#f8fafc;border-radius:12px;padding:8px 10px;font-size:12px;font-weight:900;color:#344054}
+      .bet-guide-detail summary::-webkit-details-marker,.detail-accordion summary::-webkit-details-marker{display:none}
+      .bet-guide-detail summary:after,.detail-accordion summary:after{content:"開く";font-size:11px;color:#667085;background:#fff;border:1px solid #d0d5dd;border-radius:999px;padding:3px 7px}
+      .bet-guide-detail[open] summary:after,.detail-accordion[open] summary:after{content:"閉じる"}
+      .quick-select-recommend{width:100%;margin-top:8px;padding:9px 12px}
+      .info-box{padding:0 10px}
+      .row{padding:8px 0}
+      .detail-accordion{border-top:1px solid #eaecf0;padding:8px 0}
+      .detail-accordion .row{border-top:1px solid #eef2f6}
+      .detail-accordion .row:first-of-type{border-top:none;margin-top:8px}
+      .result-mini-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+      .result-mini-grid>div{background:#f8fafc;border:1px solid #eaecf0;border-radius:12px;padding:8px}
+      .mini-label{display:block;font-size:11px;color:#667085;font-weight:800;margin-bottom:4px}
+      .mini-value{display:block;font-size:13px;font-weight:900;color:#101828}
+      .bet-control-box{margin-top:10px;padding:10px}
+      .detail-box-simple{display:none}
+      @media (max-width:760px){
+        .container{padding-left:8px;padding-right:8px}
+        .app-shell{gap:10px}
+        .topbar,.header,.card,.history-item{padding:10px;border-radius:14px}
+        .title{font-size:20px}
+        .time{font-size:20px}
+        .race-venue,.race-rno{font-size:19px}
+        .badge-row{margin-top:8px}
+        .metric-badge-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px}
+        .metric-badge{padding:7px 8px;font-size:12px;display:block}
+        .metric-badge-label{display:block;font-size:10px}
+        .metric-badge-value{display:block;margin-top:2px}
+        .bet-guide-box{padding:9px;margin-top:8px;border-radius:14px}
+        .bet-guide-kicker{font-size:10px}
+        .bet-guide-title{font-size:15px}
+        .bet-guide-recommend{font-size:12px;padding:7px 9px}
+        .row{grid-template-columns:74px 1fr;gap:8px;padding:7px 0}
+        .label{font-size:12px}
+        .selection-compare-col{padding:7px}
+        .quick-select-row{position:static;padding:6px;margin-bottom:6px}
+        .quick-select-btn{padding:6px 9px;font-size:11px}
+        .selection-section{padding:7px}
+        .selection-choice-core .selection-choice-body,.selection-choice-body{padding:8px 9px}
+        .result-mini-grid{grid-template-columns:1fr;gap:6px}
+        .result-mini-grid>div{padding:7px 8px}
+        .bet-control-grid{grid-template-columns:1fr 1.2fr;gap:8px}
+        .bet-control-hint{font-size:11px}
+        .save-btn{min-height:44px}
       }
 
     </style>
