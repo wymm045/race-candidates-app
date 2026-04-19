@@ -2843,6 +2843,65 @@ def render_layout(title, body_html):
         .quick-select-btn{font-size:10px;padding:5px 6px}
       }
 
+      /* v10.36: スマホは「保存バー＋買い目」を最優先で上に出す */
+      .card{display:flex;flex-direction:column;}
+      .card-top-main{order:1;}
+      .badge-row{order:2;}
+      .metric-badge-row{order:3;}
+      .ex-status-strip{order:4;}
+      .form-compact-save{order:5;}
+      .bet-guide-box{order:6;}
+      .delete-form{order:7;}
+      @media (max-width:760px){
+        .metric-badge-row{display:none!important;}
+        .ex-status-strip{margin-top:7px;padding:7px 9px;border-radius:13px;gap:6px;}
+        .ex-status-main{gap:6px;}
+        .ex-status-dot{width:8px;height:8px;box-shadow:0 0 0 3px rgba(18,183,106,.12);}
+        .ex-status-title{font-size:12px;}
+        .ex-status-sub{font-size:11px;}
+        .ex-status-chips span{font-size:10px;padding:4px 7px;}
+        .quick-save-panel{
+          position:sticky;
+          bottom:calc(74px + env(safe-area-inset-bottom,0px));
+          z-index:50;
+          margin:7px 0 6px;
+          padding:7px;
+          box-shadow:0 12px 28px rgba(16,24,40,.14);
+          background:rgba(255,255,255,.96);
+          backdrop-filter:blur(10px);
+        }
+        .row-selection-highlight{display:block;padding:0;border-top:none;}
+        .row-selection-highlight>.label{display:block;margin:0 0 5px;font-size:11px;}
+        .row-selection-highlight>.value{display:block;width:100%;}
+        .info-box-picks-first{padding:0 4px;margin-top:0;}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr)!important;gap:6px;}
+        .selection-compare-col{padding:5px;border-radius:12px;}
+        .selection-col-title{font-size:10px;margin-bottom:4px;line-height:1.2;}
+        .quick-select-row{padding:4px;gap:4px;margin-bottom:5px;border-radius:12px;}
+        .quick-select-btn{font-size:10px;padding:5px 6px;border-radius:10px;}
+        .selection-section{padding:5px;border-radius:11px;}
+        .selection-section-title{font-size:10px;margin-bottom:4px;}
+        .selection-section-cover{display:none;}
+        .selection-choice-body{font-size:11px;padding:5px 6px;border-radius:10px;}
+        .selection-choice-core .selection-choice-body{padding:6px;}
+        .selection-chip-grid{gap:4px;}
+        .selection-compare-col-official .selection-view-chip:nth-child(n+3){display:none;}
+        .bet-guide-box{margin-top:7px;padding:7px 8px;border-radius:12px;box-shadow:none;}
+        .bet-guide-head{flex-direction:row;align-items:center;gap:8px;}
+        .bet-guide-title-wrap{gap:6px;}
+        .bet-guide-icon{display:none;}
+        .bet-guide-kicker{display:none;}
+        .bet-guide-title{font-size:13px;line-height:1.25;}
+        .bet-guide-recommend{width:auto;min-width:88px;padding:5px 8px;border-radius:999px;font-size:10px;}
+        .bet-guide-detail,.quick-select-recommend{display:none;}
+        .row-selected-compact{display:none;}
+      }
+      @media (max-width:390px){
+        .selection-choice-body{font-size:10px;padding:5px 5px;}
+        .quick-select-btn{font-size:9.5px;padding:5px 5px;}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr)!important;}
+      }
+
 </style>
     """
 
