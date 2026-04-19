@@ -223,9 +223,9 @@ def safe_float(value, default=0.0):
 
 def normalize_candidate_source(value):
     s = str(value or "").strip()
-    if s in {"official_star", "shadow_ai", "all_race_ai", "official_all"}:
+    if s in {"official_star", "shadow_ai", "all_race_ai"}:
         return s
-    return "official_all"
+    return "official_star"
 
 
 def candidate_source_label(value):
@@ -234,8 +234,6 @@ def candidate_source_label(value):
         return "裏AI候補"
     if source == "all_race_ai":
         return "全レース検証"
-    if source == "official_all":
-        return "公式★1〜5"
     return "公式候補"
 
 
@@ -245,51 +243,7 @@ def candidate_source_short_label(value):
         return "裏AI"
     if source == "all_race_ai":
         return "全検証"
-    if source == "official_all":
-        return "全星"
     return "公式"
-
-
-def is_pickup_official_rating(rating):
-    return str(rating or "").strip() in {"★★★★★", "★★★★☆"}
-
-
-def is_low_official_rating(rating):
-    return str(rating or "").strip() in {"★★★☆☆", "★★☆☆☆", "★☆☆☆☆"}
-
-
-def effective_ai_rating_text(row):
-    row = row or {}
-    return (
-        display_text(row.get("final_ai_rating"), "")
-        or display_text(row.get("base_ai_rating"), "")
-        or display_text(row.get("ai_rating"), "")
-        or ""
-    )
-
-
-def is_shadow_like_row(row):
-    row = row or {}
-    source = normalize_candidate_source(row.get("candidate_source"))
-    if source == "shadow_ai":
-        return True
-    if source != "official_all":
-        return False
-    return is_low_official_rating(row.get("rating")) and effective_ai_rating_text(row) == "AI★★★★★"
-
-
-def card_source_badge_html(row):
-    row = row or {}
-    source = normalize_candidate_source(row.get("candidate_source"))
-    if is_shadow_like_row(row):
-        return '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
-    if source == "all_race_ai":
-        return '<span class="source-badge source-badge-all">全レース検証</span>'
-    if source == "official_all":
-        if is_pickup_official_rating(row.get("rating")):
-            return '<span class="source-badge source-badge-official">公式候補</span>'
-        return '<span class="source-badge source-badge-all">全レース検証</span>'
-    return '<span class="source-badge source-badge-official">公式候補</span>'
 
 
 def effective_ai_score(row):
@@ -1465,20 +1419,12 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
         official_rating_sql = "rating = %s"
         official_rating_params = [official_rating_filter]
 
-    source_clauses = []
+    source_clauses = [f"(candidate_source = 'official_star' AND {official_rating_sql})"]
+    params.extend(official_rating_params)
+    if show_shadow:
+        source_clauses.append("candidate_source = 'shadow_ai'")
     if show_all_race:
-        # 新方式: official_all が公式★1〜5の全レース母集団。
-        # 旧方式の all_race_ai も過去データ互換で残す。
-        source_clauses.append("candidate_source IN ('official_all', 'all_race_ai')")
-    else:
-        # 通常表示: 公式★4/★5など、公式評価フィルターに合うもの。
-        source_clauses.append(f"(candidate_source IN ('official_all', 'official_star') AND {official_rating_sql})")
-        params.extend(official_rating_params)
-        if show_shadow:
-            # 新方式の裏AI: 公式★1〜3 かつ AI★★★★★。
-            source_clauses.append("(candidate_source = 'official_all' AND rating IN ('★★★☆☆','★★☆☆☆','★☆☆☆☆') AND COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, '')) = 'AI★★★★★')")
-            # 旧方式の裏AIも過去データ互換で表示。
-            source_clauses.append("candidate_source = 'shadow_ai'")
+        source_clauses.append("candidate_source = 'all_race_ai'")
     where_clauses.append("(" + " OR ".join(source_clauses) + ")")
 
     if ai_rating_filter:
@@ -1808,7 +1754,7 @@ def build_card_html(r, is_history=False, race_date=""):
         card_class += " card-purchased"
 
     source_value = normalize_candidate_source(r.get("candidate_source"))
-    if is_shadow_like_row(r):
+    if source_value == "shadow_ai":
         card_class += " card-source-shadow"
     elif source_value == "all_race_ai":
         card_class += " card-source-all-race"
@@ -2546,7 +2492,6 @@ def render_layout(title, body_html):
       .rating,.ai-rating,.final-rank,.metric-badge,.source-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
       .source-badge-official{background:#f2f4f7;color:#344054}
       .source-badge-shadow{background:#f4ebff;color:#6941c6;border:1px solid #d6bbfb}
-      .source-badge-all{background:#f8fafc;color:#475467;border:1px solid #e4e7ec}
       .source-badge-all-race{background:#f8fafc;color:#475467;border:1px dashed #98a2b3}
       .rating{background:#fff6e5;color:#b54708}
       .ai-rating{background:#eef4ff;color:#175cd3}
@@ -3962,7 +3907,7 @@ def api_base_map_today():
         key = f"{venue}|{race_no}|{source}"
         base_map[key] = item
         # 既存の collector_latest.py 互換用。公式候補だけ従来キーも返す。
-        if source in {"official_star", "official_all"}:
+        if source == "official_star":
             legacy_key = f"{venue}|{race_no}"
             base_map[legacy_key] = item
     return jsonify({"ok": True, "race_date": race_date, "count": len(base_map), "base_map": base_map})
