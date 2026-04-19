@@ -988,104 +988,122 @@ def is_close_to_official_core(ai_item, official_items):
     return False
 
 
-def build_bet_guide_data(final_rank, ai_selection, official_selection):
+def build_bet_guide_data(
+    final_rank,
+    ai_selection,
+    official_selection,
+    candidate_source="official_star",
+    ai_rating="",
+    official_rating="",
+):
     rank = str(final_rank or "").strip()
+    source = normalize_candidate_source(candidate_source)
+    ai_rating_text = str(ai_rating or "").strip()
+    official_rating_text = str(official_rating or "").strip()
+
     ai_items = selection_items(ai_selection)
     core_items = ai_items[:3]
     official_top2 = selection_items(official_selection)[:2]
 
-    core_heads = [get_triplet_head_lane(x) for x in core_items]
-    has_lane1_head = any(h == 1 for h in core_heads)
-    has_inner_head = any(h in {1, 2, 3} for h in core_heads)
-    has_outer_head = any(h in {5, 6} for h in core_heads)
-    official_close = any(is_close_to_official_core(x, official_top2) for x in core_items)
+    is_ai5 = ai_rating_text == "AI★★★★★"
+    is_shadow_pick_rating = official_rating_text in {"★★★☆☆", "★★☆☆☆", "★☆☆☆☆"}
+    has_core = len(core_items) >= 3
 
-    conditions = [
-        ("AI本線3点に1号艇頭あり", has_lane1_head),
-        ("公式上位2点とAI本線が近い", official_close),
-        ("AI本線が内寄り中心", has_inner_head),
-        ("5・6号艇頭を強く買いすぎない", not has_outer_head),
-    ]
-
+    conditions = []
     should_buy = False
     recommended_count = 0
     recommended_amount = 100
     title = "見送り推奨"
     tone = "skip"
     recommend_text = "買わずに結果だけ確認"
-    memo = "条件が弱いので、無理に買わない。"
+    memo = "明日は検証優先。条件外は無理に買わない。"
     action_label = "推奨どおり見送り"
 
-    # 朝baseだけの段階では final_rank がまだ入らない。
-    # ここで見送り表示にすると紛らわしいので、直前補正待ちとして表示する。
-    if not rank:
-        title = "直前待ち"
-        tone = "watch"
-        recommend_text = "展示・風・進入の反映待ち"
-        memo = "朝baseだけの候補です。collector_latest.py 反映後に買い判定を確認してください。"
-        action_label = "直前待ち（反映なし）"
-        return {
-            "ai_core_items": core_items,
-            "official_top2": official_top2,
-            "conditions": conditions,
-            "should_buy": False,
-            "recommended_count": 0,
-            "recommended_amount": 100,
-            "title": title,
-            "tone": tone,
-            "recommend_text": recommend_text,
-            "memo": memo,
-            "action_label": action_label,
-        }
+    if source == "all_race_ai":
+        conditions = [
+            ("全レース検証枠", True),
+            ("買い対象ではない", True),
+            ("CSV分析用", True),
+            ("本番購入に混ぜない", True),
+        ]
+        title = "全レース検証用"
+        tone = "skip"
+        recommend_text = "買わない"
+        memo = "all_race_ai は母集団分析用です。画面に出ても購入対象にしない。"
+        action_label = "推奨どおり見送り"
+    elif source == "shadow_ai":
+        rank_ok = rank in {"買い強め", "買い"}
+        conditions = [
+            ("裏AI候補", True),
+            ("AI★★★★★", is_ai5),
+            ("買い強め/買い", rank_ok),
+            ("公式★1〜3なら要注目", is_shadow_pick_rating),
+        ]
 
-    strong_conditions = has_lane1_head and official_close and not has_outer_head
-    light_conditions = has_inner_head and not has_outer_head
-
-    if rank == "買い強め":
-        should_buy = True
-        recommended_count = 3
-        action_label = "推奨を反映"
-        if strong_conditions:
-            recommended_amount = 200
-            title = "200円候補"
-            tone = "strong"
-            recommend_text = "AI本線3点 × 200円候補"
-            memo = "1号艇頭・公式近さ・外頭リスクが揃う時だけ厚め。迷ったら100円。"
-        else:
-            recommended_amount = 100
-            title = "買い強めだけど100円推奨"
-            tone = "buy"
-            recommend_text = "AI本線3点 × 100円"
-            memo = "買い強めでも条件不足なら200円にしない。"
-    elif rank == "買い":
-        should_buy = True
-        recommended_count = 3
-        recommended_amount = 100
-        title = "通常買い"
-        tone = "buy"
-        recommend_text = "AI本線3点 × 100円"
-        memo = "基本は本線3点だけ。全6点に広げない。"
-        action_label = "推奨を反映"
-    elif rank == "様子見":
-        if strong_conditions or (official_close and light_conditions):
+        if not rank:
+            title = "直前待ち"
+            tone = "watch"
+            recommend_text = "展示・風・進入の反映待ち"
+            memo = "朝baseだけの裏AI候補です。collector_latest.py 反映後に判定を確認。"
+            action_label = "直前待ち（反映なし）"
+        elif is_ai5 and rank_ok and has_core:
             should_buy = True
             recommended_count = 3
             recommended_amount = 100
-            title = "条件付きで買ってもいい"
-            tone = "watch"
-            recommend_text = "AI本線3点 × 100円まで"
-            memo = "様子見は全部買わない。条件が揃う時だけ100円。"
+            tone = "buy"
+            title = "裏AI本線3点候補"
+            if official_rating_text == "★★★☆☆":
+                title = "公式★3×AI★5 要注目"
+            recommend_text = "AI本線3点 × 100円"
+            memo = "裏AIは6点に広げない。買う場合も本線3点だけ。"
             action_label = "推奨を反映"
         else:
-            title = "様子見は原則買わない"
+            title = "裏AIは検証のみ"
+            tone = "watch" if is_ai5 else "skip"
             recommend_text = "買わずに検証"
-            memo = "様子見は取り逃し確認用。条件不足なら見送り。"
+            memo = "裏AIでもAI★★★★★かつ買い以上でなければ明日は買わない。"
             action_label = "推奨どおり見送り"
     else:
-        title = "見送り推奨"
-        recommend_text = "買わない"
-        memo = "見送り寄りは買わない。"
-        action_label = "推奨どおり見送り"
+        conditions = [
+            ("公式候補", True),
+            ("AI★★★★★", is_ai5),
+            ("最終判定が買い強め", rank == "買い強め"),
+            ("AI本線3点あり", has_core),
+        ]
+
+        if not rank:
+            title = "直前待ち"
+            tone = "watch"
+            recommend_text = "展示・風・進入の反映待ち"
+            memo = "朝baseだけの候補です。collector_latest.py 反映後に買い判定を確認してください。"
+            action_label = "直前待ち（反映なし）"
+        elif rank == "買い強め" and is_ai5 and has_core:
+            should_buy = True
+            recommended_count = 3
+            recommended_amount = 100
+            title = "公式候補の買い対象"
+            tone = "strong"
+            recommend_text = "AI本線3点 × 100円"
+            memo = "明日の公式候補は、買い強め×AI★★★★★だけ。200円にはしない。"
+            action_label = "推奨を反映"
+        elif rank == "買い":
+            title = "公式の買いは見送り"
+            tone = "watch"
+            recommend_text = "買わずに検証"
+            memo = "昨日の結果を踏まえ、明日は公式候補の『買い』は購入せず検証だけ。"
+            action_label = "推奨どおり見送り"
+        elif rank == "様子見":
+            title = "様子見は買わない"
+            tone = "watch"
+            recommend_text = "買わずに検証"
+            memo = "様子見は取り逃し確認用。明日は買わない。"
+            action_label = "推奨どおり見送り"
+        else:
+            title = "見送り推奨"
+            tone = "skip"
+            recommend_text = "買わない"
+            memo = "見送り寄り、AI★★★★以下、または買い強め以外は買わない。"
+            action_label = "推奨どおり見送り"
 
     return {
         "ai_core_items": core_items,
@@ -1102,8 +1120,23 @@ def build_bet_guide_data(final_rank, ai_selection, official_selection):
     }
 
 
-def render_bet_guide_html(final_rank, ai_selection, official_selection, race_id_key=""):
-    guide = build_bet_guide_data(final_rank, ai_selection, official_selection)
+def render_bet_guide_html(
+    final_rank,
+    ai_selection,
+    official_selection,
+    race_id_key="",
+    candidate_source="official_star",
+    ai_rating="",
+    official_rating="",
+):
+    guide = build_bet_guide_data(
+        final_rank,
+        ai_selection,
+        official_selection,
+        candidate_source=candidate_source,
+        ai_rating=ai_rating,
+        official_rating=official_rating,
+    )
     guide_icon_map = {
         "strong": "🔥",
         "buy": "🎯",
@@ -1723,6 +1756,8 @@ def build_card_html(r, is_history=False, race_date=""):
     source_value = normalize_candidate_source(r.get("candidate_source"))
     if source_value == "shadow_ai":
         card_class += " card-source-shadow"
+    elif source_value == "all_race_ai":
+        card_class += " card-source-all-race"
 
     rank_for_class = str(r.get("final_rank") or "").strip()
     if rank_for_class == "買い強め":
@@ -1823,14 +1858,18 @@ def build_card_html(r, is_history=False, race_date=""):
         display_ai_selection,
         r.get("selection", ""),
         race_id_key=race_id_key,
+        candidate_source=r.get("candidate_source"),
+        ai_rating=display_ai_rating,
+        official_rating=r.get("rating", ""),
     )
 
     source_value = normalize_candidate_source(r.get("candidate_source"))
-    source_badge_html = (
-        '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
-        if source_value == "shadow_ai"
-        else '<span class="source-badge source-badge-official">公式候補</span>'
-    )
+    if source_value == "shadow_ai":
+        source_badge_html = '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
+    elif source_value == "all_race_ai":
+        source_badge_html = '<span class="source-badge source-badge-all-race">全レース検証・買わない</span>'
+    else:
+        source_badge_html = '<span class="source-badge source-badge-official">公式候補</span>' 
 
     top_checkbox = ""
     if is_history:
@@ -1915,7 +1954,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">AI本線3点中心</div>
+            <div class="quick-save-rule">明日ルール: 本線3点100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2157,12 +2196,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">本線3点中心。200円は条件が揃う買い強めだけ。</div>
+            <div class="daily-rule-title">明日ルール：公式は買い強め×AI★5、裏AIはAI★5×買い以上。本線3点100円。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>買い/買い強め → 本線3点</span>
-            <span>様子見 → 条件付き</span>
-            <span>見送り寄り → 買わない</span>
+            <span>公式候補 → 買い強め×AI★5</span>
+            <span>裏AI → AI★5×買い以上</span>
+            <span>全レース検証 → 買わない</span>
           </div>
         </div>
         <form method="get" action="/" class="filter-box">
@@ -2453,6 +2492,7 @@ def render_layout(title, body_html):
       .rating,.ai-rating,.final-rank,.metric-badge,.source-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
       .source-badge-official{background:#f2f4f7;color:#344054}
       .source-badge-shadow{background:#f4ebff;color:#6941c6;border:1px solid #d6bbfb}
+      .source-badge-all-race{background:#f8fafc;color:#475467;border:1px dashed #98a2b3}
       .rating{background:#fff6e5;color:#b54708}
       .ai-rating{background:#eef4ff;color:#175cd3}
       .final-rank-strong{background:#ecfdf3;color:#027a48}
@@ -2747,6 +2787,8 @@ def render_layout(title, body_html):
       .card-rank-skip:before{background:linear-gradient(180deg,#98a2b3,#d0d5dd)}
       .card-source-shadow:before{background:linear-gradient(180deg,#7f56d9,#175cd3)}
       .card-source-shadow{border-color:#d6bbfb}
+      .card-source-all-race:before{background:linear-gradient(180deg,#98a2b3,#d0d5dd)}
+      .card-source-all-race{border-color:#d0d5dd}
       .card-hit{box-shadow:0 16px 42px rgba(193,21,116,.10);border-color:#f5c2da}
       .card-purchased{box-shadow:0 16px 42px rgba(6,118,71,.10);border-color:#abefc6}
       .card-top-main{padding:4px 0 2px 6px;}
