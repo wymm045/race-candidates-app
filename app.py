@@ -3197,6 +3197,10 @@ def init_db():
             wind_type TEXT NOT NULL DEFAULT '',
             wind_dir TEXT NOT NULL DEFAULT '',
             water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            day_trend_text TEXT NOT NULL DEFAULT '',
+            day_trend_sample INTEGER NOT NULL DEFAULT 0,
+            series_day INTEGER NOT NULL DEFAULT 0,
+            race_phase TEXT NOT NULL DEFAULT '',
             motor_rank TEXT NOT NULL DEFAULT '',
             ai_detail TEXT NOT NULL DEFAULT '',
             ai_selection TEXT NOT NULL DEFAULT '',
@@ -3254,6 +3258,10 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_type TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS wind_dir TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS water_state_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS day_trend_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS day_trend_sample INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS series_day INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS race_phase TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS motor_rank TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_detail TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS ai_selection TEXT NOT NULL DEFAULT ''",
@@ -3315,10 +3323,46 @@ def upsert_base_candidates(cleaned):
     cur = conn.cursor()
     inserted = 0
     updated = 0
+
+    def as_int(value, default=0):
+        try:
+            if value is None or str(value).strip() == '':
+                return int(default)
+            return int(float(value))
+        except Exception:
+            return int(default)
+
     for r in cleaned:
         candidate_source_value = normalize_candidate_source(r.get('candidate_source'))
         key = make_race_key(r.get('race_date'), r.get('venue'), r.get('race_no'), candidate_source_value)
         existing = existing_map.get(key)
+
+        common_values = {
+            'race_date': str(r.get('race_date') or '').strip(),
+            'time': str(r.get('time') or '').strip(),
+            'venue': str(r.get('venue') or '').strip(),
+            'race_no': str(r.get('race_no') or '').strip(),
+            'race_no_num': as_int(r.get('race_no_num'), 0),
+            'candidate_source': candidate_source_value,
+            'rating': str(r.get('rating') or '').strip(),
+            'bet_type': str(r.get('bet_type') or '').strip(),
+            'selection': str(r.get('selection') or '').strip(),
+            'amount': as_int(r.get('amount'), 100),
+            'player_names_text': str(r.get('player_names_text') or '').strip(),
+            'class_history_text': str(r.get('class_history_text') or '').strip(),
+            'player_stat_text': str(r.get('player_stat_text') or '').strip(),
+            'player_reason_text': str(r.get('player_reason_text') or '').strip(),
+            'day_trend_text': str(r.get('day_trend_text') or '').strip(),
+            'day_trend_sample': as_int(r.get('day_trend_sample'), 0),
+            'series_day': as_int(r.get('series_day'), 0),
+            'race_phase': str(r.get('race_phase') or '').strip(),
+            'base_ai_score': safe_float(r.get('base_ai_score', 0), 0),
+            'base_ai_rating': str(r.get('base_ai_rating') or '').strip(),
+            'base_ai_selection': str(r.get('base_ai_selection') or '').strip(),
+            'base_reason_text': str(r.get('base_reason_text') or '').strip(),
+            'base_updated_at': str(r.get('base_updated_at') or '').strip(),
+        }
+
         if existing:
             cur.execute(
                 '''
@@ -3331,10 +3375,14 @@ def upsert_base_candidates(cleaned):
                     bet_type = %s,
                     selection = %s,
                     amount = CASE WHEN COALESCE(purchased, 0) = 1 THEN amount ELSE %s END,
-                    player_names_text = %s,
-                    class_history_text = %s,
+                    player_names_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_names_text END,
+                    class_history_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE class_history_text END,
                     player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
                     player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
+                    day_trend_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE day_trend_text END,
+                    day_trend_sample = CASE WHEN %s > 0 THEN %s ELSE day_trend_sample END,
+                    series_day = CASE WHEN %s > 0 THEN %s ELSE series_day END,
+                    race_phase = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE race_phase END,
                     base_ai_score = %s,
                     base_ai_rating = %s,
                     base_ai_selection = %s,
@@ -3344,27 +3392,21 @@ def upsert_base_candidates(cleaned):
                 WHERE id = %s
                 ''',
                 (
-                    str(r.get('time') or '').strip(),
-                    str(r.get('time') or '').strip(),
-                    int(r.get('race_no_num') or 0),
-                    candidate_source_value,
-                    str(r.get('rating') or '').strip(),
-                    str(r.get('bet_type') or '').strip(),
-                    str(r.get('selection') or '').strip(),
-                    int(r.get('amount') or 100),
-                    str(r.get('player_names_text') or '').strip(),
-                    str(r.get('class_history_text') or '').strip(),
-                    str(r.get('player_stat_text') or '').strip(),
-                    str(r.get('player_stat_text') or '').strip(),
-                    str(r.get('player_reason_text') or '').strip(),
-                    str(r.get('player_reason_text') or '').strip(),
-                    safe_float(r.get('base_ai_score', 0), 0),
-                    str(r.get('base_ai_rating') or '').strip(),
-                    str(r.get('base_ai_selection') or '').strip(),
-                    str(r.get('base_reason_text') or '').strip(),
-                    str(r.get('base_updated_at') or '').strip(),
-                    jst_now_str(),
-                    existing['id'],
+                    common_values['time'], common_values['time'],
+                    common_values['race_no_num'],
+                    common_values['candidate_source'],
+                    common_values['rating'], common_values['bet_type'], common_values['selection'], common_values['amount'],
+                    common_values['player_names_text'], common_values['player_names_text'],
+                    common_values['class_history_text'], common_values['class_history_text'],
+                    common_values['player_stat_text'], common_values['player_stat_text'],
+                    common_values['player_reason_text'], common_values['player_reason_text'],
+                    common_values['day_trend_text'], common_values['day_trend_text'],
+                    common_values['day_trend_sample'], common_values['day_trend_sample'],
+                    common_values['series_day'], common_values['series_day'],
+                    common_values['race_phase'], common_values['race_phase'],
+                    common_values['base_ai_score'], common_values['base_ai_rating'], common_values['base_ai_selection'],
+                    common_values['base_reason_text'], common_values['base_updated_at'],
+                    jst_now_str(), existing['id'],
                 )
             )
             updated += 1
@@ -3375,6 +3417,7 @@ def upsert_base_candidates(cleaned):
                     race_date, time, venue, race_no, race_no_num, candidate_source,
                     rating, bet_type, selection, amount,
                     player_names_text, class_history_text, player_stat_text, player_reason_text,
+                    day_trend_text, day_trend_sample, series_day, race_phase,
                     base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
@@ -3382,36 +3425,20 @@ def upsert_base_candidates(cleaned):
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
                 )
                 ''',
                 (
-                    str(r.get('race_date') or '').strip(),
-                    str(r.get('time') or '').strip(),
-                    str(r.get('venue') or '').strip(),
-                    str(r.get('race_no') or '').strip(),
-                    int(r.get('race_no_num') or 0),
-                    candidate_source_value,
-                    str(r.get('rating') or '').strip(),
-                    str(r.get('bet_type') or '').strip(),
-                    str(r.get('selection') or '').strip(),
-                    int(r.get('amount') or 100),
-                    str(r.get('player_names_text') or '').strip(),
-                    str(r.get('class_history_text') or '').strip(),
-                    str(r.get('player_stat_text') or '').strip(),
-                    str(r.get('player_reason_text') or '').strip(),
-                    safe_float(r.get('base_ai_score', 0), 0),
-                    str(r.get('base_ai_rating') or '').strip(),
-                    str(r.get('base_ai_selection') or '').strip(),
-                    str(r.get('base_reason_text') or '').strip(),
-                    str(r.get('base_updated_at') or '').strip(),
-                    0,
-                    '',
-                    0,
-                    0,
-                    '',
-                    jst_now_str(),
+                    common_values['race_date'], common_values['time'], common_values['venue'], common_values['race_no'],
+                    common_values['race_no_num'], common_values['candidate_source'],
+                    common_values['rating'], common_values['bet_type'], common_values['selection'], common_values['amount'],
+                    common_values['player_names_text'], common_values['class_history_text'], common_values['player_stat_text'], common_values['player_reason_text'],
+                    common_values['day_trend_text'], common_values['day_trend_sample'], common_values['series_day'], common_values['race_phase'],
+                    common_values['base_ai_score'], common_values['base_ai_rating'], common_values['base_ai_selection'],
+                    common_values['base_reason_text'], common_values['base_updated_at'],
+                    0, '', 0, 0, '', jst_now_str(),
                 )
             )
             inserted += 1
@@ -3748,6 +3775,10 @@ def import_base_candidates():
                 "class_history_text": str(r.get("class_history_text") or "").strip(),
                 "player_stat_text": str(r.get("player_stat_text") or "").strip(),
                 "player_reason_text": str(r.get("player_reason_text") or "").strip(),
+                "day_trend_text": str(r.get("day_trend_text") or "").strip(),
+                "day_trend_sample": int(r.get("day_trend_sample") or 0),
+                "series_day": int(r.get("series_day") or 0),
+                "race_phase": str(r.get("race_phase") or "").strip(),
                 "base_ai_score": safe_float(r.get("base_ai_score", 0), 0),
                 "base_ai_rating": str(r.get("base_ai_rating") or "").strip(),
                 "base_ai_selection": str(r.get("base_ai_selection") or "").strip(),
@@ -3760,7 +3791,11 @@ def import_base_candidates():
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-    result = upsert_base_candidates(cleaned)
+    try:
+        result = upsert_base_candidates(cleaned)
+    except Exception as e:
+        log(f"[import_base_error] {type(e).__name__}: {e}")
+        return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__, "received": len(cleaned)}), 500
     return jsonify({"ok": True, "received": len(cleaned), "inserted": result["inserted"], "updated": result["updated"], "imported_at": jst_now_str()})
 
 
@@ -3780,6 +3815,8 @@ def api_base_map_today():
             race_no,
             candidate_source,
             rating,
+            series_day,
+            race_phase,
             base_ai_score,
             base_ai_rating,
             base_ai_selection,
@@ -3806,6 +3843,8 @@ def api_base_map_today():
         item = {
             "candidate_source": source,
             "rating": str(row.get("rating") or "").strip(),
+            "series_day": int(row.get("series_day") or 0),
+            "race_phase": str(row.get("race_phase") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
             "base_ai_rating": str(row.get("base_ai_rating") or "").strip(),
             "base_ai_selection": str(row.get("base_ai_selection") or "").strip(),
