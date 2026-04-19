@@ -2880,7 +2880,7 @@ def render_layout(title, body_html):
       .info-box-picks-first{margin-top:0}
       .row-selected-compact{padding-top:6px;padding-bottom:6px}
       .row-selected-compact .selection-chip-empty{padding:5px 8px;font-size:12px}
-      .info-box-picks-first .result-row-compact{display:none}
+      .info-box-picks-first .result-row-compact{display:grid}
       .selection-compare-wrap{grid-template-columns:minmax(0,1.14fr) minmax(0,.86fr);gap:8px}
       .selection-section-title{font-size:11px;margin-bottom:5px}
       .selection-section{padding:7px}
@@ -2910,7 +2910,7 @@ def render_layout(title, body_html):
         .row{grid-template-columns:52px 1fr;gap:6px;padding:6px 0}
         .label{font-size:11px}
         .info-box{padding:0 8px}
-        .result-row-compact{display:none}
+        .result-row-compact{display:grid}
       }
       @media (max-width:390px){
         .quick-save-panel{grid-template-columns:78px 1fr 86px;gap:6px;padding:7px}
@@ -2980,6 +2980,21 @@ def render_layout(title, body_html):
         .selection-compare-wrap{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr)!important;}
       }
 
+
+      /* v10.38: 結果/払戻/収支を買い目下に戻す */
+      .info-box-picks-first .result-row-compact{display:grid!important;}
+      .result-row-compact .result-mini-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;}
+      .result-row-compact .mini-value{word-break:break-word;}
+      @media (max-width:760px){
+        .result-row-compact{display:grid!important;}
+        .result-row-compact .result-mini-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;}
+        .result-row-compact .result-mini-grid>div{padding:6px 6px;}
+        .result-row-compact .mini-label{font-size:10px;}
+        .result-row-compact .mini-value{font-size:11px;line-height:1.25;}
+      }
+      @media (max-width:390px){
+        .result-row-compact .result-mini-grid{grid-template-columns:1fr;}
+      }
 </style>
     """
 
