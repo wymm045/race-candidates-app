@@ -137,6 +137,11 @@ RESULT_REPAIR_MODE = os.environ.get("RESULT_REPAIR_MODE", "0").strip() == "1"
 RESULT_REPAIR_LOOKBACK_MINUTES = int(os.environ.get("RESULT_REPAIR_LOOKBACK_MINUTES", "720"))
 RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "48"))
 
+# 全レース検証(all_race_ai)は直前補正ではなく、基本は結果/払戻の検証用に使う。
+# Cronを重くしないため、締切前の展示取得対象にはしない。
+ENABLE_ALL_RACE_LIVE = os.environ.get("ENABLE_ALL_RACE_LIVE", "0").strip() == "1"
+ALL_RACE_RESULT_PENDING_LIMIT = max(0, int(os.environ.get("ALL_RACE_RESULT_PENDING_LIMIT", "80")))
+
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
     if not hhmm:
@@ -4207,8 +4212,8 @@ def generate_top_triplets(
 
 def normalize_candidate_source(value):
     s = str(value or "").strip()
-    if s == "shadow_ai":
-        return "shadow_ai"
+    if s in {"official_star", "shadow_ai", "all_race_ai"}:
+        return s
     return "official_star"
 
 
@@ -4242,14 +4247,16 @@ def get_base_info_for_source(base_map, venue, race_no, candidate_source="officia
     return {}
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_36_shadow_ai_source")
+    log("[collector_version] collector_latest_v10_37_all_race_ai_source")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
         f"RESULT_LOOKBACK_MINUTES={RESULT_LOOKBACK_MINUTES} "
         f"RESULT_PENDING_LIMIT={RESULT_PENDING_LIMIT} "
         f"RESULT_REPAIR_MODE={RESULT_REPAIR_MODE} "
-        f"RESULT_REPAIR_LOOKBACK_MINUTES={RESULT_REPAIR_LOOKBACK_MINUTES}"
+        f"RESULT_REPAIR_LOOKBACK_MINUTES={RESULT_REPAIR_LOOKBACK_MINUTES} "
+        f"ENABLE_ALL_RACE_LIVE={ENABLE_ALL_RACE_LIVE} "
+        f"ALL_RACE_RESULT_PENDING_LIMIT={ALL_RACE_RESULT_PENDING_LIMIT}"
     )
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
@@ -4313,9 +4320,11 @@ def build_candidates():
     rows = list(row_map.values())
     official_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     shadow_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
+    all_race_rows_count = sum(1 for r in rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
     log(
         f"[base_source_rows] official={official_rows_count} "
-        f"shadow_ai={shadow_rows_count} legacy_skipped={legacy_skipped} total={len(rows)}"
+        f"shadow_ai={shadow_rows_count} all_race_ai={all_race_rows_count} "
+        f"legacy_skipped={legacy_skipped} total={len(rows)}"
     )
 
     needed_jcds = set()
@@ -4352,17 +4361,29 @@ def build_candidates():
             lookback_minutes=RESULT_REPAIR_LOOKBACK_MINUTES,
         )
 
-        if is_target_deadline(deadline):
-            latest_rows.append(row)
-        elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
-            settle_rows.append(row)
+        if candidate_source == "all_race_ai":
+            if ENABLE_ALL_RACE_LIVE and is_target_deadline(deadline):
+                latest_rows.append(row)
+            elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
+                settle_rows.append(row)
+        else:
+            if is_target_deadline(deadline):
+                latest_rows.append(row)
+            elif (pending_settle and is_recent_past_race(deadline)) or repair_target:
+                settle_rows.append(row)
 
     # 締切後の結果反映は、新しく締切を過ぎたレースから優先する。
     # 同一レースに official_star / shadow_ai がある場合も両方更新できるよう、sourceは保持する。
     settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
     effective_pending_limit = RESULT_REPAIR_LIMIT if RESULT_REPAIR_MODE else RESULT_PENDING_LIMIT
-    if len(settle_rows) > effective_pending_limit:
-        settle_rows = settle_rows[:effective_pending_limit]
+    regular_settle_rows = [r for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) != "all_race_ai"]
+    all_race_settle_rows = [r for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai"]
+    if len(regular_settle_rows) > effective_pending_limit:
+        regular_settle_rows = regular_settle_rows[:effective_pending_limit]
+    if len(all_race_settle_rows) > ALL_RACE_RESULT_PENDING_LIMIT:
+        all_race_settle_rows = all_race_settle_rows[:ALL_RACE_RESULT_PENDING_LIMIT]
+    settle_rows = regular_settle_rows + all_race_settle_rows
+    settle_rows.sort(key=lambda x: to_minutes(x.get("time") or "00:00"), reverse=True)
 
     if settle_rows:
         log(
@@ -4376,11 +4397,13 @@ def build_candidates():
     rows = latest_rows + settle_rows
     latest_official = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     latest_shadow = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
+    latest_all = sum(1 for r in latest_rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
     settle_official = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "official_star")
     settle_shadow = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "shadow_ai")
+    settle_all = sum(1 for r in settle_rows if normalize_candidate_source(r.get("candidate_source")) == "all_race_ai")
     log(
-        f"[target_races_summary] latest={len(latest_rows)}(official={latest_official},shadow={latest_shadow}) "
-        f"settle_pending={len(settle_rows)}(official={settle_official},shadow={settle_shadow}) total={len(rows)}"
+        f"[target_races_summary] latest={len(latest_rows)}(official={latest_official},shadow={latest_shadow},all={latest_all}) "
+        f"settle_pending={len(settle_rows)}(official={settle_official},shadow={settle_shadow},all={settle_all}) total={len(rows)}"
     )
 
     live_keys = set()
@@ -4399,7 +4422,15 @@ def build_candidates():
             settle_keys.add((jcd, race_no))
 
     # 同じレースに複数sourceがあっても、beforeinfo/result取得はレース単位で1回だけ。
-    beforeinfo_keys = set(live_keys) | set(settle_keys)
+    # all_race_aiは基本的に検証用なので、締切後の結果反映ではbeforeinfoを取りに行かず軽量化する。
+    display_settle_keys = set()
+    for row in settle_rows:
+        if normalize_candidate_source(row.get("candidate_source")) == "all_race_ai":
+            continue
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(row["venue"], "")
+        if jcd:
+            display_settle_keys.add((jcd, int(row["race_no"])))
+    beforeinfo_keys = set(live_keys) | display_settle_keys
     beforeinfo_cache = fetch_beforeinfo_parallel(beforeinfo_keys) if beforeinfo_keys else {}
 
     venue_targets = {}
@@ -4545,6 +4576,8 @@ def build_candidates():
         latest_reason_parts = []
         if candidate_source == "shadow_ai":
             latest_reason_parts.append("裏AI候補")
+        elif candidate_source == "all_race_ai":
+            latest_reason_parts.append("全レース検証")
         if base_reason_text:
             latest_reason_parts.append(f"朝:{base_reason_text}")
         if analyzed["latest_reason_text"]:
@@ -4630,8 +4663,9 @@ def build_candidates():
 
     final_official = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "official_star")
     final_shadow = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "shadow_ai")
+    final_all = sum(1 for x in results if normalize_candidate_source(x.get("candidate_source")) == "all_race_ai")
     log(f"[skip_no_base_summary] count={skipped_no_base}")
-    log(f"build_candidates final_count={len(results)} official={final_official} shadow_ai={final_shadow}")
+    log(f"build_candidates final_count={len(results)} official={final_official} shadow_ai={final_shadow} all_race_ai={final_all}")
     log("========== build_candidates end ==========")
     return results
 
