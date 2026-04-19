@@ -29,14 +29,12 @@ AI_RATING_OPTIONS = [
 
 OFFICIAL_RATING_FILTER_OPTIONS = [
     ("pickup", "公式★5+★4"),
-    ("all", "公式★1〜★5すべて"),
     ("★★★★★", "公式★5のみ"),
     ("★★★★☆", "公式★4のみ"),
     ("★★★☆☆", "公式★3のみ"),
     ("★★☆☆☆", "公式★2のみ"),
     ("★☆☆☆☆", "公式★1のみ"),
 ]
-OFFICIAL_RATING_VALUES = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
 
 CARD_SELECT_COLUMNS = '''
     id,
@@ -225,7 +223,7 @@ def safe_float(value, default=0.0):
 
 def normalize_candidate_source(value):
     s = str(value or "").strip()
-    if s in {"shadow_ai", "official_star"}:
+    if s in {"official_star", "shadow_ai", "all_race_ai"}:
         return s
     return "official_star"
 
@@ -234,6 +232,8 @@ def candidate_source_label(value):
     source = normalize_candidate_source(value)
     if source == "shadow_ai":
         return "裏AI候補"
+    if source == "all_race_ai":
+        return "全レース検証"
     return "公式候補"
 
 
@@ -241,6 +241,8 @@ def candidate_source_short_label(value):
     source = normalize_candidate_source(value)
     if source == "shadow_ai":
         return "裏AI"
+    if source == "all_race_ai":
+        return "全検証"
     return "公式"
 
 
@@ -1363,11 +1365,12 @@ def get_race_by_id(race_id):
     return row
 
 
-def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False):
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False, show_all_race=False):
     ensure_db_initialized()
 
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
-    if official_rating_filter not in OFFICIAL_RATING_VALUES:
+    official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
+    if official_rating_filter not in official_rating_values:
         official_rating_filter = "pickup"
 
     where_clauses = [
@@ -1379,29 +1382,17 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     if official_rating_filter == "pickup":
         official_rating_sql = "rating IN (%s, %s)"
         official_rating_params = ["★★★★★", "★★★★☆"]
-        shadow_rating_sql = "TRUE"
-        shadow_rating_params = []
-    elif official_rating_filter == "all":
-        official_rating_sql = "rating IN (%s, %s, %s, %s, %s)"
-        official_rating_params = ["★★★★★", "★★★★☆", "★★★☆☆", "★★☆☆☆", "★☆☆☆☆"]
-        shadow_rating_sql = official_rating_sql
-        shadow_rating_params = list(official_rating_params)
     else:
         official_rating_sql = "rating = %s"
         official_rating_params = [official_rating_filter]
-        shadow_rating_sql = official_rating_sql
-        shadow_rating_params = list(official_rating_params)
 
-    # 通常は今まで通り公式★4/★5候補だけ。
-    # show_shadow=1 の時だけ、公式★条件に加えて検証用の裏AI候補も表示する。
+    source_clauses = [f"(candidate_source = 'official_star' AND {official_rating_sql})"]
+    params.extend(official_rating_params)
     if show_shadow:
-        where_clauses.append(f"((candidate_source = 'official_star' AND {official_rating_sql}) OR (candidate_source = 'shadow_ai' AND {shadow_rating_sql}))")
-        params.extend(official_rating_params)
-        params.extend(shadow_rating_params)
-    else:
-        where_clauses.append("candidate_source = 'official_star'")
-        where_clauses.append(official_rating_sql)
-        params.extend(official_rating_params)
+        source_clauses.append("candidate_source = 'shadow_ai'")
+    if show_all_race:
+        source_clauses.append("candidate_source = 'all_race_ai'")
+    where_clauses.append("(" + " OR ".join(source_clauses) + ")")
 
     if ai_rating_filter:
         where_clauses.append(
@@ -1496,6 +1487,7 @@ def get_summary_by_date(race_date):
             FROM races
             WHERE race_date = %s
               AND venue <> 'テスト会場'
+              AND candidate_source <> 'all_race_ai'
             ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
@@ -1555,6 +1547,7 @@ def get_group_summary(race_date, group_key):
             FROM races
             WHERE race_date = %s
               AND venue <> 'テスト会場'
+              AND candidate_source <> 'all_race_ai'
             ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
@@ -1623,6 +1616,7 @@ def get_history_date_summaries():
                 *
             FROM races
             WHERE venue <> 'テスト会場'
+              AND candidate_source <> 'all_race_ai'
             ORDER BY race_date, venue, race_no, candidate_source, id DESC
         )
         SELECT
@@ -1880,7 +1874,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <div class="badge-row">
         {source_badge_html}
-        <span class="rating">{display_text(r.get('rating'), '公式★未取得' if source_value == 'shadow_ai' else '公式評価なし')}</span>
+        <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
         <span class="ai-rating">{display_ai_rating}</span>
         {final_rank_html}
       </div>
@@ -2112,7 +2106,7 @@ def make_csv_response(rows, filename):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False, show_all_race=False):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
@@ -2121,6 +2115,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
     checked_show_shadow = "checked" if show_shadow else ""
+    checked_show_all_race = "checked" if show_all_race else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
@@ -2128,8 +2123,16 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_shadow_text = "裏AI候補も表示中" if show_shadow else "公式候補のみ"
+    filter_all_race_text = "全レース検証も表示中" if show_all_race else "全レース検証は非表示"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
-    official_label_map = dict(OFFICIAL_RATING_FILTER_OPTIONS)
+    official_label_map = {
+        "pickup": "公式★5+★4",
+        "★★★★★": "公式★5のみ",
+        "★★★★☆": "公式★4のみ",
+        "★★★☆☆": "公式★3のみ",
+        "★★☆☆☆": "公式★2のみ",
+        "★☆☆☆☆": "公式★1のみ",
+    }
     filter_official_text = official_label_map.get(official_rating_filter, "公式★5+★4")
     content = f'''
     <div class="app-shell">
@@ -2148,7 +2151,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
         <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
-        <div class="sub">現在の絞り込み: {filter_status_text} / {filter_shadow_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / {filter_shadow_text} / {filter_all_race_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
         <div class="daily-rule-panel">
@@ -2174,6 +2177,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
               <label class="filter-check">
                 <input type="checkbox" name="show_shadow" value="1" {checked_show_shadow}>
                 裏AI候補も表示
+              </label>
+            </div>
+            <div class="filter-item filter-item-wide">
+              <label class="filter-check">
+                <input type="checkbox" name="show_all_race" value="1" {checked_show_all_race}>
+                全レース検証も表示
               </label>
             </div>
             <div class="filter-item">
@@ -2880,7 +2889,7 @@ def render_layout(title, body_html):
       .info-box-picks-first{margin-top:0}
       .row-selected-compact{padding-top:6px;padding-bottom:6px}
       .row-selected-compact .selection-chip-empty{padding:5px 8px;font-size:12px}
-      .info-box-picks-first .result-row-compact{display:grid}
+      .info-box-picks-first .result-row-compact{display:none}
       .selection-compare-wrap{grid-template-columns:minmax(0,1.14fr) minmax(0,.86fr);gap:8px}
       .selection-section-title{font-size:11px;margin-bottom:5px}
       .selection-section{padding:7px}
@@ -2910,7 +2919,7 @@ def render_layout(title, body_html):
         .row{grid-template-columns:52px 1fr;gap:6px;padding:6px 0}
         .label{font-size:11px}
         .info-box{padding:0 8px}
-        .result-row-compact{display:grid}
+        .result-row-compact{display:none}
       }
       @media (max-width:390px){
         .quick-save-panel{grid-template-columns:78px 1fr 86px;gap:6px;padding:7px}
@@ -2980,21 +2989,6 @@ def render_layout(title, body_html):
         .selection-compare-wrap{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr)!important;}
       }
 
-
-      /* v10.38: 結果/払戻/収支を買い目下に戻す */
-      .info-box-picks-first .result-row-compact{display:grid!important;}
-      .result-row-compact .result-mini-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;}
-      .result-row-compact .mini-value{word-break:break-word;}
-      @media (max-width:760px){
-        .result-row-compact{display:grid!important;}
-        .result-row-compact .result-mini-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;}
-        .result-row-compact .result-mini-grid>div{padding:6px 6px;}
-        .result-row-compact .mini-label{font-size:10px;}
-        .result-row-compact .mini-value{font-size:11px;line-height:1.25;}
-      }
-      @media (max-width:390px){
-        .result-row-compact .result-mini-grid{grid-template-columns:1fr;}
-      }
 </style>
     """
 
@@ -3568,17 +3562,20 @@ def healthz():
 def index():
     show_closed = request.args.get("show_closed", "").strip() == "1"
     show_shadow = request.args.get("show_shadow", "").strip() == "1"
+    show_all_race = request.args.get("show_all_race", "").strip() == "1"
     ai_rating_filter = request.args.get("ai_rating", "").strip()
     official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
     if ai_rating_filter not in AI_RATING_OPTIONS:
         ai_rating_filter = ""
-    if official_rating_filter not in {"pickup", "★★★★★", "★★★★☆"}:
+    official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
+    if official_rating_filter not in official_rating_values:
         official_rating_filter = "pickup"
     races = get_filtered_today_races(
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
         show_shadow=show_shadow,
+        show_all_race=show_all_race,
     )
     summary = get_summary_by_date(today_text())
     return render_home(
@@ -3590,6 +3587,7 @@ def index():
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
         show_shadow=show_shadow,
+        show_all_race=show_all_race,
     )
 
 
@@ -3619,8 +3617,11 @@ def save():
     redirect_params = []
     if not is_not_started(race["time"]):
         redirect_params.append("show_closed=1")
-    if normalize_candidate_source(race.get("candidate_source")) == "shadow_ai":
+    source_for_redirect = normalize_candidate_source(race.get("candidate_source"))
+    if source_for_redirect == "shadow_ai":
         redirect_params.append("show_shadow=1")
+    elif source_for_redirect == "all_race_ai":
+        redirect_params.append("show_all_race=1")
     redirect_base = "/" + (("?" + "&".join(redirect_params)) if redirect_params else "")
     sep = "&" if "?" in redirect_base else "?"
     # 保存後にページ最上部へ戻らないよう、保存したカード位置へ戻す。
