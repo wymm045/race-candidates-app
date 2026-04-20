@@ -3951,6 +3951,7 @@ def api_base_map_today():
             race_no,
             candidate_source,
             rating,
+            selection,
             series_day,
             race_phase,
             base_ai_score,
@@ -3979,6 +3980,8 @@ def api_base_map_today():
         item = {
             "candidate_source": source,
             "rating": str(row.get("rating") or "").strip(),
+            "selection": str(row.get("selection") or "").strip(),
+            "official_selection": str(row.get("selection") or "").strip(),
             "series_day": int(row.get("series_day") or 0),
             "race_phase": str(row.get("race_phase") or "").strip(),
             "base_ai_score": safe_float(row.get("base_ai_score"), 0),
