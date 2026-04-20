@@ -1041,129 +1041,117 @@ def build_bet_guide_data(
     candidate_source="official_star",
     ai_rating="",
     official_rating="",
-    base_reason_text="",
-    latest_reason_text="",
 ):
-    """
-    今日の運用ルールを画面の買い方メモ/推奨反映ボタンに反映する。
-
-    本買い:
-      base土台◎ × 買い強め/買い × AI★★★★★ → AI6点100円
-    準候補:
-      base土台○ × 買い強め × AI★★★★★ → AI6点100円
-    それ以外:
-      見送り・検証のみ
-    """
     rank = str(final_rank or "").strip()
     source = normalize_candidate_source(candidate_source)
     ai_rating_text = str(ai_rating or "").strip()
+    official_rating_text = str(official_rating or "").strip()
 
     ai_items = selection_items(ai_selection)
+    # 6点買い運用に戻す。表示上の「本線3点」は買い推奨の中心にしない。
     core_items = ai_items[:6]
     official_top2 = selection_items(official_selection)[:2]
 
-    base_quality_label = extract_base_quality_display_text(base_reason_text, latest_reason_text)
     is_ai5 = ai_rating_text == "AI★★★★★"
-    rank_buy_ok = rank in {"買い強め", "買い"}
-    rank_strong_ok = rank == "買い強め"
-    has_core = len(core_items) >= 6
+    is_shadow_pick_rating = official_rating_text in {"★★★☆☆", "★★☆☆☆", "★☆☆☆☆"}
+    # official_all 一本化後は candidate_source は official_all のままなので、
+    # 「公式★1〜3 × AI★★★★★」はここで裏AI扱いに変換する。
+    # これをしないと、画面上は「買い」でも公式候補ロジックに入り、
+    # 「買い」でも正しく裏AI枠の買い方メモに入る。
+    if source == "official_all" and is_shadow_pick_rating and is_ai5:
+        source = "shadow_ai"
+    has_core = len(core_items) >= 3
 
     conditions = []
     should_buy = False
     recommended_count = 0
     recommended_amount = 100
-    title = "今日の買い判定：見送り"
+    title = "見送り推奨"
     tone = "skip"
-    recommend_text = "買わない"
-    memo = "今日の条件外です。無理に買わず、結果だけ検証します。"
+    recommend_text = "買わずに結果だけ確認"
+    memo = "明日は検証優先。条件外は無理に買わない。"
     action_label = "推奨どおり見送り"
 
     if source == "all_race_ai":
         conditions = [
             ("全レース検証枠", True),
+            ("買い対象ではない", True),
+            ("CSV分析用", True),
             ("本番購入に混ぜない", True),
-            ("AI6点あり", has_core),
         ]
-        title = "全レース検証用・買わない"
+        title = "全レース検証用"
         tone = "skip"
         recommend_text = "買わない"
-        memo = "all_race_ai は母集団分析用です。画面に出ても購入対象にしません。"
+        memo = "all_race_ai は母集団分析用です。画面に出ても購入対象にしない。"
         action_label = "推奨どおり見送り"
-    elif not rank:
+    elif source == "shadow_ai":
+        rank_ok = rank in {"買い強め", "買い"}
         conditions = [
-            ("base土台◎", base_quality_label == "base土台◎"),
-            ("base土台○", base_quality_label == "base土台○"),
+            ("裏AI候補", True),
             ("AI★★★★★", is_ai5),
-            ("直前判定待ち", True),
-            ("AI6点あり", has_core),
+            ("買い強め/買い", rank_ok),
+            ("公式★1〜3なら要注目", is_shadow_pick_rating),
         ]
-        title = "今日の買い判定：直前待ち"
-        tone = "watch"
-        recommend_text = "展示・風・進入の反映待ち"
-        memo = "collector_latest.py 反映後に、base土台と買い判定を確認します。"
-        action_label = "直前待ち（反映なし）"
-    elif base_quality_label == "base土台◎" and rank_buy_ok and is_ai5 and has_core:
-        should_buy = True
-        recommended_count = 6
-        recommended_amount = 100
-        tone = "strong" if rank == "買い強め" else "buy"
-        title = "今日の買い判定：本買い"
-        recommend_text = "AI6点 × 100円"
-        memo = "base土台◎で、AI★★★★★かつ買い以上。今日の本買い対象です。3点に絞らずAI6点で確認。"
-        action_label = "AI6点を反映"
-        conditions = [
-            ("base土台◎", True),
-            ("買い強め/買い", rank_buy_ok),
-            ("AI★★★★★", is_ai5),
-            ("AI6点あり", has_core),
-        ]
-    elif base_quality_label == "base土台○" and rank_strong_ok and is_ai5 and has_core:
-        should_buy = True
-        recommended_count = 6
-        recommended_amount = 100
-        tone = "buy"
-        title = "今日の買い判定：準候補"
-        recommend_text = "AI6点 × 100円"
-        memo = "base土台○なので本買いより一段下。買うならAI6点100円まで。資金を抑える日は見送りでもOK。"
-        action_label = "AI6点を反映"
-        conditions = [
-            ("base土台○", True),
-            ("買い強め", rank_strong_ok),
-            ("AI★★★★★", is_ai5),
-            ("AI6点あり", has_core),
-        ]
+
+        if not rank:
+            title = "直前待ち"
+            tone = "watch"
+            recommend_text = "展示・風・進入の反映待ち"
+            memo = "朝baseだけの裏AI候補です。collector_latest.py 反映後に判定を確認。"
+            action_label = "直前待ち（反映なし）"
+        elif is_ai5 and rank_ok and has_core:
+            should_buy = True
+            recommended_count = 6
+            recommended_amount = 100
+            tone = "buy"
+            title = "裏AIの6点買い候補"
+            if official_rating_text == "★★★☆☆":
+                title = "公式★3×AI★5 要注目"
+            recommend_text = "AI6点 × 100円"
+            memo = "裏AIは検証寄り。買う場合もAI6点100円まで。"
+            action_label = "AI6点を反映"
+        else:
+            title = "裏AIは検証のみ"
+            tone = "watch" if is_ai5 else "skip"
+            recommend_text = "買わずに検証"
+            memo = "裏AIでもAI★★★★★かつ買い以上でなければ明日は買わない。"
+            action_label = "推奨どおり見送り"
     else:
+        rank_buy_ok = rank in {"買い強め", "買い"}
         conditions = [
-            ("base土台◎なら買い以上", base_quality_label == "base土台◎" and rank_buy_ok),
-            ("base土台○なら買い強め", base_quality_label == "base土台○" and rank_strong_ok),
+            ("公式候補", True),
             ("AI★★★★★", is_ai5),
-            ("AI6点あり", has_core),
+            ("最終判定が買い以上", rank_buy_ok),
+            ("AI買い目あり", has_core),
         ]
-        if rank == "様子見":
-            title = "今日の買い判定：様子見"
+
+        if not rank:
+            title = "直前待ち"
+            tone = "watch"
+            recommend_text = "展示・風・進入の反映待ち"
+            memo = "朝baseだけの候補です。collector_latest.py 反映後に買い判定を確認してください。"
+            action_label = "直前待ち（反映なし）"
+        elif rank_buy_ok and is_ai5 and has_core:
+            should_buy = True
+            recommended_count = 6
+            recommended_amount = 100
+            title = "公式候補の6点買い対象" if rank == "買い強め" else "公式候補の6点買い候補"
+            tone = "strong" if rank == "買い強め" else "buy"
+            recommend_text = "AI6点 × 100円"
+            memo = "3点に絞らず、買うレースを絞ってAI6点で確認。200円にはしない。"
+            action_label = "AI6点を反映"
+        elif rank == "様子見":
+            title = "様子見は買わない"
             tone = "watch"
             recommend_text = "買わずに検証"
-            memo = "様子見は取り逃し確認用。今日は購入対象から外します。"
-        elif base_quality_label in {"base保留", "base危険"}:
-            title = "今日の買い判定：見送り"
-            tone = "skip" if base_quality_label == "base危険" else "watch"
-            recommend_text = "買わない"
-            memo = f"{base_quality_label} は、直前が良くても今日は購入対象から外します。"
-        elif not is_ai5:
-            title = "今日の買い判定：見送り"
-            tone = "skip"
-            recommend_text = "買わない"
-            memo = "AI★★★★★ではないため、今日の買いルールでは見送り。"
-        elif not has_core:
-            title = "今日の買い判定：見送り"
-            tone = "skip"
-            recommend_text = "買わない"
-            memo = "AI6点が揃っていないため、購入対象から外します。"
+            memo = "様子見は取り逃し確認用。明日は買わない。"
+            action_label = "推奨どおり見送り"
         else:
-            title = "今日の買い判定：見送り"
+            title = "見送り推奨"
             tone = "skip"
             recommend_text = "買わない"
-            memo = "本買い/準候補の条件に届いていないため見送り。"
+            memo = "見送り寄り、AI★★★★以下、または買い以上でないものは買わない。"
+            action_label = "推奨どおり見送り"
 
     return {
         "ai_core_items": core_items,
@@ -1188,8 +1176,6 @@ def render_bet_guide_html(
     candidate_source="official_star",
     ai_rating="",
     official_rating="",
-    base_reason_text="",
-    latest_reason_text="",
 ):
     guide = build_bet_guide_data(
         final_rank,
@@ -1198,8 +1184,6 @@ def render_bet_guide_html(
         candidate_source=candidate_source,
         ai_rating=ai_rating,
         official_rating=official_rating,
-        base_reason_text=base_reason_text,
-        latest_reason_text=latest_reason_text,
     )
     guide_icon_map = {
         "strong": "🔥",
@@ -1394,11 +1378,11 @@ def render_selection_compare_html(r, race_id_key):
     return f'''
     <div class="selection-compare-wrap ai-priority-wrap">
       <div class="selection-compare-col selection-compare-col-ai">
-        <div class="selection-col-title selection-col-title-ai">AI買い目</div>
+        <div class="selection-col-title selection-col-title-ai">上位AI6点</div>
         {ai_html}
       </div>
       <div class="selection-compare-col selection-compare-col-official">
-        <div class="selection-col-title selection-col-title-official">参考: 公式買い目（見るだけ）</div>
+        <div class="selection-col-title selection-col-title-official">公式買い目（見るだけ）</div>
         {official_html}
       </div>
     </div>
@@ -1943,8 +1927,6 @@ def build_card_html(r, is_history=False, race_date=""):
         candidate_source=r.get("candidate_source"),
         ai_rating=display_ai_rating,
         official_rating=r.get("rating", ""),
-        base_reason_text=r.get("base_reason_text", ""),
-        latest_reason_text=r.get("latest_reason_text", ""),
     )
 
     source_value = normalize_candidate_source(r.get("candidate_source"))
@@ -2044,7 +2026,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">運用ルール: 本買い/準候補だけAI6点100円</div>
+            <div class="quick-save-rule">今日ルール: 本買い/準候補はAI6点100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2286,12 +2268,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">今日の買いルール：本買い・準候補だけAI6点100円。それ以外は見送り・検証のみ。</div>
+            <div class="daily-rule-title">運用ルール：買うレースを絞ってAI6点100円。買い強め/買いは買える表示に統一。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>本買い: base土台◎ × 買い以上 × AI★5</span>
-            <span>準候補: base土台○ × 買い強め × AI★5</span>
-            <span>それ以外 → 見送り・検証のみ</span>
+            <span>公式候補 → AI★5×買い以上なら6点</span>
+            <span>裏AI → 検証寄り、買うなら6点100円</span>
+            <span>全レース検証 → 買わない</span>
           </div>
         </div>
         <form method="get" action="/" class="filter-box">
@@ -3154,6 +3136,45 @@ def render_layout(title, body_html):
           grid-template-columns:1fr !important;
           gap:6px !important;
         }
+      }
+
+
+      /* v10.47: 保存バーのはみ出し修正 + 公式買い目をAI6点横に全表示 */
+      .quick-save-panel{
+        width:100%;
+        max-width:100%;
+        overflow:hidden;
+        box-sizing:border-box;
+        grid-template-columns:96px minmax(0,1fr) minmax(88px,128px);
+      }
+      .quick-save-left,.quick-save-middle{min-width:0;}
+      .quick-save-left select{width:100%;max-width:100%;}
+      .quick-save-count,.quick-save-rule{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+      .save-btn-compact{width:100%;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:clip;}
+      .selection-compare-col-official .selection-view-chip:nth-child(n+3){display:inline-block!important;}
+      .selection-compare-col-official .selection-chip-grid{align-content:flex-start;}
+      .selection-col-title-ai:before{content:"◎"!important;color:#b54708;font-weight:900;}
+      .selection-col-title-official:before{content:"公"!important;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;background:#eef4ff;color:#175cd3;font-size:11px;font-weight:900;}
+      @media (max-width:760px){
+        .quick-save-panel{
+          grid-template-columns:76px minmax(0,1fr) 78px!important;
+          gap:5px!important;
+          padding:6px!important;
+        }
+        .quick-save-left label{font-size:10px;margin-bottom:2px;}
+        .stake-select-compact{min-height:34px!important;font-size:13px!important;padding:5px 18px 5px 7px!important;}
+        .quick-save-count{font-size:12px!important;}
+        .quick-save-rule{font-size:9.5px!important;}
+        .save-btn-compact{min-height:36px!important;font-size:13px!important;padding:7px 8px!important;border-radius:11px!important;}
+        .selection-compare-wrap{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;align-items:start;}
+        .selection-compare-col-official .selection-chip-grid{display:flex!important;gap:4px!important;}
+        .selection-compare-col-official .selection-choice-body{font-size:10px!important;padding:5px 5px!important;}
+      }
+      @media (max-width:390px){
+        .quick-save-panel{grid-template-columns:70px minmax(0,1fr) 74px!important;gap:4px!important;}
+        .save-btn-compact{font-size:12px!important;padding:7px 6px!important;}
+        .quick-save-count{font-size:11px!important;}
+        .quick-save-rule{font-size:9px!important;}
       }
 </style>
     """
