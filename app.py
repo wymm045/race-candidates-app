@@ -3083,6 +3083,38 @@ def render_layout(title, body_html):
         .selection-compare-wrap{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr)!important;}
       }
 
+
+
+      /* v10.37: 結果/払戻/収支をカード内に必ず表示する */
+      .info-box-picks-first .result-row-compact,
+      .result-row-compact{
+        display:grid !important;
+      }
+      .result-row-compact{
+        grid-template-columns:110px 1fr !important;
+        gap:10px !important;
+        align-items:start !important;
+      }
+      .result-mini-grid{
+        display:grid !important;
+        grid-template-columns:1fr 1fr 1fr !important;
+        gap:8px !important;
+        width:100% !important;
+      }
+      @media (max-width:760px){
+        .info-box-picks-first .result-row-compact,
+        .result-row-compact{
+          display:grid !important;
+          grid-template-columns:52px 1fr !important;
+          gap:6px !important;
+          padding:7px 0 !important;
+        }
+        .result-mini-grid{
+          display:grid !important;
+          grid-template-columns:1fr !important;
+          gap:6px !important;
+        }
+      }
 </style>
     """
 
