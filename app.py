@@ -2176,6 +2176,11 @@ def build_export_rows(rows):
             "ai_score": round(ai_score_value, 2),
             "ai_rating": csv_safe(display_ai_rating),
             "ai_selection": csv_safe(display_ai_selection),
+            "base_quality": csv_safe(extract_base_quality_display_text(r.get("base_reason_text", ""), r.get("latest_reason_text", ""))),
+            "base_ai_score": round(safe_float(r.get("base_ai_score"), 0), 2),
+            "base_ai_rating": csv_safe(r.get("base_ai_rating")),
+            "base_ai_selection": csv_safe(r.get("base_ai_selection")),
+            "base_reason_text": csv_safe(r.get("base_reason_text")),
             "final_rank": csv_safe(r.get("final_rank")),
             "latest_reason_text": csv_safe(display_ai_detail_text),
             "player_names_text": csv_safe(r.get("player_names_text")),
@@ -2215,6 +2220,7 @@ def make_csv_response(rows, filename):
     fieldnames = list(export_rows[0].keys()) if export_rows else [
         "race_date", "candidate_source", "candidate_source_label", "time", "venue", "race_no", "official_rating", "bet_type",
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
+        "base_quality", "base_ai_score", "base_ai_rating", "base_ai_selection", "base_reason_text",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
         "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
         "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
@@ -2248,7 +2254,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
     official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
-    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う★4以上候補はありません</div>'
+    cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
     filter_shadow_text = "裏AI候補も常時表示"
@@ -2286,12 +2292,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">運用ルール：買うレースを絞ってAI6点100円。買い強め/買いは買える表示に統一。</div>
+            <div class="daily-rule-title">運用ルール：base土台◎×買い以上を本買い、base土台○×買い強めを準候補。買う時はAI6点100円。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>公式候補 → AI★5×買い以上なら6点</span>
-            <span>裏AI → 検証寄り、買うなら6点100円</span>
-            <span>全レース検証 → 買わない</span>
+            <span>本買い → base土台◎×買い以上×AI★5</span>
+            <span>準候補 → base土台○×買い強め×AI★5</span>
+            <span>その他 → 見送り・検証</span>
           </div>
         </div>
         <form method="get" action="/" class="filter-box">
@@ -3201,6 +3207,12 @@ def render_layout(title, body_html):
       @media (max-width:760px){
         .bet-guide-title{font-size:13px;line-height:1.25;}
         .bet-guide-recommend{white-space:normal;text-align:center;}
+      }
+
+      /* v10.49: モバイルでも今日の買い判定と推奨反映ボタンを見えるようにする */
+      @media (max-width:760px){
+        .quick-select-recommend{display:block!important;}
+        .bet-guide-detail{display:block;}
       }
 
 </style>
