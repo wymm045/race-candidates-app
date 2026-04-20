@@ -1048,7 +1048,8 @@ def build_bet_guide_data(
     official_rating_text = str(official_rating or "").strip()
 
     ai_items = selection_items(ai_selection)
-    core_items = ai_items[:3]
+    # 6点買い運用に戻す。表示上の「本線3点」は買い推奨の中心にしない。
+    core_items = ai_items[:6]
     official_top2 = selection_items(official_selection)[:2]
 
     is_ai5 = ai_rating_text == "AI★★★★★"
@@ -1056,7 +1057,7 @@ def build_bet_guide_data(
     # official_all 一本化後は candidate_source は official_all のままなので、
     # 「公式★1〜3 × AI★★★★★」はここで裏AI扱いに変換する。
     # これをしないと、画面上は「買い」でも公式候補ロジックに入り、
-    # 「公式の買いは見送り」と表示されてしまう。
+    # 「買い」でも正しく裏AI枠の買い方メモに入る。
     if source == "official_all" and is_shadow_pick_rating and is_ai5:
         source = "shadow_ai"
     has_core = len(core_items) >= 3
@@ -1100,15 +1101,15 @@ def build_bet_guide_data(
             action_label = "直前待ち（反映なし）"
         elif is_ai5 and rank_ok and has_core:
             should_buy = True
-            recommended_count = 3
+            recommended_count = 6
             recommended_amount = 100
             tone = "buy"
-            title = "裏AI本線3点候補"
+            title = "裏AIの6点買い候補"
             if official_rating_text == "★★★☆☆":
                 title = "公式★3×AI★5 要注目"
-            recommend_text = "AI本線3点 × 100円"
-            memo = "裏AIは6点に広げない。買う場合も本線3点だけ。"
-            action_label = "推奨を反映"
+            recommend_text = "AI6点 × 100円"
+            memo = "裏AIは検証寄り。買う場合もAI6点100円まで。"
+            action_label = "AI6点を反映"
         else:
             title = "裏AIは検証のみ"
             tone = "watch" if is_ai5 else "skip"
@@ -1116,11 +1117,12 @@ def build_bet_guide_data(
             memo = "裏AIでもAI★★★★★かつ買い以上でなければ明日は買わない。"
             action_label = "推奨どおり見送り"
     else:
+        rank_buy_ok = rank in {"買い強め", "買い"}
         conditions = [
             ("公式候補", True),
             ("AI★★★★★", is_ai5),
-            ("最終判定が買い強め", rank == "買い強め"),
-            ("AI本線3点あり", has_core),
+            ("最終判定が買い以上", rank_buy_ok),
+            ("AI買い目あり", has_core),
         ]
 
         if not rank:
@@ -1129,21 +1131,15 @@ def build_bet_guide_data(
             recommend_text = "展示・風・進入の反映待ち"
             memo = "朝baseだけの候補です。collector_latest.py 反映後に買い判定を確認してください。"
             action_label = "直前待ち（反映なし）"
-        elif rank == "買い強め" and is_ai5 and has_core:
+        elif rank_buy_ok and is_ai5 and has_core:
             should_buy = True
-            recommended_count = 3
+            recommended_count = 6
             recommended_amount = 100
-            title = "公式候補の買い対象"
-            tone = "strong"
-            recommend_text = "AI本線3点 × 100円"
-            memo = "明日の公式候補は、買い強め×AI★★★★★だけ。200円にはしない。"
-            action_label = "推奨を反映"
-        elif rank == "買い":
-            title = "公式の買いは見送り"
-            tone = "watch"
-            recommend_text = "買わずに検証"
-            memo = "昨日の結果を踏まえ、明日は公式候補の『買い』は購入せず検証だけ。"
-            action_label = "推奨どおり見送り"
+            title = "公式候補の6点買い対象" if rank == "買い強め" else "公式候補の6点買い候補"
+            tone = "strong" if rank == "買い強め" else "buy"
+            recommend_text = "AI6点 × 100円"
+            memo = "3点に絞らず、買うレースを絞ってAI6点で確認。200円にはしない。"
+            action_label = "AI6点を反映"
         elif rank == "様子見":
             title = "様子見は買わない"
             tone = "watch"
@@ -1154,7 +1150,7 @@ def build_bet_guide_data(
             title = "見送り推奨"
             tone = "skip"
             recommend_text = "買わない"
-            memo = "見送り寄り、AI★★★★以下、または買い強め以外は買わない。"
+            memo = "見送り寄り、AI★★★★以下、または買い以上でないものは買わない。"
             action_label = "推奨どおり見送り"
 
     return {
@@ -1229,7 +1225,7 @@ def render_bet_guide_html(
       <details class="bet-guide-detail">
         <summary>条件と中身を見る</summary>
         <div class="bet-guide-body">
-          <div class="bet-guide-row"><span class="bet-guide-label">AI本線3点</span><span class="bet-guide-picks">{core_html}</span></div>
+          <div class="bet-guide-row"><span class="bet-guide-label">AI買い目6点</span><span class="bet-guide-picks">{core_html}</span></div>
           <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
           <div class="guide-check-wrap">{condition_html}</div>
           <div class="bet-guide-memo">{guide['memo']}</div>
@@ -1344,7 +1340,7 @@ def render_ai_selection_column(
     if cover_items:
         cover_block = f"""
         <div class="selection-section selection-section-cover">
-          <div class="selection-section-title">相手入れ替え・保険3点</div>
+          <div class="selection-section-title">AI追加3点</div>
           <div class="selection-chip-grid compact-grid">{cover_html}</div>
         </div>
         """
@@ -1352,12 +1348,12 @@ def render_ai_selection_column(
     return f"""
     <div class="ai-selection-block">
       <div class="quick-select-row">
-        <button type="button" class="quick-select-btn quick-select-main" onclick="selectTopPicks('{race_id_key}', 3)">本線3点を選択</button>
-        <button type="button" class="quick-select-btn" onclick="selectTopPicks('{race_id_key}', 6)">全6点</button>
+        <button type="button" class="quick-select-btn" onclick="selectTopPicks('{race_id_key}', 3)">上位3点</button>
+        <button type="button" class="quick-select-btn quick-select-main" onclick="selectTopPicks('{race_id_key}', 6)">AI6点を選択</button>
         <button type="button" class="quick-select-btn quick-select-clear" onclick="clearPickSelection('{race_id_key}')">クリア</button>
       </div>
       <div class="selection-section selection-section-core">
-        <div class="selection-section-title">AI本線3点</div>
+        <div class="selection-section-title">AI上位3点</div>
         <div class="selection-chip-grid compact-grid">{core_html}</div>
       </div>
       {cover_block}
@@ -2014,7 +2010,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">明日ルール: 本線3点100円</div>
+            <div class="quick-save-rule">運用ルール: AI6点100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2256,11 +2252,11 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">明日ルール：公式は買い強め×AI★5、裏AIはAI★5×買い以上。本線3点100円。</div>
+            <div class="daily-rule-title">運用ルール：買うレースを絞ってAI6点100円。買い強め/買いは買える表示に統一。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>公式候補 → 買い強め×AI★5</span>
-            <span>裏AI → AI★5×買い以上</span>
+            <span>公式候補 → AI★5×買い以上なら6点</span>
+            <span>裏AI → 検証寄り、買うなら6点100円</span>
             <span>全レース検証 → 買わない</span>
           </div>
         </div>
@@ -2870,8 +2866,8 @@ def render_layout(title, body_html):
       .selection-section-core{background:#fff7ea;border:1px solid #f6d6a6;}
       .selection-section-cover{margin-top:8px;background:#f8fafc;border:1px dashed #d0d5dd;}
       .selection-section-title{margin-bottom:7px;font-size:12px;font-weight:900;color:#344054;}
-      .selection-section-core .selection-section-title:before{content:"本命 ";color:#b54708}
-      .selection-section-cover .selection-section-title:before{content:"保険 ";color:#667085}
+      .selection-section-core .selection-section-title:before{content:"上位 ";color:#b54708}
+      .selection-section-cover .selection-section-title:before{content:"追加 ";color:#667085}
       .selection-choice-body{border-radius:14px;box-shadow:0 2px 8px rgba(16,24,40,.04);}
       .selection-choice-core .selection-choice-body{padding:10px 12px;border-color:#f2b96b;background:#fff;}
       .selection-choice-cover .selection-choice-body{background:#ffffff;border-color:#d8dee8;}
