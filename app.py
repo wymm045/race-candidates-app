@@ -1330,33 +1330,22 @@ def render_ai_selection_column(
         </label>
         """
 
-    core_items = ai_items[:3]
-    cover_items = ai_items[3:6]
-
-    core_html = "".join([render_ai_chip(item, idx, "selection-choice-core") for idx, item in enumerate(core_items)])
-    cover_html = "".join([render_ai_chip(item, idx + 3, "selection-choice-cover") for idx, item in enumerate(cover_items)])
-
-    cover_block = ""
-    if cover_items:
-        cover_block = f"""
-        <div class="selection-section selection-section-cover">
-          <div class="selection-section-title">AI追加3点</div>
-          <div class="selection-chip-grid compact-grid">{cover_html}</div>
-        </div>
-        """
+    ai6_items = ai_items[:6]
+    ai6_html = "".join([
+        render_ai_chip(item, idx, "selection-choice-core" if idx < 3 else "selection-choice-cover")
+        for idx, item in enumerate(ai6_items)
+    ])
 
     return f"""
     <div class="ai-selection-block">
       <div class="quick-select-row">
-        <button type="button" class="quick-select-btn" onclick="selectTopPicks('{race_id_key}', 3)">上位3点</button>
         <button type="button" class="quick-select-btn quick-select-main" onclick="selectTopPicks('{race_id_key}', 6)">AI6点を選択</button>
         <button type="button" class="quick-select-btn quick-select-clear" onclick="clearPickSelection('{race_id_key}')">クリア</button>
       </div>
       <div class="selection-section selection-section-core">
-        <div class="selection-section-title">AI上位3点</div>
-        <div class="selection-chip-grid compact-grid">{core_html}</div>
+        <div class="selection-section-title">AI6点</div>
+        <div class="selection-chip-grid compact-grid">{ai6_html}</div>
       </div>
-      {cover_block}
     </div>
     """
 
@@ -1785,6 +1774,27 @@ def make_history_filter_options(rows, selected_venue="", selected_race_no=""):
     return venue_options, race_no_options, venues, race_nos
 
 
+def extract_base_quality_display_text(*texts):
+    joined = " / ".join([str(t or "") for t in texts])
+    for label in ["base土台◎", "base土台○", "base保留", "base危険"]:
+        if label in joined:
+            return label
+    return ""
+
+
+def render_base_quality_badge(*texts):
+    label = extract_base_quality_display_text(*texts)
+    if not label:
+        return ""
+    cls = {
+        "base土台◎": "base-quality-strong",
+        "base土台○": "base-quality-good",
+        "base保留": "base-quality-watch",
+        "base危険": "base-quality-risk",
+    }.get(label, "base-quality-watch")
+    return f'<span class="base-quality-badge {cls}">{label}</span>'
+
+
 def build_card_html(r, is_history=False, race_date=""):
     selected_count = get_selected_count_from_text(r.get("purchased_selection_text", ""))
     selected_total_amount = get_selected_total_amount(r)
@@ -1927,6 +1937,11 @@ def build_card_html(r, is_history=False, race_date=""):
     else:
         source_badge_html = '<span class="source-badge source-badge-official">公式候補</span>' 
 
+    base_quality_badge_html = render_base_quality_badge(
+        r.get("latest_reason_text", ""),
+        r.get("base_reason_text", ""),
+    )
+
     top_checkbox = ""
     if is_history:
         top_checkbox = f'''
@@ -1969,6 +1984,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
       <div class="badge-row">
         {source_badge_html}
+        {base_quality_badge_html}
         <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
         <span class="ai-rating">{display_ai_rating}</span>
         {final_rank_html}
@@ -2542,11 +2558,15 @@ def render_layout(title, body_html):
       .status-badge-saved{background:#ecfdf3;color:#067647}
       .status-badge-hit{background:#fff1f3;color:#c11574}
       .badge-row,.metric-badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-      .rating,.ai-rating,.final-rank,.metric-badge,.source-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
+      .rating,.ai-rating,.final-rank,.metric-badge,.source-badge,.base-quality-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;font-size:13px;font-weight:700}
       .source-badge-official{background:#f2f4f7;color:#344054}
       .source-badge-shadow{background:#f4ebff;color:#6941c6;border:1px solid #d6bbfb}
       .source-badge-all{background:#f8fafc;color:#475467;border:1px solid #e4e7ec}
       .source-badge-all-race{background:#f8fafc;color:#475467;border:1px dashed #98a2b3}
+      .base-quality-strong{background:#ecfdf3;color:#067647;border:1px solid #abefc6}
+      .base-quality-good{background:#eff8ff;color:#175cd3;border:1px solid #b2ddff}
+      .base-quality-watch{background:#fffaeb;color:#b54708;border:1px solid #fedf89}
+      .base-quality-risk{background:#fef3f2;color:#b42318;border:1px solid #fecdca}
       .rating{background:#fff6e5;color:#b54708}
       .ai-rating{background:#eef4ff;color:#175cd3}
       .final-rank-strong{background:#ecfdf3;color:#027a48}
