@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_27_more_hit_lines_keep_display_after_settle.py
-# v10.26: 保険3点を「公式寄せ」ではなく「別頭・相手抜けカバー」へ調整。
+# collector_latest_v10_38_fixed.py
+# v10.38: all_race_ai対応版を整理。結果反映時に展示・風などを空値で上書きしにくい形へ修正。
 
 JST = timezone(timedelta(hours=9))
 
@@ -129,7 +129,7 @@ def is_past_race(time_str):
 # 1Rなど古いレースの「結果は入ったが払戻だけ未反映」も拾えるように長め。
 # 実際の取得件数は RESULT_PENDING_LIMIT で絞るので重くなりすぎない。
 RESULT_LOOKBACK_MINUTES = int(os.environ.get("RESULT_LOOKBACK_MINUTES", "480"))
-RESULT_PENDING_LIMIT = max(16, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
+RESULT_PENDING_LIMIT = max(1, int(os.environ.get("RESULT_PENDING_LIMIT", "16")))
 
 # DBに誤った公式結果/払戻が入った時だけ使う修復モード。
 # 通常CronではデフォルトOFF。誤データ修復だけ PC実行や一時Cron で RESULT_REPAIR_MODE=1 にする。
@@ -140,7 +140,7 @@ RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "48"))
 # 全レース検証(all_race_ai)は直前補正ではなく、基本は結果/払戻の検証用に使う。
 # Cronを重くしないため、締切前の展示取得対象にはしない。
 ENABLE_ALL_RACE_LIVE = os.environ.get("ENABLE_ALL_RACE_LIVE", "0").strip() == "1"
-ALL_RACE_RESULT_PENDING_LIMIT = max(0, int(os.environ.get("ALL_RACE_RESULT_PENDING_LIMIT", "80")))
+ALL_RACE_RESULT_PENDING_LIMIT = max(0, int(os.environ.get("ALL_RACE_RESULT_PENDING_LIMIT", "60")))
 
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
@@ -4199,7 +4199,7 @@ def generate_top_triplets(
     kept_official_count = len([tri for tri in dedup if tri in official_triplets])
 
     log(
-        f"[selection_regen_v10_27_more_hit_lines] venue={venue} "
+        f"[selection_regen_v10_38_fixed] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
         f"official_keep={kept_official_count}/{len(official_triplets)} "
@@ -4247,7 +4247,7 @@ def get_base_info_for_source(base_map, venue, race_no, candidate_source="officia
     return {}
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_37_all_race_ai_source")
+    log("[collector_version] collector_latest_v10_38_fixed")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4495,14 +4495,14 @@ def build_candidates():
                 log(f"[settle_skip_empty] source={candidate_source} venue={venue} race_no={race_no}")
                 continue
 
-            # 結果だけを送ると app 側の保存処理によって、
-            # 展示タイム/展示順位/風/波などの表示が空で上書きされることがある。
-            beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
-            exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
-            weather_info = beforeinfo.get("weather", {})
-            start_info = beforeinfo.get("start_info", {"st_map": {}})
-            foot_material = build_foot_material(exhibition_info, start_info, weather_info)
-            ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
+            # 結果反映では、結果・払戻を最優先で送る。
+            # beforeinfo を取りに行っていない all_race_ai や取得失敗時に、
+            # 展示タイム/展示順位/風/波を空値で上書きしないよう、
+            # 取れている時だけ表示系フィールドを candidate に追加する。
+            beforeinfo = beforeinfo_cache.get((jcd, race_no), {}) or {}
+            exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}}) or {"times": [], "ranks": {}}
+            weather_info = beforeinfo.get("weather", {}) or {}
+            start_info = beforeinfo.get("start_info", {"st_map": {}}) or {"st_map": {}}
 
             candidate = {
                 "race_date": today_text(),
@@ -4510,20 +4510,31 @@ def build_candidates():
                 "race_no": f"{race_no}R",
                 "candidate_source": candidate_source,
                 "time": deadline,
-                "exhibition": exhibition_info.get("times", []),
-                "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
-                "weather": str(weather_info.get("weather") or "").strip(),
-                "wind_speed": weather_info.get("wind_speed"),
-                "wave_height": weather_info.get("wave_height"),
-                "wind_type": str(weather_info.get("wind_type") or "").strip(),
-                "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
-                "water_state_score": float(weather_info.get("water_state_score") or 0),
-                "ai_lane_score_text": ai_lane_score_text,
                 "result_trifecta_text": result_text,
                 "result_trifecta_payout": result_payout,
                 "result_source_url": build_resultlist_url(jcd),
                 "latest_updated_at": jst_now_str(),
             }
+
+            has_exhibition = bool(exhibition_info.get("times")) or bool(exhibition_info.get("ranks"))
+            has_weather = any(
+                weather_info.get(k) not in (None, "")
+                for k in ["weather", "wind_speed", "wave_height", "wind_type", "wind_dir"]
+            )
+            if has_exhibition or has_weather:
+                foot_material = build_foot_material(exhibition_info, start_info, weather_info)
+                candidate.update({
+                    "exhibition": exhibition_info.get("times", []),
+                    "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
+                    "weather": str(weather_info.get("weather") or "").strip(),
+                    "wind_speed": weather_info.get("wind_speed"),
+                    "wave_height": weather_info.get("wave_height"),
+                    "wind_type": str(weather_info.get("wind_type") or "").strip(),
+                    "wind_dir": str(weather_info.get("wind_dir") or "").strip(),
+                    "water_state_score": float(weather_info.get("water_state_score") or 0),
+                    "ai_lane_score_text": build_lane_score_text(exhibition_info, weather_info, foot_material),
+                })
+
             results.append(candidate)
             continue
 
