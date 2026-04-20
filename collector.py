@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_41_exhibition_time_defensive.py
-# v10.41: 展示タイム補正を「加点」より「減点チェック」寄りへ調整。1号艇保護/5・6頭抑制を追加。
+# collector_latest_v10_44_no_rating_page_light.py
+# v10.44: Cron軽量化。latest側の公式★ページ取得を停止し、base_mapに保存済みの公式買い目を使う。
 
 JST = timezone(timedelta(hours=9))
 
@@ -3693,16 +3693,8 @@ def build_core_cover_triplets(
         if len(cover) > before:
             base_added += 1
 
-    # 6) 公式は答えではなく安全確認用。
-    #    強制採用はせず、AIスコア上位に残っている場合だけ最後の候補として扱う。
-    top_score_values = [score for _tri, score in scored_rows[:12]]
-    soft_line = min(top_score_values) if top_score_values else None
-    for tri in official_triplets[:2]:
-        if len(cover) >= 3:
-            break
-        if soft_line is not None and score_map.get(tri, -999) < soft_line:
-            continue
-        add_cover(tri)
+    # 6) v10.45: 公式上位2点による保険追加はOFF。
+    #    base土台と直前材料だけでAI6点を作る。
 
     # 7) 本線と同じ頭で、2・3着違いを補充
     for head in main_heads:
@@ -4110,10 +4102,10 @@ def generate_top_triplets(
     base_weight_map = parse_selection_weight_map(base_selection)
     base_triplets = selection_triplets(base_selection)
 
-    official_triplets = selection_triplets(official_selection)[:2]
+    # v10.45: 公式上位2点補正は完全OFF。
+    # 公式買い目は分析/表示用としてbase側に残すが、latestのAI買い目生成には使わない。
+    official_triplets = []
     official_weight_map = {}
-    for idx, tri in enumerate(official_triplets):
-        official_weight_map[tri] = 1.00 if idx == 0 else 0.82
 
     lane_ranked = [lane for lane, _ in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)]
 
@@ -4128,8 +4120,8 @@ def generate_top_triplets(
         0.94,
     )
 
-    # 公式上位2点は「そのまま買う」ではなく、AIスコアの微補正として使う
-    official_weight_multiplier = clamp(0.24 + signal_strength * 0.08, 0.22, 0.34)
+    # v10.45: 公式上位2点補正OFF
+    official_weight_multiplier = 0.0
 
     lane1_core_keep = should_keep_lane1_head_core(
         base_info,
@@ -4294,7 +4286,7 @@ def generate_top_triplets(
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_quality={base_quality_label} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
-        f"official_keep={kept_official_count}/{len(official_triplets)} "
+        f"official_off=1 "
         f"base={base_triplets[:3]} official={official_triplets} final={dedup}"
     )
 
@@ -4338,8 +4330,28 @@ def get_base_info_for_source(base_map, venue, race_no, candidate_source="officia
         return base_map.get(make_base_map_legacy_key(venue, race_no), {}) or {}
     return {}
 
+
+def extract_base_official_selection(base_info):
+    """
+    朝の collector_base.py / app.py に保存済みの公式3連単買い目を読む。
+    latest側では公式★ページを読みに行かず、ここに入っている値だけを使う。
+    app.py の /api/base_map_today がまだ selection を返していない場合は空文字になる。
+    """
+    base_info = base_info or {}
+    for key in [
+        "selection",
+        "official_selection",
+        "official_ai_selection",
+        "official_trifecta_selection",
+    ]:
+        val = str(base_info.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
 def build_candidates():
-    log("[collector_version] collector_latest_v10_41_exhibition_time_defensive")
+    log("[collector_version] collector_latest_v10_45_no_official_top2_score")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4356,20 +4368,10 @@ def build_candidates():
 
     base_map = fetch_base_map_today()
 
-    # 公式★ページは「公式買い目の参考」として使う。
-    # 対象レース自体は base_map に保存済みのものを正とする。
-    raw_rows = parse_rating_page()
+    # Cron軽量化：latest側では公式★ページを毎回取得しない。
+    # 公式★評価・公式買い目は、朝の collector_base.py で取得して app.py /api/base_map_today から返す値を使う。
     official_selection_map = {}
-    for row in raw_rows:
-        venue = str(row.get("venue") or "").strip()
-        race_no = normalize_race_no_value(row.get("race_no"))
-        if not venue or race_no <= 0:
-            continue
-        official_selection_map[(venue, race_no)] = {
-            "selection": str(row.get("selection") or "").strip(),
-            "rating": str(row.get("rating") or "").strip(),
-            "jcd": str(row.get("jcd") or NAME_JCD_MAP.get(venue, "")).strip(),
-        }
+    log("[official_page_skip] use base_map saved selection/rating; no demedas rating pages fetched")
 
     # base_map は新app.pyでは venue|race_no|candidate_source を返す。
     # 旧app.py互換で venue|race_no だけの場合も official_star として扱う。
@@ -4391,10 +4393,9 @@ def build_candidates():
         if not jcd:
             continue
 
-        official_info = official_selection_map.get((venue, race_no), {})
-        selection_from_rating_page = str(official_info.get("selection") or "").strip()
-        if not jcd and official_info.get("jcd"):
-            jcd = official_info.get("jcd")
+        # 公式買い目は base_map に保存済みのものを使う。
+        # app.py 側がまだ selection を返していない場合は空文字になり、公式近さ補正だけ無効になる。
+        selection_from_base = extract_base_official_selection(base_info)
 
         row_key = (venue, race_no, candidate_source)
         if row_key in row_map:
@@ -4405,8 +4406,8 @@ def build_candidates():
             "jcd": jcd,
             "race_no": race_no,
             "candidate_source": candidate_source,
-            "selection": selection_from_rating_page,
-            "rating": str((base_info or {}).get("rating") or official_info.get("rating") or "").strip(),
+            "selection": selection_from_base,
+            "rating": str((base_info or {}).get("rating") or "").strip(),
             "time": str((base_info or {}).get("time") or "").strip(),
         }
 
@@ -4566,7 +4567,7 @@ def build_candidates():
         venue = row["venue"]
         race_no = int(row["race_no"])
         candidate_source = normalize_candidate_source(row.get("candidate_source"))
-        selection_from_rating_page = row.get("selection", "")
+        official_selection_from_base = row.get("selection", "")
         jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         deadline = row.get("time", "")
 
@@ -4635,7 +4636,7 @@ def build_candidates():
             continue
 
         base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
-        base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
+        base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or official_selection_from_base
         base_reason_text = str(base_info.get("base_reason_text") or "").strip()
         base_quality_label = extract_base_quality_label(base_info)
         base_hold_strength = calc_base_hold_strength(base_info)
@@ -4720,7 +4721,7 @@ def build_candidates():
             base_hold_strength=base_hold_strength,
             signal_metrics=signal_metrics,
             base_info=base_info,
-            official_selection=selection_from_rating_page,
+            official_selection=official_selection_from_base,
         )
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
