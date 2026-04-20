@@ -1053,6 +1053,12 @@ def build_bet_guide_data(
 
     is_ai5 = ai_rating_text == "AI★★★★★"
     is_shadow_pick_rating = official_rating_text in {"★★★☆☆", "★★☆☆☆", "★☆☆☆☆"}
+    # official_all 一本化後は candidate_source は official_all のままなので、
+    # 「公式★1〜3 × AI★★★★★」はここで裏AI扱いに変換する。
+    # これをしないと、画面上は「買い」でも公式候補ロジックに入り、
+    # 「公式の買いは見送り」と表示されてしまう。
+    if source == "official_all" and is_shadow_pick_rating and is_ai5:
+        source = "shadow_ai"
     has_core = len(core_items) >= 3
 
     conditions = []
@@ -1918,7 +1924,7 @@ def build_card_html(r, is_history=False, race_date=""):
     )
 
     source_value = normalize_candidate_source(r.get("candidate_source"))
-    if source_value == "shadow_ai":
+    if is_shadow_like_row(r):
         source_badge_html = '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
     elif source_value == "all_race_ai":
         source_badge_html = '<span class="source-badge source-badge-all-race">全レース検証・買わない</span>'
