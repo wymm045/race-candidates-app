@@ -1752,6 +1752,62 @@ def count_rank_signals(signal_metrics=None, foot_material=None):
     }
 
 
+
+BASE_QUALITY_LABELS = ["base土台◎", "base土台○", "base保留", "base危険"]
+
+
+def extract_base_quality_label(base_info_or_text):
+    """
+    collector_base.py が base_reason_text 先頭に付ける
+    base土台◎ / base土台○ / base保留 / base危険 を読む。
+    まだ古いbaseデータでラベルが無い場合は空文字を返す。
+    """
+    if isinstance(base_info_or_text, dict):
+        text = str(base_info_or_text.get("base_reason_text") or "")
+    else:
+        text = str(base_info_or_text or "")
+    for label in BASE_QUALITY_LABELS:
+        if label in text:
+            return label
+    return ""
+
+
+def base_quality_level(base_info_or_text):
+    label = extract_base_quality_label(base_info_or_text)
+    return {
+        "base土台◎": 2,
+        "base土台○": 1,
+        "base保留": 0,
+        "base危険": -1,
+    }.get(label, 0)
+
+
+def cap_rank_by_base_quality(rank, base_info_or_text, score=0.0, direct_count=0, top_head_lane=0, head_gap=0.0):
+    """
+    final_rankの表示と実際の買い行動を一致させるためのガード。
+    base危険は買い表示にしない。base保留は買い強めにしない。
+    公式★ではなく、朝base単体の土台判定だけで制限する。
+    """
+    label = extract_base_quality_label(base_info_or_text)
+    if not label:
+        return rank
+
+    if label == "base危険":
+        # 直前がかなり良くても「買い」にはせず、見るだけに止める。
+        return "様子見" if rank in {"買い強め", "買い"} else rank
+
+    if label == "base保留":
+        # 土台が保留なら、強め表示は出さない。
+        # ただし内寄り・直前材料十分なら「買い」までは許可。
+        if rank == "買い強め":
+            if (score >= 3.10 and direct_count >= 2 and top_head_lane in {1, 2, 3} and head_gap >= 0.08):
+                return "買い"
+            return "様子見"
+        return rank
+
+    return rank
+
+
 def determine_final_rank(
     base_info,
     final_ai_score,
@@ -1775,6 +1831,7 @@ def determine_final_rank(
         score = 0.0
 
     rating = str(base_info.get("rating") or "").strip()
+    base_quality_label = extract_base_quality_label(base_info)
     head_score = role_maps.get("head", {}) or {}
     head_ranked = list(scenario_material.get("head_ranked") or [])
     if not head_ranked and head_score:
@@ -1811,6 +1868,13 @@ def determine_final_rank(
     buy_score_threshold = 2.25 - phase_bonus * 0.5
     watch_score_threshold = 1.00
 
+    # base土台ラベルで、表示と買い行動のズレを防ぐ。
+    # base危険は買い表示にしない。base保留は買い強めを出さない。
+    if base_quality_label == "base危険":
+        if score >= watch_score_threshold and (direct_count >= 1 or top_head_safe or signal_strength >= 0.30):
+            return "様子見"
+        return "見送り寄り"
+
     # 星4はかなり厳選
     if rating == "★★★★☆":
         if (
@@ -1822,7 +1886,7 @@ def determine_final_rank(
             and not outer_head_risky
             and not extreme_outer_head
         ):
-            return "買い強め"
+            return cap_rank_by_base_quality("買い強め", base_info, score=score, direct_count=direct_count, top_head_lane=top_head_lane, head_gap=head_gap)
         if (
             score >= (2.45 - phase_bonus * 0.4)
             and direct_count >= 2
@@ -1830,7 +1894,7 @@ def determine_final_rank(
             and not morning_priority
             and not extreme_outer_head
         ):
-            return "買い"
+            return cap_rank_by_base_quality("買い", base_info, score=score, direct_count=direct_count, top_head_lane=top_head_lane, head_gap=head_gap)
         if (
             score >= 1.35
             and direct_count >= 1
@@ -1849,7 +1913,7 @@ def determine_final_rank(
         and not morning_priority
         and not outer_head_risky
     ):
-        return "買い強め"
+        return cap_rank_by_base_quality("買い強め", base_info, score=score, direct_count=direct_count, top_head_lane=top_head_lane, head_gap=head_gap)
 
     if (
         score >= buy_score_threshold
@@ -1858,7 +1922,7 @@ def determine_final_rank(
         and not (morning_priority and direct_count == 0)
         and not extreme_outer_head
     ):
-        return "買い"
+        return cap_rank_by_base_quality("買い", base_info, score=score, direct_count=direct_count, top_head_lane=top_head_lane, head_gap=head_gap)
 
     if (
         score >= watch_score_threshold
@@ -2288,6 +2352,16 @@ def calc_base_hold_strength(base_info):
 
     rating = str(base_info.get("rating") or "").strip()
     reason_text = str(base_info.get("base_reason_text") or "").strip()
+    base_quality_label = extract_base_quality_label(base_info)
+
+    if base_quality_label == "base土台◎":
+        strength += 0.16
+    elif base_quality_label == "base土台○":
+        strength += 0.08
+    elif base_quality_label == "base保留":
+        strength -= 0.03
+    elif base_quality_label == "base危険":
+        strength -= 0.08
 
     if base_score >= 2.8:
         strength += 0.24
@@ -2312,7 +2386,7 @@ def calc_base_hold_strength(base_info):
             reason_bonus += bonus
     strength += min(0.20, reason_bonus)
 
-    return round(clamp(strength, 0.0, 0.52), 2)
+    return round(clamp(strength, 0.0, 0.62), 2)
 
 
 def normalize_race_phase_label(text):
@@ -2404,7 +2478,7 @@ def apply_phase_material_to_role_maps(role_maps, phase_material=None):
     return adjusted
 
 
-def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor, signal_metrics=None):
+def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_strength, scenario_factor, signal_metrics=None, base_info=None):
     try:
         base_ai_score = float(base_ai_score or 0)
     except Exception:
@@ -2415,12 +2489,29 @@ def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_streng
         raw_final_ai_score = base_ai_score
 
     signal_strength = float((signal_metrics or {}).get("signal_strength", 0) or 0)
+    base_quality_label = extract_base_quality_label(base_info)
     delta = raw_final_ai_score - base_ai_score
     reflect_factor = 0.36 + signal_strength * 0.46 + (float(scenario_factor or 1.0) - 0.45) * 0.16 - float(base_hold_strength or 0) * 0.26
     reflect_factor = clamp(reflect_factor, 0.26, 0.84)
 
     up_cap = 0.48 + signal_strength * 0.82 - float(base_hold_strength or 0) * 0.12 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.12
     down_cap_mag = 0.52 + signal_strength * 0.86 - float(base_hold_strength or 0) * 0.10 + max(0.0, float(scenario_factor or 1.0) - 0.78) * 0.10
+
+    # base土台◎/○は、直前で崩しすぎない。
+    # base保留/危険は、直前だけで過剰に上げすぎない。
+    if base_quality_label == "base土台◎":
+        reflect_factor = clamp(reflect_factor - 0.05, 0.24, 0.78)
+        down_cap_mag = max(0.32, down_cap_mag - 0.14)
+    elif base_quality_label == "base土台○":
+        reflect_factor = clamp(reflect_factor - 0.03, 0.24, 0.80)
+        down_cap_mag = max(0.38, down_cap_mag - 0.08)
+    elif base_quality_label == "base保留":
+        reflect_factor = clamp(reflect_factor - 0.02, 0.24, 0.78)
+        up_cap = max(0.20, up_cap - 0.16)
+    elif base_quality_label == "base危険":
+        reflect_factor = clamp(reflect_factor - 0.06, 0.22, 0.70)
+        up_cap = max(0.12, up_cap - 0.32)
+
     delta = clamp(delta * reflect_factor, -down_cap_mag, up_cap)
     return round(base_ai_score + delta, 2)
 
@@ -4172,11 +4263,19 @@ def generate_top_triplets(
         base_hold_strength=base_hold_strength,
     )
 
+    base_quality_label = extract_base_quality_label(base_info)
     min_base_keep = 1
     if float(base_hold_strength or 0) >= 0.18 or signal_strength <= 0.28:
         min_base_keep = 2
     if (float(base_hold_strength or 0) >= 0.34 and scenario_factor <= 0.80) or signal_strength <= 0.18:
         min_base_keep = 3
+
+    # base土台◎/○は、直前補正後もbase上位を残しやすくする。
+    # base保留/危険は無理にbase保持を増やさず、final_rank側で買い上げを抑える。
+    if base_quality_label == "base土台◎" and signal_strength < 0.55:
+        min_base_keep = max(min_base_keep, 3)
+    elif base_quality_label == "base土台○" and signal_strength < 0.42:
+        min_base_keep = max(min_base_keep, 2)
 
     top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
@@ -4193,6 +4292,7 @@ def generate_top_triplets(
     log(
         f"[selection_regen_v10_39_merged] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
+        f"base_quality={base_quality_label} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
         f"official_keep={kept_official_count}/{len(official_triplets)} "
         f"base={base_triplets[:3]} official={official_triplets} final={dedup}"
@@ -4537,6 +4637,7 @@ def build_candidates():
         base_ai_score = float(base_info.get("base_ai_score", 0) or 0)
         base_ai_selection = str(base_info.get("base_ai_selection") or "").strip() or selection_from_rating_page
         base_reason_text = str(base_info.get("base_reason_text") or "").strip()
+        base_quality_label = extract_base_quality_label(base_info)
         base_hold_strength = calc_base_hold_strength(base_info)
         phase_material = build_phase_material(base_info, race_no=race_no)
         series_day = int(phase_material.get("series_day") or 0)
@@ -4589,6 +4690,14 @@ def build_candidates():
             latest_reason_parts.append("公式低評価AI検証")
         if base_reason_text:
             latest_reason_parts.append(f"朝:{base_reason_text}")
+        if base_quality_label == "base土台◎":
+            latest_reason_parts.append("base土台を強めに保持")
+        elif base_quality_label == "base土台○":
+            latest_reason_parts.append("base土台をやや保持")
+        elif base_quality_label == "base保留":
+            latest_reason_parts.append("base保留で買い上げ慎重")
+        elif base_quality_label == "base危険":
+            latest_reason_parts.append("base危険で買い上げ抑制")
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
         if signal_metrics.get("signal_text"):
@@ -4619,6 +4728,7 @@ def build_candidates():
             base_hold_strength,
             scenario_factor,
             signal_metrics=signal_metrics,
+            base_info=base_info,
         )
         final_ai_score = round(final_ai_score + float(phase_material.get("score_adjust", 0) or 0), 2)
         ai_lane_score_text = build_lane_score_text(exhibition_info, weather_info, foot_material)
