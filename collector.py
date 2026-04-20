@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_39_official_all_merged.py
-# v10.39: official_all一本化版に、collector 4.py側の買い目生成ログ/結果反映保護を結合。
+# collector_latest_v10_41_exhibition_time_defensive.py
+# v10.41: 展示タイム補正を「加点」より「減点チェック」寄りへ調整。1号艇保護/5・6頭抑制を追加。
 
 JST = timezone(timedelta(hours=9))
 
@@ -903,22 +903,31 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         spread = slowest_time - fastest_time
         gap12 = second_time - fastest_time
 
+        # 展示タイムは「良い艇を頭まで押す」より「悪い艇を疑う」材料に寄せる。
+        # 1号艇は多少守り、5・6号艇の展示最速は頭加点を抑える。
+        def exhibition_time_factor(lane):
+            if int(lane) == 1:
+                return 1.00
+            if int(lane) in {2, 3, 4}:
+                return 0.78
+            return 0.45
+
         if spread >= 0.18:
             reasons.append("足:足差あり")
-            lane_scores[fastest_lane] += 0.34
-            lane_scores[second_lane] += 0.12
-            lane_scores[slowest_lane] -= 0.20
+            lane_scores[fastest_lane] += 0.16 * exhibition_time_factor(fastest_lane)
+            lane_scores[second_lane] += 0.07
+            lane_scores[slowest_lane] -= 0.18 if slowest_lane != 1 else 0.10
         elif spread >= 0.12:
             reasons.append("足:足差ややあり")
-            lane_scores[fastest_lane] += 0.24
-            lane_scores[second_lane] += 0.08
-            lane_scores[slowest_lane] -= 0.14
+            lane_scores[fastest_lane] += 0.10 * exhibition_time_factor(fastest_lane)
+            lane_scores[second_lane] += 0.05
+            lane_scores[slowest_lane] -= 0.12 if slowest_lane != 1 else 0.07
         elif spread >= 0.08:
-            lane_scores[fastest_lane] += 0.14
-            lane_scores[slowest_lane] -= 0.08
+            lane_scores[fastest_lane] += 0.06 * exhibition_time_factor(fastest_lane)
+            lane_scores[slowest_lane] -= 0.06 if slowest_lane != 1 else 0.03
 
         if gap12 >= 0.05:
-            lane_scores[fastest_lane] += 0.08
+            lane_scores[fastest_lane] += 0.03 * exhibition_time_factor(fastest_lane)
 
     if len(st_map) >= 4:
         sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
@@ -998,10 +1007,10 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
 
     if len(float_times) == 6:
         spread = max(v for _, v in float_times) - min(v for _, v in float_times)
-        if spread >= 0.12:
-            foot_bonus += 0.10
-        elif spread >= 0.08:
+        if spread >= 0.14:
             foot_bonus += 0.05
+        elif spread >= 0.10:
+            foot_bonus += 0.02
 
     if entry_change:
         foot_bonus += min(0.10, entry_severity * 0.18)
@@ -1716,8 +1725,11 @@ def count_rank_signals(signal_metrics=None, foot_material=None):
     lane1_time_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
     lane1_st = signal_metrics.get("lane1_st")
 
-    has_display_gap = exp_spread >= 0.12
+    # 展示タイム差由来のシグナルは1枠で数える。
+    # 「展示差」と「足差」を別々に数えると、同じ材料を二重評価しやすい。
+    has_display_gap = exp_spread >= 0.14
     has_foot_gap = ("足差あり" in foot_reason_text) or ("足差ややあり" in foot_reason_text)
+    has_exhibition_gap = has_display_gap or has_foot_gap
     has_st_sign = ("ST気配あり" in foot_reason_text) or st_spread >= 0.06
     has_entry_change = bool(foot_material.get("entry_change")) and entry_severity >= 0.12
 
@@ -1729,7 +1741,7 @@ def count_rank_signals(signal_metrics=None, foot_material=None):
     if isinstance(lane1_st, (int, float)) and float(lane1_st) >= 0.18:
         lane1_weak = True
 
-    direct_count = sum(1 for x in [has_display_gap, has_foot_gap, has_st_sign, has_entry_change] if x)
+    direct_count = sum(1 for x in [has_exhibition_gap, has_st_sign, has_entry_change] if x)
     return {
         "has_display_gap": has_display_gap,
         "has_foot_gap": has_foot_gap,
@@ -1938,30 +1950,45 @@ def compute_lane_scores_map(exhibition_info, weather_info=None, foot_material=No
         for lane, v in float_times:
             diff_from_min = v - min_time
             diff_from_avg = v - avg_time
+
+            # 0.05以内はほぼ差なし。0.10以上から頭候補として明確に疑う。
             if diff_from_min <= 0.00:
-                lane_scores[lane] += 0.18
+                if lane == 1:
+                    lane_scores[lane] += 0.10
+                elif lane in {2, 3, 4}:
+                    lane_scores[lane] += 0.07
+                else:
+                    lane_scores[lane] += 0.04
             elif diff_from_min <= 0.03:
-                lane_scores[lane] += 0.10
+                if lane == 1:
+                    lane_scores[lane] += 0.04
+                elif lane in {2, 3, 4}:
+                    lane_scores[lane] += 0.03
+                else:
+                    lane_scores[lane] += 0.02
+            elif diff_from_min <= 0.05:
+                lane_scores[lane] += 0.00
+            elif diff_from_min >= 0.14:
+                lane_scores[lane] -= 0.10 if lane == 1 else (0.16 if lane in {2, 3, 4} else 0.20)
             elif diff_from_min >= 0.10:
-                lane_scores[lane] -= 0.14
+                lane_scores[lane] -= 0.06 if lane == 1 else (0.11 if lane in {2, 3, 4} else 0.15)
             elif diff_from_min >= 0.06:
-                lane_scores[lane] -= 0.08
+                lane_scores[lane] -= 0.02 if lane == 1 else (0.05 if lane in {2, 3, 4} else 0.07)
 
             if diff_from_avg <= -0.05:
-                lane_scores[lane] += 0.06
+                lane_scores[lane] += 0.03 if lane not in {5, 6} else 0.02
             elif diff_from_avg >= 0.05:
-                lane_scores[lane] -= 0.06
+                lane_scores[lane] -= 0.04 if lane != 1 else 0.02
 
+        fastest_lane = sorted_times[0][0]
+        fastest_factor = 1.0 if fastest_lane == 1 else (0.65 if fastest_lane in {2, 3, 4} else 0.30)
         if spread >= 0.18:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.08
+            lane_scores[fastest_lane] += 0.04 * fastest_factor
         elif spread >= 0.12:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.05
+            lane_scores[fastest_lane] += 0.02 * fastest_factor
 
         if gap12 >= 0.05:
-            fastest_lane = sorted_times[0][0]
-            lane_scores[fastest_lane] += 0.04
+            lane_scores[fastest_lane] += 0.02 * fastest_factor
 
     water_state_score = float(weather_info.get("water_state_score") or 0)
     if water_state_score != 0:
@@ -2061,23 +2088,25 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
 
     signal_strength = 0.0
     if exp_spread >= 0.18:
-        signal_strength += 0.34
+        signal_strength += 0.24
     elif exp_spread >= 0.14:
-        signal_strength += 0.26
+        signal_strength += 0.16
     elif exp_spread >= 0.10:
-        signal_strength += 0.18
-    elif exp_spread >= 0.07:
         signal_strength += 0.08
+    elif exp_spread >= 0.07:
+        signal_strength += 0.03
 
     if exp_gap12 >= 0.05:
-        signal_strength += 0.10
+        signal_strength += 0.05
     elif exp_gap12 >= 0.03:
-        signal_strength += 0.05
+        signal_strength += 0.02
 
-    if lane1_time_gap >= 0.10:
-        signal_strength += 0.09
-    elif lane1_time_gap >= 0.07:
+    if lane1_time_gap >= 0.14:
+        signal_strength += 0.08
+    elif lane1_time_gap >= 0.10:
         signal_strength += 0.05
+    elif lane1_time_gap >= 0.07:
+        signal_strength += 0.02
 
     if st_spread >= 0.12:
         signal_strength += 0.30
@@ -2100,7 +2129,7 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
             signal_strength += 0.06
 
     signal_strength = round(clamp(signal_strength, 0.0, 0.98), 2)
-    latest_push = round(clamp(0.30 + signal_strength * 0.78, 0.28, 1.0), 2)
+    latest_push = round(clamp(0.28 + signal_strength * 0.62, 0.26, 0.86), 2)
 
     if entry_change and signal_strength >= 0.62:
         signal_text = "進入変化ありで直前重視"
@@ -2144,7 +2173,8 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
     entry_text = str(foot_material.get("entry_text") or "")
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
 
-    # 展示順位の直接加点/減点は使わない。展示タイム差だけを反映する。
+    # 展示順位の直接加点/減点は使わない。
+    # 展示タイム差は、加点より「頭候補の危険確認」に寄せる。
     if times:
         float_times = []
         for t in times:
@@ -2160,29 +2190,31 @@ def analyze_latest(base_ai_score, exhibition_info, weather_info=None, foot_mater
             lane1_gap = lane1_time - sorted_times[0]
 
             if spread >= 0.18:
-                score += 0.18 * latest_push
+                score += 0.08 * latest_push
                 reasons.append("展示差あり")
             elif spread >= 0.14:
-                score += 0.12 * latest_push
+                score += 0.05 * latest_push
                 reasons.append("展示差あり")
             elif spread >= 0.10:
-                score += 0.08 * latest_push
+                score += 0.03 * latest_push
                 reasons.append("展示差ややあり")
 
             if gap12 >= 0.05:
-                score += 0.04 * latest_push
+                score += 0.02 * latest_push
 
-            if lane1_gap <= 0.02:
-                score += 0.10 * latest_push
-            elif lane1_gap <= 0.05:
+            if lane1_gap <= 0.03:
                 score += 0.05 * latest_push
-            elif lane1_gap >= 0.12:
-                score -= 0.16 * latest_push
-            elif lane1_gap >= 0.08:
-                score -= 0.10 * latest_push
+            elif lane1_gap <= 0.05:
+                score += 0.02 * latest_push
+            elif lane1_gap >= 0.14:
+                score -= 0.12 * latest_push
+            elif lane1_gap >= 0.10:
+                score -= 0.08 * latest_push
+            elif lane1_gap >= 0.06:
+                score -= 0.03 * latest_push
 
             if spread >= 0.10:
-                reasons.append("展示タイム差を反映")
+                reasons.append("展示タイム差を確認")
 
     if entry_change:
         reasons.append(f"進入:{entry_text}") if entry_text else reasons.append("進入変化あり")
@@ -2466,6 +2498,7 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
             second_score[lane] -= min(0.03 + 0.03 * loss, 0.10)
 
     # 展示順位による頭/2着/3着スコア加点は使わない。
+    # 展示タイムは「5・6頭を上げる」より、外の好展示は2着3着へ寄せる。
     float_times = []
     for lane, t in enumerate(times, start=1):
         try:
@@ -2485,57 +2518,119 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
             diff_avg = v - avg_time
 
             if diff_min <= 0.00:
-                head_score[lane] += 0.13
-                second_score[lane] += 0.07
+                if lane == 1:
+                    head_score[lane] += 0.07
+                    second_score[lane] += 0.04
+                    third_score[lane] += 0.01
+                elif lane in {2, 3, 4}:
+                    head_score[lane] += 0.04
+                    second_score[lane] += 0.04
+                    third_score[lane] += 0.02
+                else:
+                    # 外枠の展示最速は、頭ではなく連絡み評価へ寄せる
+                    second_score[lane] += 0.04
+                    third_score[lane] += 0.05
             elif diff_min <= 0.03:
-                head_score[lane] += 0.07
-                second_score[lane] += 0.04
-                third_score[lane] += 0.02
+                if lane == 1:
+                    head_score[lane] += 0.04
+                    second_score[lane] += 0.02
+                elif lane in {2, 3, 4}:
+                    head_score[lane] += 0.02
+                    second_score[lane] += 0.02
+                    third_score[lane] += 0.01
+                else:
+                    second_score[lane] += 0.02
+                    third_score[lane] += 0.03
+            elif diff_min <= 0.05:
+                # 0.05以内はほぼ差なし
+                pass
+            elif diff_min >= 0.14:
+                if lane == 1:
+                    head_score[lane] -= 0.08
+                    second_score[lane] -= 0.03
+                elif lane in {2, 3, 4}:
+                    head_score[lane] -= 0.14
+                    second_score[lane] -= 0.06
+                else:
+                    head_score[lane] -= 0.20
+                    second_score[lane] -= 0.08
+                    third_score[lane] -= 0.03
             elif diff_min >= 0.10:
-                head_score[lane] -= 0.12
-                second_score[lane] -= 0.05
+                if lane == 1:
+                    head_score[lane] -= 0.05
+                    second_score[lane] -= 0.02
+                elif lane in {2, 3, 4}:
+                    head_score[lane] -= 0.10
+                    second_score[lane] -= 0.04
+                else:
+                    head_score[lane] -= 0.15
+                    second_score[lane] -= 0.06
+                    third_score[lane] -= 0.02
             elif diff_min >= 0.06:
-                head_score[lane] -= 0.06
-                second_score[lane] -= 0.025
+                if lane == 1:
+                    head_score[lane] -= 0.02
+                elif lane in {2, 3, 4}:
+                    head_score[lane] -= 0.05
+                    second_score[lane] -= 0.02
+                else:
+                    head_score[lane] -= 0.08
+                    second_score[lane] -= 0.03
 
             if diff_avg <= -0.04:
-                third_score[lane] += 0.03
+                if lane in {5, 6}:
+                    second_score[lane] += 0.01
+                    third_score[lane] += 0.03
+                else:
+                    third_score[lane] += 0.02
             elif diff_avg >= 0.05:
-                third_score[lane] -= 0.03
+                third_score[lane] -= 0.02 if lane != 1 else 0.01
 
+        fastest_lane = sorted_times[0][0]
         if spread >= 0.18:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.05
+            if fastest_lane == 1:
+                head_score[fastest_lane] += 0.03
+            elif fastest_lane in {2, 3, 4}:
+                head_score[fastest_lane] += 0.02
+            else:
+                second_score[fastest_lane] += 0.02
+                third_score[fastest_lane] += 0.02
         elif spread >= 0.12:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.03
+            if fastest_lane == 1:
+                head_score[fastest_lane] += 0.02
+            elif fastest_lane in {2, 3, 4}:
+                head_score[fastest_lane] += 0.01
+            else:
+                third_score[fastest_lane] += 0.01
 
         if gap12 >= 0.05:
-            fastest_lane = sorted_times[0][0]
-            head_score[fastest_lane] += 0.03
-            second_score[fastest_lane] += 0.02
+            if fastest_lane == 1:
+                head_score[fastest_lane] += 0.02
+            elif fastest_lane in {2, 3, 4}:
+                second_score[fastest_lane] += 0.01
+            else:
+                third_score[fastest_lane] += 0.02
 
         lane1_time = next((v for lane, v in float_times if lane == 1), None)
         if lane1_time is not None:
             diff1 = lane1_time - min_time
             if diff1 <= 0.03:
-                head_score[1] += 0.04
-            elif diff1 <= 0.05:
                 head_score[1] += 0.02
-            elif diff1 >= 0.12:
+            elif diff1 >= 0.14:
                 head_score[1] -= 0.06
-            elif diff1 >= 0.08:
-                head_score[1] -= 0.03
+            elif diff1 >= 0.10:
+                head_score[1] -= 0.04
+            elif diff1 >= 0.06:
+                head_score[1] -= 0.01
 
         lane2_time = next((v for lane, v in float_times if lane == 2), None)
         if lane2_time is not None:
             diff2 = lane2_time - min_time
             if diff2 <= 0.03:
-                second_score[2] += 0.04
+                second_score[2] += 0.03
             elif diff2 <= 0.05:
-                second_score[2] += 0.02
+                second_score[2] += 0.01
             elif diff2 >= 0.12:
-                second_score[2] -= 0.04
+                second_score[2] -= 0.03
 
     if len(st_map) >= 4:
         sorted_st = sorted(
@@ -2720,19 +2815,21 @@ def should_loosen_outer_head_attack(exhibition_info, foot_material=None, outer_l
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
     entry_change = bool(foot_material.get("entry_change"))
     course_map = foot_material.get("course_map", {}) or {}
-    if int(outer_lane) != 6:
+    outer_lane = int(outer_lane)
+    if outer_lane not in {5, 6}:
         return False
 
-    # 6 は展示最速だけで頭まで押しすぎない。
+    # 5・6は展示最速だけで頭まで押しすぎない。
+    # ST/進入/2番手との差まで揃った時だけ頭候補を許可する。
     strong_signal = False
-    st6 = st_map.get(6)
-    if isinstance(st6, (int, float)) and float(st6) <= 0.11:
+    st = st_map.get(outer_lane)
+    if isinstance(st, (int, float)) and float(st) <= 0.09:
         strong_signal = True
-    if entry_change and (6 in pre_move_lanes or course_map.get(6, 6) < 6):
+    if entry_change and (outer_lane in pre_move_lanes or course_map.get(outer_lane, outer_lane) < outer_lane):
         strong_signal = True
 
-    fastest_gap = calc_fastest_gap_by_lane(exhibition_info, 6)
-    if fastest_gap is not None and fastest_gap >= 0.05:
+    fastest_gap = calc_fastest_gap_by_lane(exhibition_info, outer_lane)
+    if fastest_gap is not None and fastest_gap >= 0.07:
         strong_signal = True
 
     return not strong_signal
@@ -3210,13 +3307,13 @@ def is_outer_head_too_loose(lane, exhibition_info=None, foot_material=None, lane
 
     strong_signal = False
 
-    if lane_score >= 0.30:
+    if lane_score >= 0.40:
         strong_signal = True
 
-    if fastest_gap is not None and fastest_gap >= 0.05:
+    if fastest_gap is not None and fastest_gap >= 0.07:
         strong_signal = True
 
-    if isinstance(st, (int, float)) and float(st) <= 0.10:
+    if isinstance(st, (int, float)) and float(st) <= 0.09:
         strong_signal = True
 
     if entry_change and (lane in pre_move_lanes or course_map.get(lane, lane) < lane):
@@ -4142,7 +4239,7 @@ def get_base_info_for_source(base_map, venue, race_no, candidate_source="officia
     return {}
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_39_official_all_merged")
+    log("[collector_version] collector_latest_v10_41_exhibition_time_defensive")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
