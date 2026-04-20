@@ -3224,7 +3224,7 @@ def render_layout(title, body_html):
         return document.querySelector('[data-race-card-id="' + raceId + '"]') || document.querySelector('[data-race-id="' + raceId + '"]');
       }
       function parseSelectionText(text){
-        return String(text || '').split(' / ').map(x => String(x || '').replace(/\s+/g, '').trim()).filter(Boolean);
+        return String(text || '').split(' / ').map(x => String(x || '').replace(/\\s+/g, '').trim()).filter(Boolean);
       }
       function getRaceCheckboxes(raceId){
         return Array.from(document.querySelectorAll('input[type="checkbox"][data-pick-value][data-race-group="' + raceId + '"]'));
@@ -3233,11 +3233,11 @@ def render_layout(title, body_html):
         return getRaceCheckboxes(raceId).filter(x => x.checked).map(x => (x.getAttribute('data-pick-value') || '').trim()).filter(Boolean);
       }
       function renderColoredPickHtml(value){
-        const s = String(value || '').replace(/\s+/g, '').trim();
+        const s = String(value || '').replace(/\\s+/g, '').trim();
         if(!s){ return ''; }
         return '<span class="pick-inline">' + s.split('-').map((part, idx) => {
           const sep = idx > 0 ? '<span class="pick-sep">-</span>' : '';
-          if(/^\d+$/.test(part)){
+          if(/^\\d+$/.test(part)){
             return sep + '<span class="lane-color lane-color-' + part + '">' + part + '</span>';
           }
           return sep + '<span class="pick-plain">' + part + '</span>';
