@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_46_st_f_guard.py
+# collector_latest_v10_47_add_buy_candidates.py
 # v10.46: 展示Fを検出し、F艇の展示STを好気配加点から除外。理由に「展示F:○注意」を表示。
 
 JST = timezone(timedelta(hours=9))
@@ -2418,6 +2418,213 @@ def parse_selection_weight_map(base_selection):
     return weight_map
 
 
+def normalize_triplet_text(value):
+    s = str(value or "").replace(" ", "").replace("\n", "").replace("\r", "").strip()
+    return s if re.fullmatch(r"[1-6]-[1-6]-[1-6]", s) else ""
+
+
+def parse_triplet_lanes(tri):
+    tri = normalize_triplet_text(tri)
+    if not tri:
+        return None
+    try:
+        a, b, c = [int(x) for x in tri.split("-")]
+    except Exception:
+        return None
+    if len({a, b, c}) != 3:
+        return None
+    return a, b, c
+
+
+def append_unique_triplets(base_items, add_items, max_len=None):
+    result = []
+    seen = set()
+    for raw in list(base_items or []) + list(add_items or []):
+        tri = normalize_triplet_text(raw)
+        if not tri or tri in seen:
+            continue
+        seen.add(tri)
+        result.append(tri)
+        if max_len is not None and len(result) >= int(max_len):
+            break
+    return result
+
+
+def build_reverse_addon_candidates(current_items, scored_rows, role_maps, limit=1):
+    """
+    AI6点の同頭・2着3着逆を追加候補にする。
+    全BOX化ではなく、頭信頼が残る時だけ最大1点に絞る。
+    """
+    current = append_unique_triplets(current_items, [])
+    score_map = {normalize_triplet_text(tri): float(score or 0) for tri, score in (scored_rows or [])}
+    head_score = (role_maps or {}).get("head", {}) or {}
+    lane_score = (role_maps or {}).get("lane", {}) or {}
+
+    candidates = []
+    for idx, tri in enumerate(current[:6]):
+        parsed = parse_triplet_lanes(tri)
+        if not parsed:
+            continue
+        a, b, c = parsed
+        # 頭信頼がかなり低い時は、逆目追加で点数を増やさない
+        if float(head_score.get(a, 0) or 0) < -0.16:
+            continue
+        swap = f"{a}-{c}-{b}"
+        if swap in current or swap not in score_map:
+            continue
+        # 2着/3着の2艇がどちらも極端に低評価なら見送る
+        if float(lane_score.get(b, 0) or 0) < -0.35 and float(lane_score.get(c, 0) or 0) < -0.35:
+            continue
+        rank_bonus = max(0, 6 - idx) * 0.012
+        candidate_score = score_map.get(swap, 0) + float(head_score.get(a, 0) or 0) * 0.08 + rank_bonus
+        candidates.append((swap, candidate_score, tri))
+
+    candidates.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    return [tri for tri, _score, _base in candidates[:max(0, int(limit or 0))]]
+
+
+def build_base_hole_addon_candidates(
+    current_items,
+    base_triplets,
+    base_info,
+    base_hold_strength=0.0,
+    signal_strength=0.0,
+    limit=1,
+):
+    """
+    朝baseにあったのに最終AI6点から消えた穴筋を最大1点だけ戻す。
+    base土台◎/○以外や、直前材料が強く否定している時は無理に戻さない。
+    """
+    current = append_unique_triplets(current_items, [])
+    base_triplets = append_unique_triplets(base_triplets or [], [])
+    base_info = base_info or {}
+    base_quality = extract_base_quality_label(base_info)
+    base_score = safe_float(base_info.get("base_ai_score"), 0)
+    hold = float(base_hold_strength or 0)
+    sig = float(signal_strength or 0)
+
+    if base_quality not in {"base土台◎", "base土台○"}:
+        return []
+    if base_score < 1.75 and hold < 0.12:
+        return []
+    # 直前材料がかなり強い時は、弱いbase穴を無理に戻さない
+    if sig >= 0.72 and hold < 0.30 and base_score < 2.45:
+        return []
+
+    candidates = []
+    for idx, tri in enumerate(base_triplets[:6]):
+        tri = normalize_triplet_text(tri)
+        if not tri or tri in current:
+            continue
+        parsed = parse_triplet_lanes(tri)
+        if not parsed:
+            continue
+        a, _b, _c = parsed
+        # 5/6頭は、base側の根拠が強い時だけ1点戻す
+        if a in {5, 6} and base_score < 2.25 and hold < 0.22:
+            continue
+        candidate_score = (1.0 - idx * 0.10) + base_score * 0.055 + hold
+        if a in {5, 6}:
+            candidate_score += 0.10
+        candidates.append((tri, candidate_score))
+
+    candidates.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    return [tri for tri, _score in candidates[:max(0, int(limit or 0))]]
+
+
+def build_official_thin_addon_candidates(current_items, official_selection, role_maps, limit=1):
+    """
+    公式買い目をAI生成の加点には戻さず、薄目候補として最大1点だけ追加する。
+    公式だけの低配当を追いすぎないよう、AIの艇別上位と2艇以上重なるものだけにする。
+    """
+    current = append_unique_triplets(current_items, [])
+    official_triplets = selection_triplets(official_selection)
+    if not official_triplets:
+        return []
+
+    lane_score = (role_maps or {}).get("lane", {}) or {}
+    top_lanes = [lane for lane, _score in sorted(lane_score.items(), key=lambda x: x[1], reverse=True)[:4]]
+    top_set = set(int(x) for x in top_lanes if str(x).isdigit() or isinstance(x, int))
+    current_heads = set()
+    for tri in current[:6]:
+        parsed = parse_triplet_lanes(tri)
+        if parsed:
+            current_heads.add(parsed[0])
+
+    candidates = []
+    for idx, tri in enumerate(official_triplets[:6]):
+        tri = normalize_triplet_text(tri)
+        if not tri or tri in current:
+            continue
+        parsed = parse_triplet_lanes(tri)
+        if not parsed:
+            continue
+        a, b, c = parsed
+        overlap = len({a, b, c} & top_set) if top_set else 0
+        # AI上位艇とまったく噛み合わない公式筋は買い候補に混ぜない
+        if overlap < 2 and a not in current_heads:
+            continue
+        candidate_score = (1.0 - idx * 0.08) + overlap * 0.08
+        if a in current_heads:
+            candidate_score += 0.08
+        candidates.append((tri, candidate_score))
+
+    candidates.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    return [tri for tri, _score in candidates[:max(0, int(limit or 0))]]
+
+
+def augment_final_triplets_with_addons(
+    core_items,
+    scored_rows,
+    role_maps,
+    base_triplets=None,
+    base_info=None,
+    base_hold_strength=0.0,
+    signal_strength=0.0,
+    official_selection="",
+    max_total=9,
+):
+    """
+    購入候補を最大9点まで拡張する。
+      1〜6点目: これまで通りのAI6点
+      7点目: 同頭の2着3着逆目 最大1点
+      8点目: base穴戻し 最大1点
+      9点目: 公式薄目 最大1点
+    """
+    core = append_unique_triplets(core_items or [], [], max_len=6)
+    reverse_addons = build_reverse_addon_candidates(core, scored_rows, role_maps, limit=1)
+    after_reverse = append_unique_triplets(core, reverse_addons, max_len=max_total)
+
+    base_addons = build_base_hole_addon_candidates(
+        after_reverse,
+        base_triplets or [],
+        base_info or {},
+        base_hold_strength=base_hold_strength,
+        signal_strength=signal_strength,
+        limit=1,
+    )
+    after_base = append_unique_triplets(after_reverse, base_addons, max_len=max_total)
+
+    official_addons = build_official_thin_addon_candidates(after_base, official_selection, role_maps, limit=1)
+    final_items = append_unique_triplets(after_base, official_addons, max_len=max_total)
+
+    addon_labels = []
+    if reverse_addons:
+        addon_labels.append("逆目" + ",".join(reverse_addons))
+    if base_addons:
+        addon_labels.append("base穴" + ",".join(base_addons))
+    if official_addons:
+        addon_labels.append("公式薄目" + ",".join(official_addons))
+
+    return {
+        "items": final_items,
+        "reverse_addons": reverse_addons,
+        "base_addons": base_addons,
+        "official_addons": official_addons,
+        "label_text": " / ".join(addon_labels),
+    }
+
+
 def calc_base_hold_strength(base_info):
     base_info = base_info or {}
     strength = 0.0
@@ -4371,26 +4578,41 @@ def generate_top_triplets(
 
     top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
-    dedup = []
+    core = []
     for tri in top:
-        if tri not in dedup:
-            dedup.append(tri)
-        if len(dedup) >= 6:
+        if tri not in core:
+            core.append(tri)
+        if len(core) >= 6:
             break
 
-    kept_base_count = len([tri for tri in dedup if tri in base_triplets])
-    kept_official_count = len([tri for tri in dedup if tri in official_triplets])
+    addon_result = augment_final_triplets_with_addons(
+        core,
+        scored,
+        role_maps,
+        base_triplets=base_triplets,
+        base_info=base_info,
+        base_hold_strength=base_hold_strength,
+        signal_strength=signal_strength,
+        official_selection=official_selection,
+        max_total=9,
+    )
+    final_items = addon_result["items"]
+
+    kept_base_count = len([tri for tri in final_items if tri in base_triplets])
+    raw_official_triplets = selection_triplets(official_selection)
+    kept_official_count = len([tri for tri in final_items if tri in raw_official_triplets])
 
     log(
-        f"[selection_regen_v10_39_merged] venue={venue} "
+        f"[selection_regen_v10_47_addons] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_quality={base_quality_label} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
-        f"official_off=1 "
-        f"base={base_triplets[:3]} official={official_triplets} final={dedup}"
+        f"official_weight_off=1 official_addon={len(addon_result.get('official_addons') or [])} "
+        f"addons={addon_result.get('label_text','')} "
+        f"base={base_triplets[:3]} official={raw_official_triplets[:3]} final={final_items}"
     )
 
-    return " / ".join(dedup)
+    return " / ".join(final_items)
 
 
 
@@ -4451,7 +4673,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_46_st_f_guard")
+    log("[collector_version] collector_latest_v10_47_add_buy_candidates")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4823,6 +5045,9 @@ def build_candidates():
             base_info=base_info,
             official_selection=official_selection_from_base,
         )
+        final_selection_items = selection_triplets(final_ai_selection)
+        if len(final_selection_items) > 6:
+            latest_reason_parts.append(f"追加候補:{' / '.join(final_selection_items[6:9])}")
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
             analyzed["raw_final_ai_score"],
