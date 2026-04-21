@@ -1048,9 +1048,9 @@ def build_bet_guide_data(
     今日の運用ルールを画面の買い方メモ/推奨反映ボタンに反映する。
 
     本買い:
-      base土台◎ × 買い強め/買い × AI★★★★★ → AI6点100円
+      base土台◎ × 買い強め/買い × AI★★★★★ → AI6点 + 追加候補 最大3点
     準候補:
-      base土台○ × 買い強め × AI★★★★★ → AI6点100円
+      base土台○ × 買い強め × AI★★★★★ → AI6点 + 追加候補 最大3点
     それ以外:
       見送り・検証のみ
     """
@@ -1060,6 +1060,9 @@ def build_bet_guide_data(
 
     ai_items = selection_items(ai_selection)
     core_items = ai_items[:6]
+    extra_items = ai_items[6:9]
+    buy_count_with_addons = len(core_items) + len(extra_items)
+    addon_text = f"+追加{len(extra_items)}点" if extra_items else ""
     official_top2 = selection_items(official_selection)[:2]
 
     base_quality_label = extract_base_quality_display_text(base_reason_text, latest_reason_text)
@@ -1104,33 +1107,35 @@ def build_bet_guide_data(
         action_label = "直前待ち（反映なし）"
     elif base_quality_label == "base土台◎" and rank_buy_ok and is_ai5 and has_core:
         should_buy = True
-        recommended_count = 6
+        recommended_count = buy_count_with_addons
         recommended_amount = 100
         tone = "strong" if rank == "買い強め" else "buy"
         title = "今日の買い判定：本買い"
-        recommend_text = "AI6点 × 100円"
-        memo = "base土台◎で、AI★★★★★かつ買い以上。今日の本買い対象です。3点に絞らずAI6点で確認。"
-        action_label = "AI6点を反映"
+        recommend_text = f"AI6点{addon_text} × 100円"
+        memo = "base土台◎で、AI★★★★★かつ買い以上。今日の本買い対象です。追加候補がある場合は逆目/base穴/公式薄目を最大3点まで一緒に確認します。"
+        action_label = "AI6点+追加を反映" if extra_items else "AI6点を反映"
         conditions = [
             ("base土台◎", True),
             ("買い強め/買い", rank_buy_ok),
             ("AI★★★★★", is_ai5),
             ("AI6点あり", has_core),
+            ("追加候補", len(extra_items) > 0),
         ]
     elif base_quality_label == "base土台○" and rank_strong_ok and is_ai5 and has_core:
         should_buy = True
-        recommended_count = 6
+        recommended_count = buy_count_with_addons
         recommended_amount = 100
         tone = "buy"
         title = "今日の買い判定：準候補"
-        recommend_text = "AI6点 × 100円"
-        memo = "base土台○なので本買いより一段下。買うならAI6点100円まで。資金を抑える日は見送りでもOK。"
-        action_label = "AI6点を反映"
+        recommend_text = f"AI6点{addon_text} × 100円"
+        memo = "base土台○なので本買いより一段下。追加候補がある場合は逆目/base穴/公式薄目を最大3点まで確認します。資金を抑える日はAI6点だけでもOK。"
+        action_label = "AI6点+追加を反映" if extra_items else "AI6点を反映"
         conditions = [
             ("base土台○", True),
             ("買い強め", rank_strong_ok),
             ("AI★★★★★", is_ai5),
             ("AI6点あり", has_core),
+            ("追加候補", len(extra_items) > 0),
         ]
     else:
         conditions = [
@@ -1167,6 +1172,7 @@ def build_bet_guide_data(
 
     return {
         "ai_core_items": core_items,
+        "ai_extra_items": extra_items,
         "official_top2": official_top2,
         "conditions": conditions,
         "should_buy": should_buy,
@@ -1219,6 +1225,11 @@ def render_bet_guide_html(
     else:
         core_html = '<span class="selection-chip-empty">AI本線未取得</span>'
 
+    if guide.get("ai_extra_items"):
+        extra_html = "".join([f'<span class="guide-pick-chip guide-pick-extra">{render_colored_pick_html(x)}</span>' for x in guide["ai_extra_items"]])
+    else:
+        extra_html = '<span class="selection-chip-empty">追加候補なし</span>'
+
     if guide["official_top2"]:
         official_html = "".join([f'<span class="guide-pick-chip guide-pick-official">{render_colored_pick_html(x)}</span>' for x in guide["official_top2"]])
     else:
@@ -1242,6 +1253,7 @@ def render_bet_guide_html(
         <summary>条件と中身を見る</summary>
         <div class="bet-guide-body">
           <div class="bet-guide-row"><span class="bet-guide-label">AI買い目6点</span><span class="bet-guide-picks">{core_html}</span></div>
+          <div class="bet-guide-row"><span class="bet-guide-label">追加候補</span><span class="bet-guide-picks">{extra_html}</span></div>
           <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
           <div class="guide-check-wrap">{condition_html}</div>
           <div class="bet-guide-memo">{guide['memo']}</div>
@@ -1347,24 +1359,45 @@ def render_ai_selection_column(
         """
 
     ai6_items = ai_items[:6]
+    extra_items = ai_items[6:9]
+    total_count = len(ai6_items) + len(extra_items)
     ai6_html = "".join([
         render_ai_chip(item, idx, "selection-choice-core" if idx < 3 else "selection-choice-cover")
         for idx, item in enumerate(ai6_items)
     ])
+    extra_html = "".join([
+        render_ai_chip(item, idx + 6, "selection-choice-extra")
+        for idx, item in enumerate(extra_items)
+    ])
+
+    extra_button = ""
+    extra_section = ""
+    if extra_items:
+        extra_button = (
+            f'<button type="button" class="quick-select-btn quick-select-extra" '
+            f'onclick="selectTopPicks(\'{race_id_key}\', {total_count})">追加込みを選択</button>'
+        )
+        extra_section = f'''
+      <div class="selection-section selection-section-extra">
+        <div class="selection-section-title">追加候補（逆目/base穴/公式薄目）</div>
+        <div class="selection-chip-grid compact-grid">{extra_html}</div>
+      </div>
+        '''
 
     return f"""
     <div class="ai-selection-block">
       <div class="quick-select-row">
         <button type="button" class="quick-select-btn quick-select-main" onclick="selectTopPicks('{race_id_key}', 6)">AI6点を選択</button>
+        {extra_button}
         <button type="button" class="quick-select-btn quick-select-clear" onclick="clearPickSelection('{race_id_key}')">クリア</button>
       </div>
       <div class="selection-section selection-section-core">
         <div class="selection-section-title">AI6点</div>
         <div class="selection-chip-grid compact-grid">{ai6_html}</div>
       </div>
+      {extra_section}
     </div>
     """
-
 
 def render_selection_compare_html(r, race_id_key):
     official_text = r.get("selection", "")
@@ -2044,7 +2077,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">今日ルール: 本買い/準候補はAI6点100円</div>
+            <div class="quick-save-rule">今日ルール: AI6点＋追加候補を100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2292,12 +2325,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">運用ルール：base土台◎×買い以上を本買い、base土台○×買い強めを準候補。買う時はAI6点100円。</div>
+            <div class="daily-rule-title">運用ルール：base土台◎×買い以上を本買い、base土台○×買い強めを準候補。買う時はAI6点＋追加候補を各100円。</div>
           </div>
           <div class="daily-rule-steps">
             <span>本買い → base土台◎×買い以上×AI★5</span>
             <span>準候補 → base土台○×買い強め×AI★5</span>
-            <span>その他 → 見送り・検証</span>
+            <span>追加 → 逆目/base穴/公式薄目を最大3点</span><span>その他 → 見送り・検証</span>
           </div>
         </div>
         <form method="get" action="/" class="filter-box">
@@ -3213,6 +3246,17 @@ def render_layout(title, body_html):
       @media (max-width:760px){
         .quick-select-recommend{display:block!important;}
         .bet-guide-detail{display:block;}
+      }
+
+      /* v10.50: AI6点に追加候補を表示・選択 */
+      .selection-section-extra{margin-top:8px;background:#f4ebff;border:1px solid #d6bbfb;display:block!important;}
+      .selection-section-extra .selection-section-title:before{content:"追加 ";color:#6941c6;}
+      .selection-choice-extra .selection-choice-body{background:#ffffff;border-color:#b692f6;}
+      .quick-select-extra{background:#f4ebff;color:#6941c6;border-color:#d6bbfb;}
+      .guide-pick-extra{background:#f4ebff;border-color:#d6bbfb;color:#6941c6;}
+      @media (max-width:760px){
+        .selection-section-extra{display:block!important;margin-top:6px;padding:5px;border-radius:11px;}
+        .selection-choice-extra .selection-choice-body{font-size:11px;padding:5px 6px;border-radius:10px;}
       }
 
 </style>
