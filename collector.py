@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_44_no_rating_page_light.py
-# v10.44: Cron軽量化。latest側の公式★ページ取得を停止し、base_mapに保存済みの公式買い目を使う。
+# collector_latest_v10_46_st_f_guard.py
+# v10.46: 展示Fを検出し、F艇の展示STを好気配加点から除外。理由に「展示F:○注意」を表示。
 
 JST = timezone(timedelta(hours=9))
 
@@ -681,33 +681,75 @@ def get_wind_level(weather_info):
         return 0.25
     return 0.0
 
-def parse_st_value(text):
+def parse_st_with_flag(text):
+    """
+    スタート展示のST値と F/L フラグを分けて読む。
+    例: F.03 -> (0.03, "F"), .12 -> (0.12, "")
+    Fは本番フライングではないが、展示STの好気配加点には使わない。
+    """
     if text is None:
-        return None
+        return None, ""
     s = str(text).strip().upper()
     if not s:
-        return None
+        return None, ""
 
     s = s.replace("ＳＴ", "").replace("ST", "").strip().replace(" ", "")
 
-    m = re.search(r"[FL]?\s*(\d?\.\d{2})", s)
+    m = re.search(r"^([FL])?(\d?\.\d{2})", s)
     if m:
+        flag = (m.group(1) or "").upper()
         try:
-            v = float(m.group(1))
+            v = float(m.group(2))
             if 0.0 <= v <= 1.0:
-                return v
+                return v, flag
         except Exception:
             pass
 
-    m = re.search(r"[FL]?\.(\d{2})", s)
+    m = re.search(r"^([FL])?\.(\d{2})", s)
     if m:
+        flag = (m.group(1) or "").upper()
         try:
-            v = float(f"0.{m.group(1)}")
+            v = float(f"0.{m.group(2)}")
             if 0.0 <= v <= 1.0:
-                return v
+                return v, flag
         except Exception:
             pass
-    return None
+
+    # 念のため、文字列の途中に ST 表記が埋まっている場合も拾う。
+    m = re.search(r"([FL])?\s*(\d?\.\d{2}|\.\d{2})", s)
+    if m:
+        flag = (m.group(1) or "").upper()
+        raw = m.group(2)
+        try:
+            v = float(raw if raw.startswith("0") or raw[0].isdigit() else f"0{raw}")
+            if 0.0 <= v <= 1.0:
+                return v, flag
+        except Exception:
+            pass
+
+    return None, ""
+
+
+def parse_st_value(text):
+    v, _flag = parse_st_with_flag(text)
+    return v
+
+
+def get_st_flag_lanes(foot_material=None, flag="F"):
+    flag = str(flag or "F").upper()
+    st_flag_map = (foot_material or {}).get("st_flag_map", {}) or {}
+    return sorted([
+        int(lane) for lane, f in st_flag_map.items()
+        if str(f or "").upper() == flag
+    ])
+
+
+def is_st_flagged(foot_material=None, lane=0, flag="F"):
+    try:
+        lane = int(lane)
+    except Exception:
+        return False
+    return lane in set(get_st_flag_lanes(foot_material, flag=flag))
 
 
 def parse_start_display_from_lines(lines):
@@ -715,6 +757,7 @@ def parse_start_display_from_lines(lines):
         "course_order": [],
         "course_map": {},
         "st_map": {},
+        "st_flag_map": {},
         "entry_change": False,
         "entry_text": "",
         "pre_move_lanes": [],
@@ -747,10 +790,10 @@ def parse_start_display_from_lines(lines):
             lane = int(m.group(1))
         except Exception:
             continue
-        st = parse_st_value(m.group(2))
+        st, flag = parse_st_with_flag(m.group(2))
         if st is None:
             continue
-        pairs.append((lane, st))
+        pairs.append((lane, st, flag))
 
     if len(pairs) < 6:
         for idx, line in enumerate(segment_lines):
@@ -762,27 +805,35 @@ def parse_start_display_from_lines(lines):
                 m = re.match(r"^([1-6])(?:\s+Image)?\s+([FL]?\s*\d?\.\d{2}|[FL]?\.\d{2})$", s)
                 if m:
                     lane = int(m.group(1))
-                    st = parse_st_value(m.group(2))
+                    st, flag = parse_st_with_flag(m.group(2))
                     if st is not None:
-                        pairs.append((lane, st))
+                        pairs.append((lane, st, flag))
                         continue
             if lane is None:
                 continue
             for look in segment_lines[idx + 1: idx + 4]:
-                st = parse_st_value(look)
+                st, flag = parse_st_with_flag(look)
                 if st is not None:
-                    pairs.append((lane, st))
+                    pairs.append((lane, st, flag))
                     break
 
     order = []
     st_map = {}
+    st_flag_map = {}
     seen = set()
-    for lane, st in pairs:
+    for item in pairs:
+        if len(item) == 3:
+            lane, st, flag = item
+        else:
+            lane, st = item
+            flag = ""
         if lane in seen:
             continue
         seen.add(lane)
         order.append(lane)
         st_map[lane] = st
+        if flag:
+            st_flag_map[lane] = flag
         if len(order) >= 6:
             break
 
@@ -821,6 +872,7 @@ def parse_start_display_from_lines(lines):
         "course_order": order,
         "course_map": course_map,
         "st_map": st_map,
+        "st_flag_map": st_flag_map,
         "entry_change": entry_change,
         "entry_text": entry_text,
         "pre_move_lanes": pre_move_lanes,
@@ -833,15 +885,18 @@ def parse_start_display_from_lines(lines):
 def parse_start_info_from_lines(lines):
     start_display = parse_start_display_from_lines(lines)
     st_map = dict(start_display.get("st_map") or {})
+    st_flag_map = dict(start_display.get("st_flag_map") or {})
 
     if len(st_map) < 4:
         lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
         for idx, lane in lane_positions:
             seg = lines[idx: idx + 12]
             for txt in seg:
-                v = parse_st_value(txt)
+                v, flag = parse_st_with_flag(txt)
                 if v is not None:
                     st_map[lane] = v
+                    if flag:
+                        st_flag_map[lane] = flag
                     break
 
         if len(st_map) < 6:
@@ -852,12 +907,15 @@ def parse_start_info_from_lines(lines):
                     lane = int(m.group(1))
                 except Exception:
                     continue
-                v = parse_st_value(m.group(2))
+                v, flag = parse_st_with_flag(m.group(2))
                 if v is not None and lane not in st_map:
                     st_map[lane] = v
+                    if flag:
+                        st_flag_map[lane] = flag
 
     return {
         "st_map": st_map,
+        "st_flag_map": st_flag_map,
         "course_order": start_display.get("course_order", []),
         "course_map": start_display.get("course_map", {}),
         "entry_change": bool(start_display.get("entry_change")),
@@ -874,6 +932,8 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
     times = exhibition_info.get("times", []) if exhibition_info else []
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = start_info.get("st_map", {}) if start_info else {}
+    st_flag_map = start_info.get("st_flag_map", {}) if start_info else {}
+    f_lanes = sorted([int(lane) for lane, flag in (st_flag_map or {}).items() if str(flag or "").upper() == "F"])
     course_order = list(start_info.get("course_order", []) or []) if start_info else []
     course_map = dict(start_info.get("course_map", {}) or {}) if start_info else {}
     entry_change = bool(start_info.get("entry_change")) if start_info else False
@@ -929,8 +989,18 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         if gap12 >= 0.05:
             lane_scores[fastest_lane] += 0.03 * exhibition_time_factor(fastest_lane)
 
+    if f_lanes:
+        reasons.append("展示F:" + ",".join(str(x) for x in f_lanes) + "注意")
+        for lane in f_lanes:
+            lane_scores[lane] -= 0.04 if lane == 1 else 0.02
+
     if len(st_map) >= 4:
-        sorted_st = sorted([(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))], key=lambda x: x[1])
+        # 展示FのSTは「好スタート気配」としては信用しない。
+        # F.03を0.03の好材料として過大評価しないため、ST加点・ST気配判定から除外する。
+        sorted_st = sorted([
+            (lane, v) for lane, v in st_map.items()
+            if isinstance(v, (int, float)) and int(lane) not in f_lanes
+        ], key=lambda x: x[1])
         if len(sorted_st) >= 2:
             best_lane, best_st = sorted_st[0]
             second_lane, second_st = sorted_st[1]
@@ -1028,6 +1098,7 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         "foot_bonus": foot_bonus,
         "reason_text": reason_text,
         "st_map": st_map,
+        "st_flag_map": st_flag_map,
         "course_order": course_order,
         "course_map": course_map,
         "entry_change": entry_change,
@@ -1054,6 +1125,7 @@ def parse_beforeinfo_for_key(jcd, race_no):
         },
         "start_info": {
             "st_map": {},
+            "st_flag_map": {},
             "course_order": [],
             "course_map": {},
             "entry_change": False,
@@ -2111,6 +2183,7 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
     entry_change = bool(foot_material.get("entry_change"))
     entry_text = str(foot_material.get("entry_text") or "")
     entry_severity = float(foot_material.get("entry_severity", 0) or 0)
@@ -2141,7 +2214,10 @@ def calculate_latest_signal_metrics(exhibition_info, foot_material=None):
             lane1_time_gap = round(lane1_time - sorted_times[0][1], 3)
 
     valid_st = sorted(
-        [(lane, float(v)) for lane, v in st_map.items() if isinstance(v, (int, float))],
+        [
+            (lane, float(v)) for lane, v in st_map.items()
+            if isinstance(v, (int, float)) and int(lane) not in f_lanes
+        ],
         key=lambda x: x[1],
     )
     if len(valid_st) >= 4:
@@ -2521,6 +2597,7 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     st_map = (foot_material or {}).get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
 
     head_score = {lane: float(lane_score_map.get(lane, 0) or 0) for lane in range(1, 7)}
     second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.90 for lane in range(1, 7)}
@@ -2724,40 +2801,45 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                 second_score[2] -= 0.03
 
     if len(st_map) >= 4:
+        # 展示FのSTは好気配加点から除外する。
         sorted_st = sorted(
-            [(lane, v) for lane, v in st_map.items() if isinstance(v, (int, float))],
+            [
+                (lane, v) for lane, v in st_map.items()
+                if isinstance(v, (int, float)) and int(lane) not in f_lanes
+            ],
             key=lambda x: x[1]
         )
-        best_lane = sorted_st[0][0]
-        second_lane = sorted_st[1][0]
-        worst_lane = sorted_st[-1][0]
-        best_st = sorted_st[0][1]
-        worst_st = sorted_st[-1][1]
-        spread = worst_st - best_st
+        if len(sorted_st) >= 2:
+            best_lane = sorted_st[0][0]
+            second_lane = sorted_st[1][0]
+            worst_lane = sorted_st[-1][0]
+            best_st = sorted_st[0][1]
+            worst_st = sorted_st[-1][1]
+            spread = worst_st - best_st
 
-        if best_st <= 0.10:
-            head_score[best_lane] += 0.16
-            second_score[best_lane] += 0.08
-        elif best_st <= 0.12:
-            head_score[best_lane] += 0.10
-            second_score[best_lane] += 0.06
+            if best_st <= 0.10:
+                head_score[best_lane] += 0.16
+                second_score[best_lane] += 0.08
+            elif best_st <= 0.12:
+                head_score[best_lane] += 0.10
+                second_score[best_lane] += 0.06
 
-        if spread >= 0.10:
-            head_score[best_lane] += 0.06
-            second_score[second_lane] += 0.06
-            third_score[second_lane] += 0.03
-            head_score[worst_lane] -= 0.06
+            if spread >= 0.10:
+                head_score[best_lane] += 0.06
+                second_score[second_lane] += 0.06
+                third_score[second_lane] += 0.03
+                head_score[worst_lane] -= 0.06
 
         # v10.2: 1のSTが極端に悪くなければ頭残し
         st1 = st_map.get(1)
-        if isinstance(st1, (int, float)):
+        if isinstance(st1, (int, float)) and 1 not in f_lanes:
             if st1 <= 0.14:
                 head_score[1] += 0.05
             elif st1 <= 0.17:
                 head_score[1] += 0.02
 
         st2 = st_map.get(2)
-        if isinstance(st2, (int, float)):
+        if isinstance(st2, (int, float)) and 2 not in f_lanes:
             if st2 <= 0.14:
                 second_score[2] += 0.05
             elif st2 <= 0.17:
@@ -2871,6 +2953,7 @@ def should_guard_center_head_shift(exhibition_info, foot_material=None, center_l
     entry_change = bool(foot_material.get("entry_change"))
     entry_severity = float(foot_material.get("entry_severity", 0) or 0)
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
 
     if int(center_lane) != 3:
         return False
@@ -2892,7 +2975,10 @@ def should_guard_center_head_shift(exhibition_info, foot_material=None, center_l
 
     st1 = st_map.get(1)
     st3 = st_map.get(3)
-    if isinstance(st1, (int, float)) and isinstance(st3, (int, float)):
+    if (
+        isinstance(st1, (int, float)) and isinstance(st3, (int, float))
+        and 1 not in f_lanes and 3 not in f_lanes
+    ):
         # 1 がそこまで悪くないなら、3 はまず相手側へ寄せる
         if (float(st1) - float(st3)) > 0.03:
             return False
@@ -2903,6 +2989,7 @@ def should_guard_center_head_shift(exhibition_info, foot_material=None, center_l
 def should_loosen_outer_head_attack(exhibition_info, foot_material=None, outer_lane=6):
     foot_material = foot_material or {}
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
     entry_change = bool(foot_material.get("entry_change"))
     course_map = foot_material.get("course_map", {}) or {}
@@ -2914,7 +3001,7 @@ def should_loosen_outer_head_attack(exhibition_info, foot_material=None, outer_l
     # ST/進入/2番手との差まで揃った時だけ頭候補を許可する。
     strong_signal = False
     st = st_map.get(outer_lane)
-    if isinstance(st, (int, float)) and float(st) <= 0.09:
+    if isinstance(st, (int, float)) and outer_lane not in f_lanes and float(st) <= 0.09:
         strong_signal = True
     if entry_change and (outer_lane in pre_move_lanes or course_map.get(outer_lane, outer_lane) < outer_lane):
         strong_signal = True
@@ -2939,6 +3026,7 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
 
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
     course_order = foot_material.get("course_order", []) or []
     course_map = foot_material.get("course_map", {}) or {}
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
@@ -2961,13 +3049,15 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_1 += 0.32
     if best_head == 1:
         weight_1 += 0.20
-    if isinstance(st1, (int, float)):
+    if isinstance(st1, (int, float)) and 1 not in f_lanes:
         if st1 <= 0.11:
             weight_1 += 0.12
         elif st1 <= 0.14:
             weight_1 += 0.05
         elif st1 >= 0.19:
             weight_1 -= 0.10
+    elif 1 in f_lanes:
+        weight_1 -= 0.04
     if weather_info.get("water_state_score", 0) > 0:
         weight_1 += 0.04
     if course_map.get(1, 1) == 2:
@@ -3021,13 +3111,15 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_2 += 0.16
     elif 2 in pre_move_lanes:
         weight_2 += 0.08
-    if isinstance(st2, (int, float)):
+    if isinstance(st2, (int, float)) and 2 not in f_lanes:
         if st2 <= 0.11:
             weight_2 += 0.12
         elif st2 <= 0.14:
             weight_2 += 0.05
         elif st2 >= 0.18:
             weight_2 -= 0.08
+    elif 2 in f_lanes:
+        weight_2 -= 0.03
     if "大村イン寄り" in venue_notes:
         weight_2 -= 0.05
     weight_2 = clamp(weight_2, 0.0, 1.0)
@@ -3068,11 +3160,13 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_center += 0.18
     if lane_score_map.get(center_lane, 0) >= 0.12:
         weight_center += 0.10
-    if isinstance(st_center, (int, float)):
+    if isinstance(st_center, (int, float)) and int(center_lane) not in f_lanes:
         if st_center <= 0.11:
             weight_center += 0.12
         elif st_center >= 0.19:
             weight_center -= 0.08
+    elif int(center_lane) in f_lanes:
+        weight_center -= 0.03
     if center_lane in pre_move_lanes:
         weight_center += 0.12
     if "若松やや波乱" in venue_notes:
@@ -3161,11 +3255,13 @@ def build_turn_scenario_material(venue, exhibition_info, weather_info=None, foot
         weight_outer += 0.20
     if lane_score_map.get(outer_lane, 0) >= 0.16:
         weight_outer += 0.14
-    if isinstance(st_outer, (int, float)):
+    if isinstance(st_outer, (int, float)) and int(outer_lane) not in f_lanes:
         if st_outer <= 0.10:
             weight_outer += 0.14
         elif st_outer >= 0.18:
             weight_outer -= 0.08
+    elif int(outer_lane) in f_lanes:
+        weight_outer -= 0.03
     if outer_lane in pre_move_lanes:
         weight_outer += 0.14
     if "江戸川外警戒" in venue_notes:
@@ -3388,6 +3484,7 @@ def is_outer_head_too_loose(lane, exhibition_info=None, foot_material=None, lane
     lane_score_map = lane_score_map or {}
 
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
     pre_move_lanes = foot_material.get("pre_move_lanes", []) or []
     course_map = foot_material.get("course_map", {}) or {}
     entry_change = bool(foot_material.get("entry_change"))
@@ -3404,7 +3501,7 @@ def is_outer_head_too_loose(lane, exhibition_info=None, foot_material=None, lane
     if fastest_gap is not None and fastest_gap >= 0.07:
         strong_signal = True
 
-    if isinstance(st, (int, float)) and float(st) <= 0.09:
+    if isinstance(st, (int, float)) and lane not in f_lanes and float(st) <= 0.09:
         strong_signal = True
 
     if entry_change and (lane in pre_move_lanes or course_map.get(lane, lane) < lane):
@@ -3436,6 +3533,7 @@ def should_keep_lane1_head_core(
         return False
 
     st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
 
     st1 = st_map.get(1)
     lane1_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
@@ -3455,6 +3553,7 @@ def should_keep_lane1_head_core(
     if (
         lane1_gap >= 0.14
         and isinstance(st1, (int, float))
+        and 1 not in f_lanes
         and float(st1) >= 0.18
     ):
         return False
@@ -3466,7 +3565,7 @@ def should_keep_lane1_head_core(
     if class_support or reason_support or morning_support:
         return True
 
-    if isinstance(st1, (int, float)) and float(st1) <= 0.16:
+    if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) <= 0.16:
         return True
 
     if lane1_gap <= 0.05:
@@ -3966,6 +4065,7 @@ def should_keep_lane1_support(base_info, exhibition_info, foot_material, role_ma
     lane1_gap = float(signal_metrics.get("lane1_time_gap", 0) or 0)
     signal_strength = float(signal_metrics.get("signal_strength", 0) or 0)
     st1 = (foot_material.get("st_map", {}) or {}).get(1)
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
 
     if lane1_gap >= 0.18 and not (class_support or reason_support):
         return False
@@ -3973,7 +4073,7 @@ def should_keep_lane1_support(base_info, exhibition_info, foot_material, role_ma
         return False
     if max(head1, second1, third1) <= -0.12 and float(base_hold_strength or 0) < 0.22:
         return False
-    if isinstance(st1, (int, float)) and float(st1) >= 0.30 and lane1_gap >= 0.12:
+    if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) >= 0.30 and lane1_gap >= 0.12:
         return False
 
     return True
@@ -4351,7 +4451,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_45_no_official_top2_score")
+    log("[collector_version] collector_latest_v10_46_st_f_guard")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -4599,7 +4699,7 @@ def build_candidates():
             beforeinfo = beforeinfo_cache.get((jcd, race_no), {}) or {}
             exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}}) or {"times": [], "ranks": {}}
             weather_info = beforeinfo.get("weather", {}) or {}
-            start_info = beforeinfo.get("start_info", {"st_map": {}}) or {"st_map": {}}
+            start_info = beforeinfo.get("start_info", {"st_map": {}, "st_flag_map": {}}) or {"st_map": {}, "st_flag_map": {}}
 
             candidate = {
                 "race_date": today_text(),
@@ -4647,7 +4747,7 @@ def build_candidates():
         beforeinfo = beforeinfo_cache.get((jcd, race_no), {})
         exhibition_info = beforeinfo.get("exhibition", {"times": [], "ranks": {}})
         weather_info = beforeinfo.get("weather", {})
-        start_info = beforeinfo.get("start_info", {"st_map": {}})
+        start_info = beforeinfo.get("start_info", {"st_map": {}, "st_flag_map": {}})
 
         foot_material = build_foot_material(exhibition_info, start_info, weather_info)
         signal_metrics = calculate_latest_signal_metrics(exhibition_info, foot_material)
