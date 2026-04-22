@@ -4,6 +4,7 @@ import re
 import json
 import csv
 import io
+from html import escape
 from urllib.parse import quote
 
 import psycopg2
@@ -62,6 +63,8 @@ CARD_SELECT_COLUMNS = '''
     player_names_text,
     player_stat_text,
     player_reason_text,
+    pit_report_text,
+    pit_report_tag_text,
     ai_score,
     ai_rating,
     ai_selection,
@@ -793,6 +796,49 @@ def render_player_evidence_chips(reason_items, default_items):
 
     return f'<div class="player-evidence-wrap">{"".join(chips)}</div>'
 
+
+
+def render_pit_report_html(pit_report_text="", pit_report_tag_text=""):
+    report_map = {}
+    s = str(pit_report_text or "").strip()
+    if s:
+        for part in [x.strip() for x in s.split('/') if x.strip()]:
+            if ':' not in part:
+                continue
+            lane_part, body = part.split(':', 1)
+            try:
+                lane = int(lane_part.strip())
+            except Exception:
+                continue
+            body_text = str(body or "").strip()
+            if body_text:
+                report_map[lane] = body_text
+
+    tag_map = parse_lane_chip_text_map(pit_report_tag_text)
+    if not report_map and not tag_map:
+        return '<div class="pit-report-empty">未取得</div>'
+
+    rows = ""
+    for lane in range(1, 7):
+        comment = report_map.get(lane, "")
+        tag_items = parse_signed_chip_items(tag_map.get(lane, []))
+        tag_html = render_player_evidence_chips(tag_items, []) if tag_items else ""
+        if not comment and not tag_html:
+            continue
+        comment_html = escape(comment) if comment else '<span class="pit-report-muted">コメント未取得</span>'
+        rows += f"""
+        <div class="pit-report-row">
+          <div class="pit-report-lane">{render_lane_badge(lane)}</div>
+          <div class="pit-report-body">
+            <div class="pit-report-comment">{comment_html}</div>
+            {tag_html}
+          </div>
+        </div>
+        """
+
+    if not rows:
+        return '<div class="pit-report-empty">未取得</div>'
+    return f'<div class="pit-report-wrap">{rows}</div>'
 
 def render_player_rank_summary_html(
     player_names_text,
@@ -1964,6 +2010,10 @@ def build_card_html(r, is_history=False, race_date=""):
         r.get("player_reason_text", ""),
         r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
+    pit_report_html = render_pit_report_html(
+        r.get("pit_report_text", ""),
+        r.get("pit_report_tag_text", ""),
+    )
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
@@ -2097,6 +2147,7 @@ def build_card_html(r, is_history=False, race_date=""):
             <summary>展示・水面・選手材料を開く</summary>
             <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
             <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
+            <div class="row row-pit-report"><span class="label">ピット</span><span class="value">{pit_report_html}</span></div>
             <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
             <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
             {ai_reason_html}
@@ -2220,6 +2271,8 @@ def build_export_rows(rows):
             "class_history_text": csv_safe(r.get("class_history_text")),
             "player_stat_text": csv_safe(r.get("player_stat_text")),
             "player_reason_text": csv_safe(r.get("player_reason_text")),
+            "pit_report_text": csv_safe(r.get("pit_report_text")),
+            "pit_report_tag_text": csv_safe(r.get("pit_report_tag_text")),
             "exhibition_times": csv_safe(parse_json_array_text(r.get("exhibition", "[]"))),
             "exhibition_rank": csv_safe(r.get("exhibition_rank")),
             "ai_lane_score_text": csv_safe(r.get("ai_lane_score_text")),
@@ -2255,7 +2308,7 @@ def make_csv_response(rows, filename):
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
         "base_quality", "base_ai_score", "base_ai_rating", "base_ai_selection", "base_reason_text",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
-        "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
+        "player_stat_text", "player_reason_text", "pit_report_text", "pit_report_tag_text", "exhibition_times", "exhibition_rank",
         "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
         "wind_speed", "wave_height", "water_state_score", "selected_count",
         "selected_total_amount", "purchased", "purchased_selection_text",
@@ -2742,6 +2795,11 @@ def render_layout(title, body_html):
       .player-evidence-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
       .player-evidence-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
       .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
+      .pit-report-wrap{display:grid;gap:8px}
+      .pit-report-row{display:grid;grid-template-columns:32px 1fr;gap:8px;align-items:start;padding:8px;border:1px solid #eaecf0;border-radius:12px;background:#fcfcfd}
+      .pit-report-body{display:grid;gap:6px;min-width:0}
+      .pit-report-comment{font-size:13px;line-height:1.45;color:#344054;word-break:break-word}
+      .pit-report-muted{color:#98a2b3}
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap,.weather-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip,.weather-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
@@ -2751,7 +2809,7 @@ def render_layout(title, body_html):
       .weather-chip-num{background:#fff6e5;color:#b54708;border-color:#f5deb3}
       .weather-chip-good{background:#ecfdf3;color:#027a48;border-color:#abefc6}
       .weather-chip-bad{background:#fef3f2;color:#b42318;border-color:#fecdca}
-      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty,.pit-report-empty{color:#667085}
       .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
@@ -3480,6 +3538,8 @@ def init_db():
             player_names_text TEXT NOT NULL DEFAULT '',
             player_stat_text TEXT NOT NULL DEFAULT '',
             player_reason_text TEXT NOT NULL DEFAULT '',
+            pit_report_text TEXT NOT NULL DEFAULT '',
+            pit_report_tag_text TEXT NOT NULL DEFAULT '',
 
             base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
             base_ai_rating TEXT NOT NULL DEFAULT '',
@@ -3541,6 +3601,8 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_stat_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_reason_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS pit_report_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS pit_report_tag_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_selection TEXT NOT NULL DEFAULT ''",
@@ -3785,6 +3847,8 @@ def upsert_latest_candidates(cleaned):
                 ai_lane_score_text = %s,
                 player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
                 player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
+                pit_report_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE pit_report_text END,
+                pit_report_tag_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE pit_report_tag_text END,
                 final_ai_score = %s,
                 final_ai_rating = %s,
                 final_ai_selection = %s,
@@ -3830,6 +3894,10 @@ def upsert_latest_candidates(cleaned):
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
+                str(r.get('pit_report_text') or '').strip(),
+                str(r.get('pit_report_text') or '').strip(),
+                str(r.get('pit_report_tag_text') or '').strip(),
+                str(r.get('pit_report_tag_text') or '').strip(),
                 final_ai_score_value,
                 final_ai_rating_value,
                 final_ai_selection_value,
@@ -4178,6 +4246,8 @@ def import_latest_candidates():
                 "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
                 "player_stat_text": str(r.get("player_stat_text") or "").strip(),
                 "player_reason_text": str(r.get("player_reason_text") or "").strip(),
+                "pit_report_text": str(r.get("pit_report_text") or "").strip(),
+                "pit_report_tag_text": str(r.get("pit_report_tag_text") or "").strip(),
                 "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
                 "final_ai_rating": str(r.get("final_ai_rating") or "").strip(),
                 "final_ai_selection": str(r.get("final_ai_selection") or "").strip(),
