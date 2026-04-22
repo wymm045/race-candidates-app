@@ -138,6 +138,17 @@ def is_target_deadline(hhmm):
 def clamp(v, low, high):
     return max(low, min(high, v))
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return float(default)
+        s = str(value).strip()
+        if s == "":
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
 
 def is_past_race(time_str):
     if not is_target_race_date_today():
