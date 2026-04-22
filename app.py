@@ -221,6 +221,54 @@ def safe_float(value, default=0.0):
         return float(default)
 
 
+def optional_float_from_payload(row, key):
+    """
+    latest import用。
+    キーが送られていない/空の時は None にして、DB側の既存値を保持する。
+    0 は有効値として扱う。
+    """
+    if key not in (row or {}):
+        return None
+    value = row.get(key)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return safe_float(value, 0)
+
+
+def optional_int_from_payload(row, key):
+    if key not in (row or {}):
+        return None
+    value = row.get(key)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def optional_text_from_payload(row, key):
+    if key not in (row or {}):
+        return ""
+    return str(row.get(key) or "").strip()
+
+
+def optional_exhibition_from_payload(row):
+    if "exhibition" not in (row or {}):
+        return ""
+    value = row.get("exhibition")
+    if not isinstance(value, list):
+        return ""
+    clean = [str(x).strip() for x in value if str(x or "").strip()]
+    if not clean:
+        return ""
+    return json.dumps(clean, ensure_ascii=False)
+
+
 def normalize_candidate_source(value):
     s = str(value or "").strip()
     if s in {"official_star", "shadow_ai", "all_race_ai", "official_all"}:
@@ -1795,6 +1843,17 @@ def get_history_date_summaries():
         )
     return results
 
+def is_display_hit_row(row):
+    row = row or {}
+    result_trifecta_text = normalize_pick_text(row.get("result_trifecta_text", ""))
+    if result_trifecta_text:
+        return result_trifecta_text in selection_items(row.get("purchased_selection_text", ""))
+    try:
+        return int(row.get("hit") or 0) == 1
+    except Exception:
+        return False
+
+
 def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_only=False, hit_only=False):
     filtered = list(rows)
     if venue_filter:
@@ -1804,7 +1863,7 @@ def filter_history_races(rows, venue_filter="", race_no_filter="", purchased_onl
     if purchased_only:
         filtered = [r for r in filtered if get_selected_count_from_text(r.get("purchased_selection_text", "")) > 0]
     if hit_only:
-        filtered = [r for r in filtered if int(r.get("hit") or 0) == 1]
+        filtered = [r for r in filtered if is_display_hit_row(r)]
     return filtered
 
 
@@ -1865,7 +1924,7 @@ def build_card_html(r, is_history=False, race_date=""):
     settled_at_text = str(r.get("settled_at") or "").strip()
 
     card_class = "card history-edit-card" if is_history else "card"
-    if int(r.get("hit") or 0) == 1:
+    if display_hit_value == 1:
         card_class += " card-hit"
     elif selected_count > 0:
         card_class += " card-purchased"
@@ -1873,7 +1932,7 @@ def build_card_html(r, is_history=False, race_date=""):
     source_value = normalize_candidate_source(r.get("candidate_source"))
     if is_shadow_like_row(r):
         card_class += " card-source-shadow"
-    elif source_value == "all_race_ai":
+    elif source_value == "all_race_ai" or (source_value == "official_all" and not is_pickup_official_rating(r.get("rating"))):
         card_class += " card-source-all-race"
 
     rank_for_class = str(r.get("final_rank") or "").strip()
@@ -1987,8 +2046,10 @@ def build_card_html(r, is_history=False, race_date=""):
         source_badge_html = '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
     elif source_value == "all_race_ai":
         source_badge_html = '<span class="source-badge source-badge-all-race">全レース検証・買わない</span>'
+    elif source_value == "official_all" and not is_pickup_official_rating(r.get("rating")):
+        source_badge_html = '<span class="source-badge source-badge-all">全レース検証</span>'
     else:
-        source_badge_html = '<span class="source-badge source-badge-official">公式候補</span>' 
+        source_badge_html = '<span class="source-badge source-badge-official">公式候補</span>'
 
     base_quality_badge_html = render_base_quality_badge(
         r.get("latest_reason_text", ""),
@@ -3776,15 +3837,15 @@ def upsert_latest_candidates(cleaned):
             UPDATE races
             SET
                 time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
-                exhibition = %s,
-                exhibition_rank = %s,
-                weather = %s,
-                wind_speed = %s,
-                wave_height = %s,
-                wind_type = %s,
-                wind_dir = %s,
-                water_state_score = %s,
-                ai_lane_score_text = %s,
+                exhibition = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE exhibition END,
+                exhibition_rank = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE exhibition_rank END,
+                weather = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE weather END,
+                wind_speed = COALESCE(%s, wind_speed),
+                wave_height = COALESCE(%s, wave_height),
+                wind_type = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE wind_type END,
+                wind_dir = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE wind_dir END,
+                water_state_score = COALESCE(%s, water_state_score),
+                ai_lane_score_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE ai_lane_score_text END,
                 player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
                 player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
                 final_ai_score = %s,
@@ -3819,15 +3880,21 @@ def upsert_latest_candidates(cleaned):
             (
                 incoming_time,
                 incoming_time,
-                json.dumps(r.get('exhibition', []), ensure_ascii=False),
-                str(r.get('exhibition_rank') or '').strip(),
-                str(r.get('weather') or '').strip(),
-                safe_float(r.get('wind_speed'), 0),
-                safe_float(r.get('wave_height'), 0),
-                str(r.get('wind_type') or '').strip(),
-                str(r.get('wind_dir') or '').strip(),
-                safe_float(r.get('water_state_score'), 0),
-                str(r.get('ai_lane_score_text') or '').strip(),
+                optional_exhibition_from_payload(r),
+                optional_exhibition_from_payload(r),
+                optional_text_from_payload(r, 'exhibition_rank'),
+                optional_text_from_payload(r, 'exhibition_rank'),
+                optional_text_from_payload(r, 'weather'),
+                optional_text_from_payload(r, 'weather'),
+                optional_float_from_payload(r, 'wind_speed'),
+                optional_float_from_payload(r, 'wave_height'),
+                optional_text_from_payload(r, 'wind_type'),
+                optional_text_from_payload(r, 'wind_type'),
+                optional_text_from_payload(r, 'wind_dir'),
+                optional_text_from_payload(r, 'wind_dir'),
+                optional_float_from_payload(r, 'water_state_score'),
+                optional_text_from_payload(r, 'ai_lane_score_text'),
+                optional_text_from_payload(r, 'ai_lane_score_text'),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
@@ -4169,15 +4236,15 @@ def import_latest_candidates():
                 "race_no": str(r.get("race_no") or "").strip(),
                 "candidate_source": normalize_candidate_source(r.get("candidate_source")),
                 "time": str(r.get("time") or "").strip(),
-                "exhibition": r.get("exhibition", []),
-                "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
-                "weather": str(r.get("weather") or "").strip(),
-                "wind_speed": safe_float(r.get("wind_speed"), 0),
-                "wave_height": safe_float(r.get("wave_height"), 0),
-                "wind_type": str(r.get("wind_type") or "").strip(),
-                "wind_dir": str(r.get("wind_dir") or "").strip(),
-                "water_state_score": safe_float(r.get("water_state_score"), 0),
-                "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
+                "exhibition": r.get("exhibition") if "exhibition" in r else None,
+                "exhibition_rank": optional_text_from_payload(r, "exhibition_rank"),
+                "weather": optional_text_from_payload(r, "weather"),
+                "wind_speed": optional_float_from_payload(r, "wind_speed"),
+                "wave_height": optional_float_from_payload(r, "wave_height"),
+                "wind_type": optional_text_from_payload(r, "wind_type"),
+                "wind_dir": optional_text_from_payload(r, "wind_dir"),
+                "water_state_score": optional_float_from_payload(r, "water_state_score"),
+                "ai_lane_score_text": optional_text_from_payload(r, "ai_lane_score_text"),
                 "player_stat_text": str(r.get("player_stat_text") or "").strip(),
                 "player_reason_text": str(r.get("player_reason_text") or "").strip(),
                 "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
@@ -4187,7 +4254,7 @@ def import_latest_candidates():
                 "latest_reason_text": str(r.get("latest_reason_text") or "").strip(),
                 "latest_updated_at": str(r.get("latest_updated_at") or "").strip(),
                 "result_trifecta_text": str(r.get("result_trifecta_text") or "").strip(),
-                "result_trifecta_payout": int(r.get("result_trifecta_payout") or 0),
+                "result_trifecta_payout": optional_int_from_payload(r, "result_trifecta_payout") or 0,
                 "result_source_url": str(r.get("result_source_url") or "").strip(),
             }
         )
