@@ -3836,15 +3836,15 @@ def upsert_latest_candidates(cleaned):
             UPDATE races
             SET
                 time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
-                exhibition = %s,
-                exhibition_rank = %s,
-                weather = %s,
-                wind_speed = %s,
-                wave_height = %s,
-                wind_type = %s,
-                wind_dir = %s,
-                water_state_score = %s,
-                ai_lane_score_text = %s,
+                exhibition = CASE WHEN %s THEN %s ELSE exhibition END,
+                exhibition_rank = CASE WHEN %s THEN %s ELSE exhibition_rank END,
+                weather = CASE WHEN %s THEN %s ELSE weather END,
+                wind_speed = CASE WHEN %s THEN %s ELSE wind_speed END,
+                wave_height = CASE WHEN %s THEN %s ELSE wave_height END,
+                wind_type = CASE WHEN %s THEN %s ELSE wind_type END,
+                wind_dir = CASE WHEN %s THEN %s ELSE wind_dir END,
+                water_state_score = CASE WHEN %s THEN %s ELSE water_state_score END,
+                ai_lane_score_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE ai_lane_score_text END,
                 player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
                 player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
                 pit_report_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE pit_report_text END,
@@ -3881,14 +3881,23 @@ def upsert_latest_candidates(cleaned):
             (
                 incoming_time,
                 incoming_time,
+                bool(r.get('has_exhibition_payload')),
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
+                bool(r.get('has_exhibition_payload')),
                 str(r.get('exhibition_rank') or '').strip(),
+                bool(r.get('has_weather_payload')),
                 str(r.get('weather') or '').strip(),
+                bool(r.get('has_weather_payload')),
                 safe_float(r.get('wind_speed'), 0),
+                bool(r.get('has_weather_payload')),
                 safe_float(r.get('wave_height'), 0),
+                bool(r.get('has_weather_payload')),
                 str(r.get('wind_type') or '').strip(),
+                bool(r.get('has_weather_payload')),
                 str(r.get('wind_dir') or '').strip(),
+                bool(r.get('has_weather_payload')),
                 safe_float(r.get('water_state_score'), 0),
+                str(r.get('ai_lane_score_text') or '').strip(),
                 str(r.get('ai_lane_score_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
@@ -4235,6 +4244,17 @@ def import_latest_candidates():
                 "race_no": str(r.get("race_no") or "").strip(),
                 "candidate_source": normalize_candidate_source(r.get("candidate_source")),
                 "time": str(r.get("time") or "").strip(),
+                # 結果反映だけの送信で、展示/水面/補正を空値で上書きしないためのフラグ。
+                # collector が result だけ送る場合、exhibition=[] / weather='' などのデフォルト値になる。
+                "has_exhibition_payload": bool(r.get("exhibition")) or bool(str(r.get("exhibition_rank") or "").strip()),
+                "has_weather_payload": any([
+                    str(r.get("weather") or "").strip(),
+                    str(r.get("wind_type") or "").strip(),
+                    str(r.get("wind_dir") or "").strip(),
+                    r.get("wind_speed") is not None,
+                    r.get("wave_height") is not None,
+                    r.get("water_state_score") is not None,
+                ]),
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
                 "weather": str(r.get("weather") or "").strip(),
@@ -4264,7 +4284,11 @@ def import_latest_candidates():
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-    result = upsert_latest_candidates(cleaned)
+    try:
+        result = upsert_latest_candidates(cleaned)
+    except Exception as e:
+        log(f"[import_latest_error] {type(e).__name__}: {e}")
+        return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__, "received": len(cleaned)}), 500
     return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
 
 
