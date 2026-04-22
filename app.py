@@ -4,7 +4,6 @@ import re
 import json
 import csv
 import io
-from html import escape
 from urllib.parse import quote
 
 import psycopg2
@@ -63,8 +62,6 @@ CARD_SELECT_COLUMNS = '''
     player_names_text,
     player_stat_text,
     player_reason_text,
-    pit_report_text,
-    pit_report_tag_text,
     ai_score,
     ai_rating,
     ai_selection,
@@ -797,49 +794,6 @@ def render_player_evidence_chips(reason_items, default_items):
     return f'<div class="player-evidence-wrap">{"".join(chips)}</div>'
 
 
-
-def render_pit_report_html(pit_report_text="", pit_report_tag_text=""):
-    report_map = {}
-    s = str(pit_report_text or "").strip()
-    if s:
-        for part in [x.strip() for x in s.split('/') if x.strip()]:
-            if ':' not in part:
-                continue
-            lane_part, body = part.split(':', 1)
-            try:
-                lane = int(lane_part.strip())
-            except Exception:
-                continue
-            body_text = str(body or "").strip()
-            if body_text:
-                report_map[lane] = body_text
-
-    tag_map = parse_lane_chip_text_map(pit_report_tag_text)
-    if not report_map and not tag_map:
-        return '<div class="pit-report-empty">未取得</div>'
-
-    rows = ""
-    for lane in range(1, 7):
-        comment = report_map.get(lane, "")
-        tag_items = parse_signed_chip_items(tag_map.get(lane, []))
-        tag_html = render_player_evidence_chips(tag_items, []) if tag_items else ""
-        if not comment and not tag_html:
-            continue
-        comment_html = escape(comment) if comment else '<span class="pit-report-muted">コメント未取得</span>'
-        rows += f"""
-        <div class="pit-report-row">
-          <div class="pit-report-lane">{render_lane_badge(lane)}</div>
-          <div class="pit-report-body">
-            <div class="pit-report-comment">{comment_html}</div>
-            {tag_html}
-          </div>
-        </div>
-        """
-
-    if not rows:
-        return '<div class="pit-report-empty">未取得</div>'
-    return f'<div class="pit-report-wrap">{rows}</div>'
-
 def render_player_rank_summary_html(
     player_names_text,
     class_history_text,
@@ -1094,9 +1048,9 @@ def build_bet_guide_data(
     今日の運用ルールを画面の買い方メモ/推奨反映ボタンに反映する。
 
     本買い:
-      base土台◎ × 買い強め/買い × AI★★★★★ → AI6点 + 追加候補 最大3点
-    準候補:
-      base土台○ × 買い強め × AI★★★★★ → AI6点 + 追加候補 最大3点
+      base土台◎ × 買い強め × AI★★★★★ → AI6点
+    検証候補:
+      base土台◎ × 買い × AI★★★★★ / base土台○ × 買い強め × AI★★★★★ → 買わずに検証
     それ以外:
       見送り・検証のみ
     """
@@ -1106,9 +1060,9 @@ def build_bet_guide_data(
 
     ai_items = selection_items(ai_selection)
     core_items = ai_items[:6]
-    extra_items = ai_items[6:9]
-    buy_count_with_addons = len(core_items) + len(extra_items)
-    addon_text = f"+追加{len(extra_items)}点" if extra_items else ""
+    extra_items = []
+    buy_count_with_addons = len(core_items)
+    addon_text = ""
     official_top2 = selection_items(official_selection)[:2]
 
     base_quality_label = extract_base_quality_display_text(base_reason_text, latest_reason_text)
@@ -1151,42 +1105,55 @@ def build_bet_guide_data(
         recommend_text = "展示・風・進入の反映待ち"
         memo = "collector_latest.py 反映後に、base土台と買い判定を確認します。"
         action_label = "直前待ち（反映なし）"
-    elif base_quality_label == "base土台◎" and rank_buy_ok and is_ai5 and has_core:
+    elif base_quality_label == "base土台◎" and rank_strong_ok and is_ai5 and has_core:
         should_buy = True
         recommended_count = buy_count_with_addons
         recommended_amount = 100
-        tone = "strong" if rank == "買い強め" else "buy"
+        tone = "strong"
         title = "今日の買い判定：本買い"
-        recommend_text = f"AI6点{addon_text} × 100円"
-        memo = "base土台◎で、AI★★★★★かつ買い以上。今日の本買い対象です。追加候補がある場合は逆目/base穴/公式薄目を最大3点まで一緒に確認します。"
-        action_label = "AI6点+追加を反映" if extra_items else "AI6点を反映"
+        recommend_text = "AI6点 × 100円"
+        memo = "base土台◎で、AI★★★★★かつ買い強めまで揃った時だけ本買い。追加なしでAI6点だけを反映します。"
+        action_label = "AI6点を反映"
         conditions = [
             ("base土台◎", True),
-            ("買い強め/買い", rank_buy_ok),
+            ("買い強め", rank_strong_ok),
             ("AI★★★★★", is_ai5),
             ("AI6点あり", has_core),
-            ("追加候補", len(extra_items) > 0),
+        ]
+    elif base_quality_label == "base土台◎" and rank == "買い" and is_ai5 and has_core:
+        should_buy = False
+        recommended_count = 0
+        recommended_amount = 100
+        tone = "watch"
+        title = "今日の買い判定：準本命・検証"
+        recommend_text = "買わずに検証"
+        memo = "base土台◎でも買い止まりは自動購入しません。締切前オッズや展示を見て手動判断にします。"
+        action_label = "推奨どおり見送り"
+        conditions = [
+            ("base土台◎", True),
+            ("買い強めではない", True),
+            ("AI★★★★★", is_ai5),
+            ("AI6点あり", has_core),
         ]
     elif base_quality_label == "base土台○" and rank_strong_ok and is_ai5 and has_core:
-        should_buy = True
-        recommended_count = buy_count_with_addons
+        should_buy = False
+        recommended_count = 0
         recommended_amount = 100
-        tone = "buy"
-        title = "今日の買い判定：準候補"
-        recommend_text = f"AI6点{addon_text} × 100円"
-        memo = "base土台○なので本買いより一段下。追加候補がある場合は逆目/base穴/公式薄目を最大3点まで確認します。資金を抑える日はAI6点だけでもOK。"
-        action_label = "AI6点+追加を反映" if extra_items else "AI6点を反映"
+        tone = "watch"
+        title = "今日の買い判定：準候補・検証"
+        recommend_text = "買わずに検証"
+        memo = "base土台○は昨日今日でブレが大きいため、自動購入から外して検証だけにします。"
+        action_label = "推奨どおり見送り"
         conditions = [
             ("base土台○", True),
             ("買い強め", rank_strong_ok),
             ("AI★★★★★", is_ai5),
             ("AI6点あり", has_core),
-            ("追加候補", len(extra_items) > 0),
         ]
     else:
         conditions = [
-            ("base土台◎なら買い以上", base_quality_label == "base土台◎" and rank_buy_ok),
-            ("base土台○なら買い強め", base_quality_label == "base土台○" and rank_strong_ok),
+            ("base土台◎なら買い強め", base_quality_label == "base土台◎" and rank_strong_ok),
+            ("base土台○は検証のみ", base_quality_label == "base土台○"),
             ("AI★★★★★", is_ai5),
             ("AI6点あり", has_core),
         ]
@@ -1299,7 +1266,6 @@ def render_bet_guide_html(
         <summary>条件と中身を見る</summary>
         <div class="bet-guide-body">
           <div class="bet-guide-row"><span class="bet-guide-label">AI買い目6点</span><span class="bet-guide-picks">{core_html}</span></div>
-          <div class="bet-guide-row"><span class="bet-guide-label">追加候補</span><span class="bet-guide-picks">{extra_html}</span></div>
           <div class="bet-guide-row"><span class="bet-guide-label">公式上位2点</span><span class="bet-guide-picks">{official_html}</span></div>
           <div class="guide-check-wrap">{condition_html}</div>
           <div class="bet-guide-memo">{guide['memo']}</div>
@@ -1405,8 +1371,8 @@ def render_ai_selection_column(
         """
 
     ai6_items = ai_items[:6]
-    extra_items = ai_items[6:9]
-    total_count = len(ai6_items) + len(extra_items)
+    extra_items = []
+    total_count = len(ai6_items)
     ai6_html = "".join([
         render_ai_chip(item, idx, "selection-choice-core" if idx < 3 else "selection-choice-cover")
         for idx, item in enumerate(ai6_items)
@@ -1418,17 +1384,7 @@ def render_ai_selection_column(
 
     extra_button = ""
     extra_section = ""
-    if extra_items:
-        extra_button = (
-            f'<button type="button" class="quick-select-btn quick-select-extra" '
-            f'onclick="selectTopPicks(\'{race_id_key}\', {total_count})">追加込みを選択</button>'
-        )
-        extra_section = f'''
-      <div class="selection-section selection-section-extra">
-        <div class="selection-section-title">追加候補（逆目/base穴/公式薄目）</div>
-        <div class="selection-chip-grid compact-grid">{extra_html}</div>
-      </div>
-        '''
+
 
     return f"""
     <div class="ai-selection-block">
@@ -2010,10 +1966,6 @@ def build_card_html(r, is_history=False, race_date=""):
         r.get("player_reason_text", ""),
         r.get("latest_reason_text", "") or r.get("base_reason_text", ""),
     )
-    pit_report_html = render_pit_report_html(
-        r.get("pit_report_text", ""),
-        r.get("pit_report_tag_text", ""),
-    )
     final_rank_html = final_rank_badge(r.get("final_rank"))
     countdown_html = render_countdown_badge(r["time"]) if not is_history else ""
     selected_summary_html = render_selected_summary_html(r.get("purchased_selection_text", ""))
@@ -2127,7 +2079,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">今日ルール: AI6点＋追加候補を100円</div>
+            <div class="quick-save-rule">今日ルール: base土台◎×買い強め×AI★5だけAI6点を100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2147,7 +2099,6 @@ def build_card_html(r, is_history=False, race_date=""):
             <summary>展示・水面・選手材料を開く</summary>
             <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
             <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
-            <div class="row row-pit-report"><span class="label">ピット</span><span class="value">{pit_report_html}</span></div>
             <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
             <div class="row row-exhibition-rank"><span class="label">展示順位</span><span class="value">{exhibition_rank_html}</span></div>
             {ai_reason_html}
@@ -2271,8 +2222,6 @@ def build_export_rows(rows):
             "class_history_text": csv_safe(r.get("class_history_text")),
             "player_stat_text": csv_safe(r.get("player_stat_text")),
             "player_reason_text": csv_safe(r.get("player_reason_text")),
-            "pit_report_text": csv_safe(r.get("pit_report_text")),
-            "pit_report_tag_text": csv_safe(r.get("pit_report_tag_text")),
             "exhibition_times": csv_safe(parse_json_array_text(r.get("exhibition", "[]"))),
             "exhibition_rank": csv_safe(r.get("exhibition_rank")),
             "ai_lane_score_text": csv_safe(r.get("ai_lane_score_text")),
@@ -2308,7 +2257,7 @@ def make_csv_response(rows, filename):
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
         "base_quality", "base_ai_score", "base_ai_rating", "base_ai_selection", "base_reason_text",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
-        "player_stat_text", "player_reason_text", "pit_report_text", "pit_report_tag_text", "exhibition_times", "exhibition_rank",
+        "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
         "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
         "wind_speed", "wave_height", "water_state_score", "selected_count",
         "selected_total_amount", "purchased", "purchased_selection_text",
@@ -2378,12 +2327,12 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">運用ルール：base土台◎×買い以上を本買い、base土台○×買い強めを準候補。買う時はAI6点＋追加候補を各100円。</div>
+            <div class="daily-rule-title">運用ルール：本買いは base土台◎×買い強め×AI★5 のみ。base土台◎×買い、base土台○は検証止まり。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>本買い → base土台◎×買い以上×AI★5</span>
-            <span>準候補 → base土台○×買い強め×AI★5</span>
-            <span>追加 → 逆目/base穴/公式薄目を最大3点</span><span>その他 → 見送り・検証</span>
+            <span>本買い → base土台◎×買い強め×AI★5</span>
+            <span>準候補 → 自動購入しない</span>
+            <span>追加 → 使わない</span><span>その他 → 見送り・検証</span>
           </div>
         </div>
         <form method="get" action="/" class="filter-box">
@@ -2795,11 +2744,6 @@ def render_layout(title, body_html):
       .player-evidence-chip-plus{background:#ecfdf3;border-color:#abefc6;color:#027a48}
       .player-evidence-chip-minus{background:#fef3f2;border-color:#fecdca;color:#b42318}
       .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
-      .pit-report-wrap{display:grid;gap:8px}
-      .pit-report-row{display:grid;grid-template-columns:32px 1fr;gap:8px;align-items:start;padding:8px;border:1px solid #eaecf0;border-radius:12px;background:#fcfcfd}
-      .pit-report-body{display:grid;gap:6px;min-width:0}
-      .pit-report-comment{font-size:13px;line-height:1.45;color:#344054;word-break:break-word}
-      .pit-report-muted{color:#98a2b3}
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap,.weather-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip,.weather-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
       .picked-chip{white-space:nowrap}
@@ -2809,7 +2753,7 @@ def render_layout(title, body_html):
       .weather-chip-num{background:#fff6e5;color:#b54708;border-color:#f5deb3}
       .weather-chip-good{background:#ecfdf3;color:#027a48;border-color:#abefc6}
       .weather-chip-bad{background:#fef3f2;color:#b42318;border-color:#fecdca}
-      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty,.pit-report-empty{color:#667085}
+      .selection-chip-empty,.ex-chip-empty,.lane-score-empty,.detail-chip-empty,.class-history-empty,.ex-rank-empty,.player-empty,.player-rank-empty{color:#667085}
       .ex-chip-lane,.lane-score-lane{font-weight:800;margin-right:6px;display:inline-flex;align-items:center}
       .lane-score-verygood{background:#ecfdf3}
       .lane-score-good{background:#eef4ff}
@@ -3306,7 +3250,7 @@ def render_layout(title, body_html):
         .bet-guide-detail{display:block;}
       }
 
-      /* v10.50: AI6点に追加候補を表示・選択 */
+      /* v10.51: 追加候補を廃止しAI6点のみ表示・選択 */
       .selection-section-extra{margin-top:8px;background:#f4ebff;border:1px solid #d6bbfb;display:block!important;}
       .selection-section-extra .selection-section-title:before{content:"追加 ";color:#6941c6;}
       .selection-choice-extra .selection-choice-body{background:#ffffff;border-color:#b692f6;}
@@ -3538,8 +3482,6 @@ def init_db():
             player_names_text TEXT NOT NULL DEFAULT '',
             player_stat_text TEXT NOT NULL DEFAULT '',
             player_reason_text TEXT NOT NULL DEFAULT '',
-            pit_report_text TEXT NOT NULL DEFAULT '',
-            pit_report_tag_text TEXT NOT NULL DEFAULT '',
 
             base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
             base_ai_rating TEXT NOT NULL DEFAULT '',
@@ -3601,8 +3543,6 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_names_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_stat_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS player_reason_text TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE races ADD COLUMN IF NOT EXISTS pit_report_text TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE races ADD COLUMN IF NOT EXISTS pit_report_tag_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_selection TEXT NOT NULL DEFAULT ''",
@@ -3836,19 +3776,17 @@ def upsert_latest_candidates(cleaned):
             UPDATE races
             SET
                 time = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE time END,
-                exhibition = CASE WHEN %s THEN %s ELSE exhibition END,
-                exhibition_rank = CASE WHEN %s THEN %s ELSE exhibition_rank END,
-                weather = CASE WHEN %s THEN %s ELSE weather END,
-                wind_speed = CASE WHEN %s THEN %s ELSE wind_speed END,
-                wave_height = CASE WHEN %s THEN %s ELSE wave_height END,
-                wind_type = CASE WHEN %s THEN %s ELSE wind_type END,
-                wind_dir = CASE WHEN %s THEN %s ELSE wind_dir END,
-                water_state_score = CASE WHEN %s THEN %s ELSE water_state_score END,
-                ai_lane_score_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE ai_lane_score_text END,
+                exhibition = %s,
+                exhibition_rank = %s,
+                weather = %s,
+                wind_speed = %s,
+                wave_height = %s,
+                wind_type = %s,
+                wind_dir = %s,
+                water_state_score = %s,
+                ai_lane_score_text = %s,
                 player_stat_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_stat_text END,
                 player_reason_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE player_reason_text END,
-                pit_report_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE pit_report_text END,
-                pit_report_tag_text = CASE WHEN COALESCE(%s, '') <> '' THEN %s ELSE pit_report_tag_text END,
                 final_ai_score = %s,
                 final_ai_rating = %s,
                 final_ai_selection = %s,
@@ -3881,32 +3819,19 @@ def upsert_latest_candidates(cleaned):
             (
                 incoming_time,
                 incoming_time,
-                bool(r.get('has_exhibition_payload')),
                 json.dumps(r.get('exhibition', []), ensure_ascii=False),
-                bool(r.get('has_exhibition_payload')),
                 str(r.get('exhibition_rank') or '').strip(),
-                bool(r.get('has_weather_payload')),
                 str(r.get('weather') or '').strip(),
-                bool(r.get('has_weather_payload')),
                 safe_float(r.get('wind_speed'), 0),
-                bool(r.get('has_weather_payload')),
                 safe_float(r.get('wave_height'), 0),
-                bool(r.get('has_weather_payload')),
                 str(r.get('wind_type') or '').strip(),
-                bool(r.get('has_weather_payload')),
                 str(r.get('wind_dir') or '').strip(),
-                bool(r.get('has_weather_payload')),
                 safe_float(r.get('water_state_score'), 0),
                 str(r.get('ai_lane_score_text') or '').strip(),
-                str(r.get('ai_lane_score_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_stat_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
                 str(r.get('player_reason_text') or '').strip(),
-                str(r.get('pit_report_text') or '').strip(),
-                str(r.get('pit_report_text') or '').strip(),
-                str(r.get('pit_report_tag_text') or '').strip(),
-                str(r.get('pit_report_tag_text') or '').strip(),
                 final_ai_score_value,
                 final_ai_rating_value,
                 final_ai_selection_value,
@@ -4244,17 +4169,6 @@ def import_latest_candidates():
                 "race_no": str(r.get("race_no") or "").strip(),
                 "candidate_source": normalize_candidate_source(r.get("candidate_source")),
                 "time": str(r.get("time") or "").strip(),
-                # 結果反映だけの送信で、展示/水面/補正を空値で上書きしないためのフラグ。
-                # collector が result だけ送る場合、exhibition=[] / weather='' などのデフォルト値になる。
-                "has_exhibition_payload": bool(r.get("exhibition")) or bool(str(r.get("exhibition_rank") or "").strip()),
-                "has_weather_payload": any([
-                    str(r.get("weather") or "").strip(),
-                    str(r.get("wind_type") or "").strip(),
-                    str(r.get("wind_dir") or "").strip(),
-                    r.get("wind_speed") is not None,
-                    r.get("wave_height") is not None,
-                    r.get("water_state_score") is not None,
-                ]),
                 "exhibition": r.get("exhibition", []),
                 "exhibition_rank": str(r.get("exhibition_rank") or "").strip(),
                 "weather": str(r.get("weather") or "").strip(),
@@ -4266,8 +4180,6 @@ def import_latest_candidates():
                 "ai_lane_score_text": str(r.get("ai_lane_score_text") or "").strip(),
                 "player_stat_text": str(r.get("player_stat_text") or "").strip(),
                 "player_reason_text": str(r.get("player_reason_text") or "").strip(),
-                "pit_report_text": str(r.get("pit_report_text") or "").strip(),
-                "pit_report_tag_text": str(r.get("pit_report_tag_text") or "").strip(),
                 "final_ai_score": safe_float(r.get("final_ai_score", 0), 0),
                 "final_ai_rating": str(r.get("final_ai_rating") or "").strip(),
                 "final_ai_selection": str(r.get("final_ai_selection") or "").strip(),
@@ -4284,11 +4196,7 @@ def import_latest_candidates():
     race_dates = sorted(set(r["race_date"] for r in cleaned))
     if len(race_dates) != 1:
         return jsonify({"ok": False, "error": "multiple race_date values are not allowed"}), 400
-    try:
-        result = upsert_latest_candidates(cleaned)
-    except Exception as e:
-        log(f"[import_latest_error] {type(e).__name__}: {e}")
-        return jsonify({"ok": False, "error": str(e), "error_type": type(e).__name__, "received": len(cleaned)}), 500
+    result = upsert_latest_candidates(cleaned)
     return jsonify({"ok": True, "received": len(cleaned), "updated": result["updated"], "skipped": result["skipped"], "imported_at": jst_now_str()})
 
 
