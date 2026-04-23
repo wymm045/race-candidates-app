@@ -1865,6 +1865,29 @@ def base_quality_level(base_info_or_text):
     }.get(label, 0)
 
 
+def is_protected_buy_band(base_info=None, race_no=0):
+    """
+    v10.55:
+    3・4号艇の弱い3着削りを、本買い帯では少し緩めるためのガード。
+    条件は広げすぎず、公式★5 × base土台◎/○ × base AI★★★★★ × 4R以降。
+    """
+    base_info = base_info or {}
+    rating = str(base_info.get("rating") or "").strip()
+    base_quality = extract_base_quality_label(base_info)
+    base_ai_rating = str(base_info.get("base_ai_rating") or "").strip()
+    base_ai_score = safe_float(base_info.get("base_ai_score"), 0.0)
+
+    race_no_num = normalize_race_no_value(race_no or base_info.get("race_no_num") or base_info.get("race_no") or 0)
+    is_ai5 = (base_ai_rating == "AI★★★★★") or (base_ai_score >= 2.6)
+
+    return (
+        rating == "★★★★★"
+        and race_no_num >= 4
+        and base_quality in {"base土台◎", "base土台○"}
+        and is_ai5
+    )
+
+
 def cap_rank_by_base_quality(rank, base_info_or_text, score=0.0, direct_count=0, top_head_lane=0, head_gap=0.0):
     """
     final_rankの表示と実際の買い行動を一致させるためのガード。
@@ -2810,7 +2833,7 @@ def stabilize_final_ai_score(base_ai_score, raw_final_ai_score, base_hold_streng
     return round(base_ai_score + delta, 2)
 
 
-def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None, day_trend_bias=None):
+def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_material=None, day_trend_bias=None, base_info=None, race_no=0):
     lane_score_map = compute_lane_scores_map(exhibition_info, weather_info, foot_material)
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     times = exhibition_info.get("times", []) if exhibition_info else []
@@ -2820,29 +2843,52 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     head_score = {lane: float(lane_score_map.get(lane, 0) or 0) for lane in range(1, 7)}
     second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.90 for lane in range(1, 7)}
     third_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.78 for lane in range(1, 7)}
+    protected_buy_band = is_protected_buy_band(base_info=base_info, race_no=race_no)
 
-    # v10.54: 1・2の固定寄りをさらに少し弱め、3・4の弱い3着保険を削る。
-    # 5・6はまず頭より2着へ寄せる方向は維持。
-    head_score[1] += 0.15
-    second_score[1] += 0.04
-    third_score[1] += 0.00
+    # v10.55: 本買い帯だけ 3・4 の3着削りを少し緩める。
+    # 1・2の固定寄りは抑えたまま、強い本買い帯では 3・4 の相手抜けを減らす。
+    if protected_buy_band:
+        head_score[1] += 0.17
+        second_score[1] += 0.05
+        third_score[1] += 0.00
 
-    head_score[2] += 0.02
-    second_score[2] += 0.07
-    third_score[2] += 0.01
+        head_score[2] += 0.03
+        second_score[2] += 0.08
+        third_score[2] += 0.01
 
-    head_score[3] += 0.05
-    second_score[3] += 0.04
-    third_score[3] += 0.01
-    head_score[4] += 0.01
-    second_score[4] += 0.02
-    third_score[4] += 0.00
-    head_score[5] -= 0.03
-    second_score[5] += 0.00
-    third_score[5] += 0.03
-    head_score[6] -= 0.04
-    second_score[6] += 0.00
-    third_score[6] += 0.04
+        head_score[3] += 0.06
+        second_score[3] += 0.05
+        third_score[3] += 0.03
+        head_score[4] += 0.02
+        second_score[4] += 0.03
+        third_score[4] += 0.02
+        head_score[5] -= 0.03
+        second_score[5] += 0.00
+        third_score[5] += 0.03
+        head_score[6] -= 0.04
+        second_score[6] += 0.00
+        third_score[6] += 0.04
+    else:
+        head_score[1] += 0.15
+        second_score[1] += 0.04
+        third_score[1] += 0.00
+
+        head_score[2] += 0.02
+        second_score[2] += 0.07
+        third_score[2] += 0.01
+
+        head_score[3] += 0.05
+        second_score[3] += 0.04
+        third_score[3] += 0.01
+        head_score[4] += 0.01
+        second_score[4] += 0.02
+        third_score[4] += 0.00
+        head_score[5] -= 0.03
+        second_score[5] += 0.00
+        third_score[5] += 0.03
+        head_score[6] -= 0.04
+        second_score[6] += 0.00
+        third_score[6] += 0.04
 
     venue_bias = build_venue_bias_map(venue, day_trend_bias=day_trend_bias)
     for lane in range(1, 7):
@@ -3170,12 +3216,16 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
         if isinstance(st, (int, float)) and lane not in f_lanes and float(st) >= 0.18:
             weak_third = True
         if weak_third:
-            third_score[lane] -= 0.07 if lane == 3 else 0.08
-            second_score[lane] -= 0.02 if lane == 3 else 0.03
+            if protected_buy_band:
+                third_score[lane] -= 0.03 if lane == 3 else 0.04
+                second_score[lane] -= 0.01 if lane == 3 else 0.02
+            else:
+                third_score[lane] -= 0.07 if lane == 3 else 0.08
+                second_score[lane] -= 0.02 if lane == 3 else 0.03
             if lane_eval <= -0.08:
-                head_score[lane] -= 0.04
+                head_score[lane] -= 0.03 if protected_buy_band else 0.04
         elif lane_eval >= 0.16:
-            third_score[lane] += 0.01
+            third_score[lane] += 0.02 if protected_buy_band else 0.01
 
     for lane in [5, 6]:
         lane_eval = float(lane_score_map.get(lane, 0) or 0)
@@ -4505,8 +4555,9 @@ def generate_top_triplets(
     signal_metrics=None,
     base_info=None,
     official_selection="",
+    race_no=0,
 ):
-    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material)
+    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material, base_info=base_info, race_no=0)
     scenario_material = scenario_material or build_turn_scenario_material(
         venue, exhibition_info, weather_info, foot_material, role_maps
     )
@@ -4787,7 +4838,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_v10_54_trim_34_third")
+    log("[collector_version] collector_v10_55_buyband_guard")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -5107,6 +5158,8 @@ def build_candidates():
             weather_info,
             foot_material,
             day_trend_bias=day_trend_bias,
+            base_info=base_info,
+            race_no=race_no,
         )
         role_maps = apply_phase_material_to_role_maps(role_maps, phase_material=phase_material)
         scenario_material = build_turn_scenario_material(
@@ -5158,6 +5211,7 @@ def build_candidates():
             signal_metrics=signal_metrics,
             base_info=base_info,
             official_selection=official_selection_from_base,
+            race_no=race_no,
         )
         final_selection_items = selection_triplets(final_ai_selection)
         if len(final_selection_items) > 6:
