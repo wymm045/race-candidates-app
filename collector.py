@@ -2821,27 +2821,28 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
     second_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.90 for lane in range(1, 7)}
     third_score = {lane: float(lane_score_map.get(lane, 0) or 0) * 0.78 for lane in range(1, 7)}
 
-    # v10.2: 1号艇頭残し / 2号艇2着残しを少し戻す
-    head_score[1] += 0.24
-    second_score[1] += 0.07
-    third_score[1] -= 0.01
+    # v10.54: 1・2の固定寄りをさらに少し弱め、3・4の弱い3着保険を削る。
+    # 5・6はまず頭より2着へ寄せる方向は維持。
+    head_score[1] += 0.15
+    second_score[1] += 0.04
+    third_score[1] += 0.00
 
-    head_score[2] += 0.07
-    second_score[2] += 0.16
-    third_score[2] += 0.04
+    head_score[2] += 0.02
+    second_score[2] += 0.07
+    third_score[2] += 0.01
 
-    head_score[3] += 0.10
-    second_score[3] += 0.08
-    third_score[3] += 0.06
-    head_score[4] += 0.00
+    head_score[3] += 0.05
+    second_score[3] += 0.04
+    third_score[3] += 0.01
+    head_score[4] += 0.01
     second_score[4] += 0.02
-    third_score[4] += 0.06
-    head_score[5] -= 0.04
-    second_score[5] -= 0.01
-    third_score[5] += 0.06
-    head_score[6] -= 0.06
-    second_score[6] -= 0.01
-    third_score[6] += 0.08
+    third_score[4] += 0.00
+    head_score[5] -= 0.03
+    second_score[5] += 0.00
+    third_score[5] += 0.03
+    head_score[6] -= 0.04
+    second_score[6] += 0.00
+    third_score[6] += 0.04
 
     venue_bias = build_venue_bias_map(venue, day_trend_bias=day_trend_bias)
     for lane in range(1, 7):
@@ -2911,7 +2912,8 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                 elif lane in {2, 3, 4}:
                     head_score[lane] += 0.04
                     second_score[lane] += 0.04
-                    third_score[lane] += 0.02
+                    if lane in {3, 4} and float(lane_score_map.get(lane, 0) or 0) >= 0.12:
+                        third_score[lane] += 0.01
                 else:
                     # 外枠の展示最速は、頭ではなく連絡み評価へ寄せる
                     second_score[lane] += 0.04
@@ -2923,7 +2925,8 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                 elif lane in {2, 3, 4}:
                     head_score[lane] += 0.02
                     second_score[lane] += 0.02
-                    third_score[lane] += 0.01
+                    if lane in {3, 4} and float(lane_score_map.get(lane, 0) or 0) >= 0.16:
+                        third_score[lane] += 0.01
                 else:
                     second_score[lane] += 0.02
                     third_score[lane] += 0.03
@@ -2967,7 +2970,8 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
                     second_score[lane] += 0.01
                     third_score[lane] += 0.03
                 else:
-                    third_score[lane] += 0.02
+                    if lane in {3, 4} and float(lane_score_map.get(lane, 0) or 0) >= 0.10:
+                        third_score[lane] += 0.01
             elif diff_avg >= 0.05:
                 third_score[lane] -= 0.02 if lane != 1 else 0.01
 
@@ -3108,9 +3112,92 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
         third_score[6] -= 0.02
 
     for lane in [3, 4, 5, 6]:
-        if lane_score_map.get(lane, 0) >= 0.12:
+        lane_eval_for_boost = float(lane_score_map.get(lane, 0) or 0)
+        if lane_eval_for_boost >= 0.12:
             head_score[lane] += 0.05
-            third_score[lane] += 0.03
+            if lane in {5, 6}:
+                third_score[lane] += 0.03
+            elif lane_eval_for_boost >= 0.18:
+                third_score[lane] += 0.01
+
+    # 役割ごとのノイズ調整。
+    # 1は弱い時の頭固定を弱め、2は弱い時の2着固定を切る。
+    # 5・6は強い時だけ2着を開け、3・4は弱い時の3着残しをさらに削る。
+    lane1_time = get_exhibition_time_by_lane(exhibition_info, 1)
+    lane2_time = get_exhibition_time_by_lane(exhibition_info, 2)
+    fastest_time = min((v for _, v in float_times), default=None) if len(float_times) == 6 else None
+    lane1_gap = (lane1_time - fastest_time) if (lane1_time is not None and fastest_time is not None) else None
+    lane2_gap = (lane2_time - fastest_time) if (lane2_time is not None and fastest_time is not None) else None
+
+    st1 = st_map.get(1)
+    st2 = st_map.get(2)
+    lane1_eval = float(lane_score_map.get(1, 0) or 0)
+    lane2_eval = float(lane_score_map.get(2, 0) or 0)
+
+    lane1_weak = False
+    if lane1_eval <= 0.00:
+        if (lane1_gap is not None and lane1_gap >= 0.08):
+            lane1_weak = True
+        if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) >= 0.18:
+            lane1_weak = True
+    if lane1_weak:
+        head_score[1] -= 0.14
+        second_score[1] -= 0.05
+    elif lane1_eval >= 0.10:
+        head_score[1] += 0.04
+
+    if lane2_eval <= 0.00:
+        second_score[2] -= 0.10
+    if lane2_eval <= -0.10:
+        second_score[2] -= 0.06
+    if isinstance(st2, (int, float)) and 2 not in f_lanes and float(st2) >= 0.18:
+        second_score[2] -= 0.04
+    elif isinstance(st2, (int, float)) and 2 not in f_lanes and float(st2) <= 0.13 and lane2_eval >= 0.06:
+        second_score[2] += 0.03
+    if lane2_gap is not None and lane2_gap >= 0.10:
+        second_score[2] -= 0.03
+
+    for lane in [3, 4]:
+        lane_eval = float(lane_score_map.get(lane, 0) or 0)
+        lane_time = get_exhibition_time_by_lane(exhibition_info, lane)
+        lane_gap = (lane_time - fastest_time) if (lane_time is not None and fastest_time is not None) else None
+        st = st_map.get(lane)
+        weak_third = False
+        if lane_eval <= 0.00:
+            weak_third = True
+        if lane_gap is not None and lane_gap >= 0.08:
+            weak_third = True
+        if isinstance(st, (int, float)) and lane not in f_lanes and float(st) >= 0.18:
+            weak_third = True
+        if weak_third:
+            third_score[lane] -= 0.07 if lane == 3 else 0.08
+            second_score[lane] -= 0.02 if lane == 3 else 0.03
+            if lane_eval <= -0.08:
+                head_score[lane] -= 0.04
+        elif lane_eval >= 0.16:
+            third_score[lane] += 0.01
+
+    for lane in [5, 6]:
+        lane_eval = float(lane_score_map.get(lane, 0) or 0)
+        st = st_map.get(lane)
+        fastest_gap = calc_fastest_gap_by_lane(exhibition_info, lane)
+        improved_course = entry_change and (lane in pre_move_lanes or course_map.get(lane, lane) < lane)
+
+        second_boost = 0.0
+        if lane_eval >= 0.10:
+            second_boost += 0.07 if lane == 5 else 0.09
+        if lane_eval >= 0.18:
+            second_boost += 0.03 if lane == 5 else 0.05
+        if isinstance(st, (int, float)) and lane not in f_lanes and float(st) <= 0.13:
+            second_boost += 0.03 if lane == 5 else 0.04
+        if fastest_gap is not None and fastest_gap >= 0.05:
+            second_boost += 0.03 if lane == 5 else 0.04
+        if improved_course:
+            second_boost += 0.03 if lane == 5 else 0.04
+        second_score[lane] += second_boost
+
+        if lane_eval <= -0.10:
+            third_score[lane] -= 0.03
 
     return {
         "lane": lane_score_map,
@@ -3779,17 +3866,25 @@ def should_keep_lane1_head_core(
     if signal_strength >= 0.72 and lane1_gap >= 0.10 and head1 < -0.08 and not morning_support:
         return False
 
+    if lane1_gap >= 0.12 and head1 < 0.04:
+        if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) >= 0.19:
+            return False
+        if lane1_eval <= -0.06 and not (class_support or reason_support):
+            return False
+
     # 残していい条件
     if class_support or reason_support or morning_support:
+        if lane1_gap >= 0.12 and isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) >= 0.20 and head1 < 0.05:
+            return False
         return True
 
-    if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) <= 0.16:
+    if isinstance(st1, (int, float)) and 1 not in f_lanes and float(st1) <= 0.15:
         return True
 
-    if lane1_gap <= 0.05:
+    if lane1_gap <= 0.03:
         return True
 
-    if head1 >= 0.05 or lane1_eval >= 0.02:
+    if head1 >= 0.08 or lane1_eval >= 0.05:
         return True
 
     return False
@@ -3951,8 +4046,8 @@ def build_core_cover_triplets(
         if len(cover) > before:
             alt_head_added += 1
 
-    # 2) 展示・足色上位は頭だけでなく2着/3着にも残す
-    #    当たり筋を増やすため、外枠の好気配も連絡みとして拾う。
+    # 2) 展示・足色上位は頭だけでなく2着/3着にも残す。
+    #    特に5・6は「頭か3着」になりすぎやすいので、まず2着筋を拾う。
     strong_lanes = [lane for lane, _score in sorted(lane_score_map.items(), key=lambda x: x[1], reverse=True)[:4]]
     strong_line_added = 0
     for lane in strong_lanes:
@@ -3962,11 +4057,19 @@ def build_core_cover_triplets(
             lane = int(lane)
         except Exception:
             continue
-        tri = pick_best_triplet_by_condition(
-            scored_rows,
-            lambda a, b, c, t, lane=lane: (b == lane or c == lane),
-            exclude_triplets=selected + cover,
-        )
+        tri = ""
+        if lane in {5, 6}:
+            tri = pick_best_triplet_by_condition(
+                scored_rows,
+                lambda a, b, c, t, lane=lane: (b == lane),
+                exclude_triplets=selected + cover,
+            )
+        if not tri:
+            tri = pick_best_triplet_by_condition(
+                scored_rows,
+                lambda a, b, c, t, lane=lane: (b == lane or c == lane),
+                exclude_triplets=selected + cover,
+            )
         before = len(cover)
         add_cover(tri)
         if len(cover) > before:
@@ -4106,16 +4209,16 @@ def add_basic_form_triplets(
     if not top:
         return top
 
-    # 1号艇が完全に死んでいない条件
+    # 1号艇が本当に残せる時だけ基本形を戻す。
     keep_one_head = False
-    if head_score.get(1, -999) >= -0.08:
+    if head_score.get(1, -999) >= 0.06:
         keep_one_head = True
-    if lane_score_map.get(1, -999) >= -0.18:
+    if lane_score_map.get(1, -999) >= 0.04:
         keep_one_head = True
 
-    # 2号艇が2着候補として死んでいない条件
+    # 2号艇2着も、少なくとも弱くはない時だけ戻す。
     keep_two_second = False
-    if second_score.get(2, -999) >= -0.05:
+    if second_score.get(2, -999) >= 0.05 and lane_score_map.get(2, -999) >= 0.00:
         keep_two_second = True
 
     if not (keep_one_head or keep_two_second):
@@ -4334,7 +4437,7 @@ def ensure_lane1_support_triplet(
         if parts[0] == "1":
             continue
         if "1" in parts and tri in score_map:
-            bonus = 0.06 if parts[1] == "1" else 0.04
+            bonus = 0.04 if parts[1] == "1" else 0.02
             candidates.append((tri, score_map[tri] + bonus))
 
     for tri, score in scored_rows:
@@ -4344,7 +4447,7 @@ def ensure_lane1_support_triplet(
         if parts[0] == "1":
             continue
         if "1" in parts:
-            bonus = 0.05 if parts[1] == "1" else 0.03
+            bonus = 0.03 if parts[1] == "1" else 0.01
             candidates.append((tri, score + bonus))
 
     if not candidates:
@@ -4684,7 +4787,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_latest_v10_47_add_buy_candidates")
+    log("[collector_version] collector_v10_54_trim_34_third")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
