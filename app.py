@@ -71,6 +71,9 @@ CARD_SELECT_COLUMNS = '''
     base_ai_rating,
     base_ai_selection,
     base_reason_text,
+    base_raw_score,
+    base_raw_label,
+    base_raw_reason_text,
     base_updated_at,
     final_ai_score,
     final_ai_rating,
@@ -748,9 +751,6 @@ def normalize_reason_tag(text):
     if not s:
         return ""
 
-    if "展示F" in s or "展示Ｆ" in s:
-        return "展示F"
-
     tag_rules = [
         (["地力", "全国勝率", "全国2連率", "全国3連率"], "勝率系"),
         (["当地", "当地勝率", "当地2連率", "当地3連率"], "当地"),
@@ -809,17 +809,6 @@ def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_li
             items.append(("minus", "展示"))
 
     latest_text = str(latest_reason_text or "")
-
-    display_f_lanes = set()
-    for match in re.finditer(r'展示[FＦ]\s*[:：]\s*([0-9,、\s]+)\s*注意', latest_text):
-        raw = match.group(1)
-        for token in re.split(r'[,、\s]+', raw):
-            token = str(token or '').strip()
-            if token.isdigit():
-                display_f_lanes.add(int(token))
-    if lane in display_f_lanes:
-        items.append(("minus", "展示F"))
-
     if lane == 1 and ("イン外し" in latest_text):
         items.append(("minus", "進入"))
     elif "前づけ" in latest_text and lane in {3, 4, 5, 6}:
@@ -2291,6 +2280,9 @@ def build_export_rows(rows):
             "base_ai_rating": csv_safe(r.get("base_ai_rating")),
             "base_ai_selection": csv_safe(r.get("base_ai_selection")),
             "base_reason_text": csv_safe(r.get("base_reason_text")),
+            "base_raw_score": round(safe_float(r.get("base_raw_score"), 0), 2),
+            "base_raw_label": csv_safe(r.get("base_raw_label")),
+            "base_raw_reason_text": csv_safe(r.get("base_raw_reason_text")),
             "final_rank": csv_safe(r.get("final_rank")),
             "latest_reason_text": csv_safe(display_ai_detail_text),
             "player_names_text": csv_safe(r.get("player_names_text")),
@@ -2330,7 +2322,7 @@ def make_csv_response(rows, filename):
     fieldnames = list(export_rows[0].keys()) if export_rows else [
         "race_date", "candidate_source", "candidate_source_label", "time", "venue", "race_no", "official_rating", "bet_type",
         "official_selection", "amount_per_point", "ai_score", "ai_rating", "ai_selection",
-        "base_quality", "base_ai_score", "base_ai_rating", "base_ai_selection", "base_reason_text",
+        "base_quality", "base_ai_score", "base_ai_rating", "base_ai_selection", "base_reason_text", "base_raw_score", "base_raw_label", "base_raw_reason_text",
         "final_rank", "latest_reason_text", "player_names_text", "class_history_text",
         "player_stat_text", "player_reason_text", "exhibition_times", "exhibition_rank",
         "ai_lane_score_text", "weather_summary", "weather", "wind_type", "wind_dir",
@@ -3562,6 +3554,9 @@ def init_db():
             base_ai_rating TEXT NOT NULL DEFAULT '',
             base_ai_selection TEXT NOT NULL DEFAULT '',
             base_reason_text TEXT NOT NULL DEFAULT '',
+            base_raw_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            base_raw_label TEXT NOT NULL DEFAULT '',
+            base_raw_reason_text TEXT NOT NULL DEFAULT '',
             base_updated_at TEXT NOT NULL DEFAULT '',
 
             final_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -3622,6 +3617,9 @@ def init_db():
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_rating TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_ai_selection TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_reason_text TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_raw_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_raw_label TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_raw_reason_text TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS base_updated_at TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_score DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE races ADD COLUMN IF NOT EXISTS final_ai_rating TEXT NOT NULL DEFAULT ''",
@@ -3715,6 +3713,9 @@ def upsert_base_candidates(cleaned):
             'base_ai_rating': str(r.get('base_ai_rating') or '').strip(),
             'base_ai_selection': str(r.get('base_ai_selection') or '').strip(),
             'base_reason_text': str(r.get('base_reason_text') or '').strip(),
+            'base_raw_score': safe_float(r.get('base_raw_score', 0), 0),
+            'base_raw_label': str(r.get('base_raw_label') or '').strip(),
+            'base_raw_reason_text': str(r.get('base_raw_reason_text') or '').strip(),
             'base_updated_at': str(r.get('base_updated_at') or '').strip(),
         }
 
@@ -3742,6 +3743,9 @@ def upsert_base_candidates(cleaned):
                     base_ai_rating = %s,
                     base_ai_selection = %s,
                     base_reason_text = %s,
+                    base_raw_score = %s,
+                    base_raw_label = %s,
+                    base_raw_reason_text = %s,
                     base_updated_at = %s,
                     imported_at = %s
                 WHERE id = %s
@@ -3760,7 +3764,7 @@ def upsert_base_candidates(cleaned):
                     common_values['series_day'], common_values['series_day'],
                     common_values['race_phase'], common_values['race_phase'],
                     common_values['base_ai_score'], common_values['base_ai_rating'], common_values['base_ai_selection'],
-                    common_values['base_reason_text'], common_values['base_updated_at'],
+                    common_values['base_reason_text'], common_values['base_raw_score'], common_values['base_raw_label'], common_values['base_raw_reason_text'], common_values['base_updated_at'],
                     jst_now_str(), existing['id'],
                 )
             )
@@ -3773,7 +3777,7 @@ def upsert_base_candidates(cleaned):
                     rating, bet_type, selection, amount,
                     player_names_text, class_history_text, player_stat_text, player_reason_text,
                     day_trend_text, day_trend_sample, series_day, race_phase,
-                    base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_updated_at,
+                    base_ai_score, base_ai_rating, base_ai_selection, base_reason_text, base_raw_score, base_raw_label, base_raw_reason_text, base_updated_at,
                     purchased, purchased_selection_text, hit, payout, memo, imported_at
                 )
                 VALUES (
@@ -3781,7 +3785,7 @@ def upsert_base_candidates(cleaned):
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
                 )
                 ''',
@@ -3792,7 +3796,7 @@ def upsert_base_candidates(cleaned):
                     common_values['player_names_text'], common_values['class_history_text'], common_values['player_stat_text'], common_values['player_reason_text'],
                     common_values['day_trend_text'], common_values['day_trend_sample'], common_values['series_day'], common_values['race_phase'],
                     common_values['base_ai_score'], common_values['base_ai_rating'], common_values['base_ai_selection'],
-                    common_values['base_reason_text'], common_values['base_updated_at'],
+                    common_values['base_reason_text'], common_values['base_raw_score'], common_values['base_raw_label'], common_values['base_raw_reason_text'], common_values['base_updated_at'],
                     0, '', 0, 0, '', jst_now_str(),
                 )
             )
@@ -4144,6 +4148,9 @@ def import_base_candidates():
                 "base_ai_rating": str(r.get("base_ai_rating") or "").strip(),
                 "base_ai_selection": str(r.get("base_ai_selection") or "").strip(),
                 "base_reason_text": str(r.get("base_reason_text") or "").strip(),
+                "base_raw_score": safe_float(r.get("base_raw_score", 0), 0),
+                "base_raw_label": str(r.get("base_raw_label") or "").strip(),
+                "base_raw_reason_text": str(r.get("base_raw_reason_text") or "").strip(),
                 "base_updated_at": str(r.get("base_updated_at") or "").strip(),
             }
         )
@@ -4183,6 +4190,9 @@ def api_base_map_today():
             base_ai_rating,
             base_ai_selection,
             base_reason_text,
+            base_raw_score,
+            base_raw_label,
+            base_raw_reason_text,
             final_ai_score,
             final_ai_rating,
             final_ai_selection,
