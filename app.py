@@ -748,6 +748,9 @@ def normalize_reason_tag(text):
     if not s:
         return ""
 
+    if "展示F" in s or "展示Ｆ" in s:
+        return "展示F"
+
     tag_rules = [
         (["地力", "全国勝率", "全国2連率", "全国3連率"], "勝率系"),
         (["当地", "当地勝率", "当地2連率", "当地3連率"], "当地"),
@@ -806,6 +809,17 @@ def build_default_player_evidence_items(lane, exhibition_rank_map, exhibition_li
             items.append(("minus", "展示"))
 
     latest_text = str(latest_reason_text or "")
+
+    display_f_lanes = set()
+    for match in re.finditer(r'展示[FＦ]\s*[:：]\s*([0-9,、\s]+)\s*注意', latest_text):
+        raw = match.group(1)
+        for token in re.split(r'[,、\s]+', raw):
+            token = str(token or '').strip()
+            if token.isdigit():
+                display_f_lanes.add(int(token))
+    if lane in display_f_lanes:
+        items.append(("minus", "展示F"))
+
     if lane == 1 and ("イン外し" in latest_text):
         items.append(("minus", "進入"))
     elif "前づけ" in latest_text and lane in {3, 4, 5, 6}:
@@ -1028,7 +1042,7 @@ def render_ai_rating_filter_options(current_value):
 
 
 def render_official_rating_filter_options(current_value):
-    current = current_value or "★★★★★"
+    current = current_value or "pickup"
     html = ""
     for value, label in OFFICIAL_RATING_FILTER_OPTIONS:
         selected = "selected" if value == current else ""
@@ -1082,14 +1096,6 @@ def is_close_to_official_core(ai_item, official_items):
     return False
 
 
-def race_no_to_int(value):
-    try:
-        return int(str(value or "").replace("R", "").replace("r", "").strip())
-    except Exception:
-        m = re.search(r"(\d{1,2})", str(value or ""))
-        return int(m.group(1)) if m else 0
-
-
 def build_bet_guide_data(
     final_rank,
     ai_selection,
@@ -1099,42 +1105,33 @@ def build_bet_guide_data(
     official_rating="",
     base_reason_text="",
     latest_reason_text="",
-    race_no="",
 ):
     """
     今日の運用ルールを画面の買い方メモ/推奨反映ボタンに反映する。
 
     本買い:
-      AI★★★★★ × 公式★5 × base土台○ × 4R以降 → AI6点
-    検証:
-      公式★4 / base土台◎ / 買い強め単体 / 1〜3R は買わずに検証
+      base土台◎ × 買い強め × AI★★★★★ → AI6点
+    検証候補:
+      base土台◎ × 買い × AI★★★★★ / base土台○ × 買い強め × AI★★★★★ → 買わずに検証
+    それ以外:
+      見送り・検証のみ
     """
     rank = str(final_rank or "").strip()
     source = normalize_candidate_source(candidate_source)
     ai_rating_text = str(ai_rating or "").strip()
-    official_rating_text = str(official_rating or "").strip()
-    race_no_num = race_no_to_int(race_no)
 
     ai_items = selection_items(ai_selection)
     core_items = ai_items[:6]
-    buy_count = len(core_items)
+    extra_items = []
+    buy_count_with_addons = len(core_items)
+    addon_text = ""
     official_top2 = selection_items(official_selection)[:2]
 
     base_quality_label = extract_base_quality_display_text(base_reason_text, latest_reason_text)
     is_ai5 = ai_rating_text == "AI★★★★★"
-    is_official5 = official_rating_text == "★★★★★"
-    is_base_good = base_quality_label == "base土台○"
-    is_after_4r = race_no_num >= 4
+    rank_buy_ok = rank in {"買い強め", "買い"}
+    rank_strong_ok = rank == "買い強め"
     has_core = len(core_items) >= 6
-
-    is_main_buy_rule = (
-        source not in {"all_race_ai", "shadow_ai"}
-        and is_ai5
-        and is_official5
-        and is_base_good
-        and is_after_4r
-        and has_core
-    )
 
     conditions = []
     should_buy = False
@@ -1157,107 +1154,100 @@ def build_bet_guide_data(
         recommend_text = "買わない"
         memo = "all_race_ai は母集団分析用です。画面に出ても購入対象にしません。"
         action_label = "推奨どおり見送り"
-
-    elif source == "shadow_ai":
-        conditions = [
-            ("裏AI検証枠", True),
-            ("本番購入に混ぜない", True),
-            ("AI6点あり", has_core),
-        ]
-        title = "裏AI検証用・買わない"
-        tone = "watch"
-        recommend_text = "検証のみ"
-        memo = "裏AI候補は取り逃し確認用です。明日の本買いルールには入れません。"
-        action_label = "推奨どおり見送り"
-
     elif not rank:
         conditions = [
+            ("base土台◎", base_quality_label == "base土台◎"),
+            ("base土台○", base_quality_label == "base土台○"),
             ("AI★★★★★", is_ai5),
-            ("公式★5", is_official5),
-            ("base土台○", is_base_good),
-            ("4R以降", is_after_4r),
             ("直前判定待ち", True),
             ("AI6点あり", has_core),
         ]
         title = "今日の買い判定：直前待ち"
         tone = "watch"
         recommend_text = "展示・風・進入の反映待ち"
-        memo = "明日の本買い条件は AI★★★★★×公式★5×base土台○×4R以降。直前反映後にAI6点を確認します。"
+        memo = "collector_latest.py 反映後に、base土台と買い判定を確認します。"
         action_label = "直前待ち（反映なし）"
-
-    elif is_main_buy_rule:
+    elif base_quality_label == "base土台◎" and rank_strong_ok and is_ai5 and has_core:
         should_buy = True
-        recommended_count = buy_count
+        recommended_count = buy_count_with_addons
         recommended_amount = 100
         tone = "strong"
         title = "今日の買い判定：本買い"
         recommend_text = "AI6点 × 100円"
-        memo = "2日分検証の暫定本命ルール。AI★★★★★×公式★5×base土台○×4R以降だけ、追加なしAI6点で本買いします。"
+        memo = "base土台◎で、AI★★★★★かつ買い強めまで揃った時だけ本買い。追加なしでAI6点だけを反映します。"
         action_label = "AI6点を反映"
         conditions = [
+            ("base土台◎", True),
+            ("買い強め", rank_strong_ok),
             ("AI★★★★★", is_ai5),
-            ("公式★5", is_official5),
-            ("base土台○", is_base_good),
-            ("4R以降", is_after_4r),
             ("AI6点あり", has_core),
         ]
-
+    elif base_quality_label == "base土台◎" and rank == "買い" and is_ai5 and has_core:
+        should_buy = False
+        recommended_count = 0
+        recommended_amount = 100
+        tone = "watch"
+        title = "今日の買い判定：準本命・検証"
+        recommend_text = "買わずに検証"
+        memo = "base土台◎でも買い止まりは自動購入しません。締切前オッズや展示を見て手動判断にします。"
+        action_label = "推奨どおり見送り"
+        conditions = [
+            ("base土台◎", True),
+            ("買い強めではない", True),
+            ("AI★★★★★", is_ai5),
+            ("AI6点あり", has_core),
+        ]
+    elif base_quality_label == "base土台○" and rank_strong_ok and is_ai5 and has_core:
+        should_buy = False
+        recommended_count = 0
+        recommended_amount = 100
+        tone = "watch"
+        title = "今日の買い判定：準候補・検証"
+        recommend_text = "買わずに検証"
+        memo = "base土台○は昨日今日でブレが大きいため、自動購入から外して検証だけにします。"
+        action_label = "推奨どおり見送り"
+        conditions = [
+            ("base土台○", True),
+            ("買い強め", rank_strong_ok),
+            ("AI★★★★★", is_ai5),
+            ("AI6点あり", has_core),
+        ]
     else:
         conditions = [
+            ("base土台◎なら買い強め", base_quality_label == "base土台◎" and rank_strong_ok),
+            ("base土台○は検証のみ", base_quality_label == "base土台○"),
             ("AI★★★★★", is_ai5),
-            ("公式★5", is_official5),
-            ("base土台○", is_base_good),
-            ("4R以降", is_after_4r),
             ("AI6点あり", has_core),
         ]
-
-        if not is_ai5:
+        if rank == "様子見":
+            title = "今日の買い判定：様子見"
+            tone = "watch"
+            recommend_text = "買わずに検証"
+            memo = "様子見は取り逃し確認用。今日は購入対象から外します。"
+        elif base_quality_label in {"base保留", "base危険"}:
+            title = "今日の買い判定：見送り"
+            tone = "skip" if base_quality_label == "base危険" else "watch"
+            recommend_text = "買わない"
+            memo = f"{base_quality_label} は、直前が良くても今日は購入対象から外します。"
+        elif not is_ai5:
             title = "今日の買い判定：見送り"
             tone = "skip"
             recommend_text = "買わない"
-            memo = "AI★★★★★ではないため、明日の本買いルールでは見送り。"
-        elif not is_official5:
-            title = "今日の買い判定：検証"
-            tone = "watch"
-            recommend_text = "買わずに検証"
-            if official_rating_text == "★★★★☆":
-                memo = "公式★4は昨日分を入れると弱かったため、公式★5と同格に扱わず検証止まり。"
-            else:
-                memo = "公式★5ではないため、本買いから外します。"
-        elif not is_base_good:
-            title = "今日の買い判定：検証"
-            tone = "watch" if base_quality_label != "base危険" else "skip"
-            recommend_text = "買わずに検証"
-            if base_quality_label == "base土台◎":
-                memo = "base土台◎は堅すぎ/人気寄りの可能性があり、今回は本買いから外して検証します。"
-            elif base_quality_label == "base保留":
-                memo = "base保留は本買いには入れず、取り逃し確認だけにします。"
-            elif base_quality_label == "base危険":
-                memo = "base危険は本買い対象外です。"
-            else:
-                memo = "base土台○ではないため、明日の本買いルールでは見送り。"
-        elif not is_after_4r:
-            title = "今日の買い判定：序盤見送り"
-            tone = "watch"
-            recommend_text = "買わずに検証"
-            memo = "1〜3Rは今回の検証で本買いから外します。4R以降だけを対象にします。"
+            memo = "AI★★★★★ではないため、今日の買いルールでは見送り。"
         elif not has_core:
             title = "今日の買い判定：見送り"
             tone = "skip"
             recommend_text = "買わない"
             memo = "AI6点が揃っていないため、購入対象から外します。"
         else:
-            title = "今日の買い判定：検証"
-            tone = "watch"
-            recommend_text = "買わずに検証"
-            memo = "条件の一部が本買いルールに届いていないため、今日は検証扱いにします。"
-
-        if rank == "買い強め" and tone != "strong":
-            memo += " 買い強め単体は本買い扱いしません。"
+            title = "今日の買い判定：見送り"
+            tone = "skip"
+            recommend_text = "買わない"
+            memo = "本買い/準候補の条件に届いていないため見送り。"
 
     return {
         "ai_core_items": core_items,
-        "ai_extra_items": [],
+        "ai_extra_items": extra_items,
         "official_top2": official_top2,
         "conditions": conditions,
         "should_buy": should_buy,
@@ -1270,6 +1260,7 @@ def build_bet_guide_data(
         "action_label": action_label,
     }
 
+
 def render_bet_guide_html(
     final_rank,
     ai_selection,
@@ -1280,7 +1271,6 @@ def render_bet_guide_html(
     official_rating="",
     base_reason_text="",
     latest_reason_text="",
-    race_no="",
 ):
     guide = build_bet_guide_data(
         final_rank,
@@ -1291,7 +1281,6 @@ def render_bet_guide_html(
         official_rating=official_rating,
         base_reason_text=base_reason_text,
         latest_reason_text=latest_reason_text,
-        race_no=race_no,
     )
     guide_icon_map = {
         "strong": "🔥",
@@ -1559,13 +1548,13 @@ def get_race_by_id(race_id):
     return row
 
 
-def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="★★★★★", show_shadow=False, show_all_race=False):
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False, show_all_race=False):
     ensure_db_initialized()
 
-    official_rating_filter = str(official_rating_filter or "★★★★★").strip() or "★★★★★"
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
     if official_rating_filter not in official_rating_values:
-        official_rating_filter = "★★★★★"
+        official_rating_filter = "pickup"
 
     where_clauses = [
         "race_date = %s",
@@ -2064,7 +2053,6 @@ def build_card_html(r, is_history=False, race_date=""):
         official_rating=r.get("rating", ""),
         base_reason_text=r.get("base_reason_text", ""),
         latest_reason_text=r.get("latest_reason_text", ""),
-        race_no=r.get("race_no", ""),
     )
 
     source_value = normalize_candidate_source(r.get("candidate_source"))
@@ -2166,7 +2154,7 @@ def build_card_html(r, is_history=False, race_date=""):
           </div>
           <div class="quick-save-middle">
             <div class="quick-save-count"><span id="selected-count-inline-{race_id_key}">{selected_count}点</span> / <span id="selected-total-inline-{race_id_key}">{yen(selected_total_amount)}</span></div>
-            <div class="quick-save-rule">今日ルール: AI★5×公式★5×base土台○×4R以降だけAI6点を100円</div>
+            <div class="quick-save-rule">今日ルール: base土台◎×買い強め×AI★5だけAI6点を100円</div>
           </div>
           <button type="submit" class="save-btn save-btn-compact {'half-btn' if is_history else ''}">保存</button>
         </div>
@@ -2363,7 +2351,7 @@ def make_csv_response(rows, filename):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="★★★★★", show_shadow=False, show_all_race=False):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False, show_all_race=False):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
@@ -2374,7 +2362,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     checked_show_shadow = "checked" if show_shadow else ""
     checked_show_all_race = "checked" if show_all_race else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
-    official_rating_filter = str(official_rating_filter or "★★★★★").strip() or "★★★★★"
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
     cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
@@ -2407,18 +2395,18 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
       </div>
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
-        <div class="sub">評価：公式★5中心 / 券種：3連単 / 締切予定時刻が早い順</div>
+        <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
         <div class="sub">現在の絞り込み: {filter_status_text} / {filter_shadow_text} / {filter_all_race_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
         {external_line}
         {message_html}
         <div class="daily-rule-panel">
           <div class="daily-rule-main">
             <div class="daily-rule-kicker">今日の買い方</div>
-            <div class="daily-rule-title">運用ルール：本買いは AI★5×公式★5×base土台○×4R以降のみ。公式★4・base土台◎・買い強め単体は検証止まり。</div>
+            <div class="daily-rule-title">運用ルール：本買いは base土台◎×買い強め×AI★5 のみ。base土台◎×買い、base土台○は検証止まり。</div>
           </div>
           <div class="daily-rule-steps">
-            <span>本買い → AI★5×公式★5×base土台○×4R以降</span>
-            <span>準候補 → 公式★4/base◎/買い強め単体は検証</span>
+            <span>本買い → base土台◎×買い強め×AI★5</span>
+            <span>準候補 → 自動購入しない</span>
             <span>追加 → 使わない</span><span>その他 → 見送り・検証</span>
           </div>
         </div>
@@ -3337,7 +3325,7 @@ def render_layout(title, body_html):
         .bet-guide-detail{display:block;}
       }
 
-      /* v10.53: AI6点のみ表示・選択。追加候補は買い目に出さない */
+      /* v10.51: 追加候補を廃止しAI6点のみ表示・選択 */
       .selection-section-extra{margin-top:8px;background:#f4ebff;border:1px solid #d6bbfb;display:block!important;}
       .selection-section-extra .selection-section-title:before{content:"追加 ";color:#6941c6;}
       .selection-choice-extra .selection-choice-body{background:#ffffff;border-color:#b692f6;}
@@ -3964,12 +3952,12 @@ def index():
     show_shadow = True  # 裏AI候補は常時表示
     show_all_race = request.args.get("show_all_race", "").strip() == "1"
     ai_rating_filter = request.args.get("ai_rating", "").strip()
-    official_rating_filter = request.args.get("official_rating", "★★★★★").strip() or "★★★★★"
+    official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
     if ai_rating_filter not in AI_RATING_OPTIONS:
         ai_rating_filter = ""
     official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
     if official_rating_filter not in official_rating_values:
-        official_rating_filter = "★★★★★"
+        official_rating_filter = "pickup"
     races = get_filtered_today_races(
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
