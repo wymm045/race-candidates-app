@@ -67,13 +67,13 @@ def env_float(name, default):
 
 # 公式★4/★5だけに寄せすぎない検証用。
 # app.py 側で show_shadow=1 の時だけ表示される想定。
-ENABLE_SHADOW_AI = env_bool("ENABLE_SHADOW_AI", True)
+ENABLE_SHADOW_AI = env_bool("ENABLE_SHADOW_AI", False)
 SHADOW_AI_MAX_CANDIDATES = env_int("SHADOW_AI_MAX_CANDIDATES", 24)
 SHADOW_AI_MIN_SCORE = env_float("SHADOW_AI_MIN_SCORE", 1.75)
 SHADOW_AI_SKIP_OFFICIAL_DUPLICATES = env_bool("SHADOW_AI_SKIP_OFFICIAL_DUPLICATES", True)
 
 # 全レース検証用。画面には通常出さず、CSV分析用に全開催レースのbase AIを保存する。
-ENABLE_ALL_RACE_AI = env_bool("ENABLE_ALL_RACE_AI", True)
+ENABLE_ALL_RACE_AI = env_bool("ENABLE_ALL_RACE_AI", False)
 
 JCD_NAME_MAP = {
     "01": "桐生",
@@ -93,6 +93,8 @@ JCD_NAME_MAP = {
     "15": "丸亀",
     "16": "児島",
     "17": "宮島",
+    "18": "徳山",
+    "19": "下関",
     "20": "若松",
     "21": "芦屋",
     "22": "福岡",
@@ -127,6 +129,8 @@ RACELIST_VENUE_SLUG_MAP = {
     "15": "marugame",
     "16": "kojima",
     "17": "miyajima",
+    "18": "tokuyama",
+    "19": "shimonoseki",
     "20": "wakamatsu",
     "21": "ashiya",
     "22": "fukuoka",
@@ -157,6 +161,8 @@ HOME_BRANCH_BY_JCD = {
     "15": "香川",
     "16": "岡山",
     "17": "広島",
+    "18": "山口",
+    "19": "山口",
     "20": "福岡",
     "21": "福岡",
     "22": "福岡",
@@ -1611,6 +1617,243 @@ def build_base_triplets(sorted_lanes, head_lane, head_adv, second_adv):
     return " / ".join(triplets[:6])
 
 
+
+def selection_triplets_base(selection):
+    if not selection:
+        return []
+    return [x.strip() for x in str(selection).split(" / ") if x.strip()]
+
+
+def analyze_base_raw_label(raw_score, reason_items=None):
+    """
+    素材評価用。枠有利・外頭抑制・頭の散り方などの買い目構造補正は入れず、
+    勝率/当地/モーター/ST/コース/近況/級別/地元/別格などの素の強さだけを見る。
+    """
+    reason_items = [str(x).strip() for x in (reason_items or []) if str(x).strip()]
+    reason_set = set(reason_items)
+
+    score = 0.0
+    try:
+        s = float(raw_score or 0)
+    except Exception:
+        s = 0.0
+
+    if s >= 2.45:
+        score += 1.55
+    elif s >= 2.00:
+        score += 1.05
+    elif s >= 1.55:
+        score += 0.60
+    elif s >= 1.15:
+        score += 0.20
+    else:
+        score -= 0.38
+
+    strong_support_words = [
+        "地力上位", "選手力上位", "B2でも地力上位", "別格", "実力A1級",
+        "当地巧者", "地元水面", "モーター良好", "ST良好", "コース相性良好",
+        "近況良好", "級別傾向強い",
+    ]
+    support_count = sum(1 for w in strong_support_words if w in reason_set)
+
+    if support_count >= 4:
+        score += 1.00
+    elif support_count == 3:
+        score += 0.72
+    elif support_count == 2:
+        score += 0.44
+    elif support_count == 1:
+        score += 0.14
+    else:
+        score -= 0.18
+
+    if score >= 2.35:
+        label = "base素材◎"
+    elif score >= 1.10:
+        label = "base素材○"
+    elif score >= 0.15:
+        label = "base素材保留"
+    else:
+        label = "base素材危険"
+
+    notes = []
+    if support_count:
+        notes.append(f"支え{support_count}")
+    if s >= 2.45:
+        notes.append("上位明確")
+    elif s <= 1.10:
+        notes.append("材料薄め")
+
+    return {
+        "label": label,
+        "score": round(score, 2),
+        "reason_text": "/".join(notes[:2]),
+    }
+
+
+def build_base_head_reasons(head_lane, boat_stats, class_history_map, extra_stats=None, jcd="", player_names_map=None):
+    reasons = []
+    if not head_lane:
+        return reasons
+    s = boat_stats.get(head_lane, {}) or {}
+    ex = (extra_stats or {}).get(head_lane, {}) or {}
+    ch = class_history_map.get(head_lane, {}) or {}
+    head_true_strength = calc_true_strength_score(s, ch, ex)
+    head_b2_exception = calc_b2_exception_bonus(s, ch, ex, head_true_strength)
+    head_local_bonus = calc_local_specialist_bonus(s)
+    head_home_bonus = calc_home_branch_bonus(s, jcd)
+    head_elite_label = elite_racer_label((player_names_map or {}).get(head_lane, ""))
+
+    if head_elite_label:
+        reasons.append(head_elite_label)
+    if head_true_strength >= 1.10 or (s.get("national_win") or 0) >= 6.2:
+        reasons.append("地力上位")
+    elif (s.get("national_win") or 0) >= 6.0:
+        reasons.append("選手力上位")
+    if head_b2_exception >= 0.12:
+        reasons.append("B2でも地力上位")
+    if head_local_bonus >= 0.10:
+        reasons.append("当地巧者")
+    elif (s.get("local_win") or 0) >= 5.8:
+        reasons.append("当地相性良好")
+    if head_home_bonus >= 0.06:
+        reasons.append("地元水面")
+    if (s.get("motor2") or 0) >= 42:
+        reasons.append("モーター良好")
+    if (ex.get("avg_st") or 9) <= 0.140:
+        reasons.append("ST良好")
+    if (ex.get("course_rate") or 0) >= 60:
+        reasons.append("コース相性良好")
+    if (ex.get("recent_avg") or 9) <= 2.3 or (ex.get("recent_top3") or 0) >= 72:
+        reasons.append("近況良好")
+    if class_history_score(ch) >= 1.0:
+        reasons.append("級別傾向強い")
+    if head_lane == 1:
+        reasons.append("1号艇有利")
+    elif head_lane in {3, 4}:
+        reasons.append("中枠攻め候補")
+    return reasons
+
+
+def analyze_base_quality_label(base_ai_score, base_ai_selection, reason_items=None):
+    """
+    公式★を使わず、朝baseだけで土台の良し悪しを判定する。
+    表示/CSVにすぐ乗せられるよう、labelは base_reason_text の先頭へ付ける想定。
+    """
+    reason_items = [str(x).strip() for x in (reason_items or []) if str(x).strip()]
+    reason_set = set(reason_items)
+    triplets = selection_triplets_base(base_ai_selection)
+
+    heads = []
+    for tri in triplets:
+        parts = str(tri).split("-")
+        if len(parts) >= 3 and parts[0].isdigit():
+            try:
+                heads.append(int(parts[0]))
+            except Exception:
+                pass
+
+    first_head = heads[0] if heads else 0
+    top3_heads = heads[:3]
+    unique_top3_heads = len(set(top3_heads)) if top3_heads else 0
+    outer_head_count = sum(1 for x in heads[:6] if x in {5, 6})
+
+    score = 0.0
+    try:
+        s = float(base_ai_score or 0)
+    except Exception:
+        s = 0.0
+
+    if s >= 2.65:
+        score += 1.55
+    elif s >= 2.25:
+        score += 1.10
+    elif s >= 1.75:
+        score += 0.60
+    elif s >= 1.30:
+        score += 0.15
+    else:
+        score -= 0.45
+
+    strong_support_words = [
+        "地力上位", "選手力上位", "B2でも地力上位", "別格", "実力A1級",
+        "当地巧者", "地元水面", "モーター良好", "ST良好", "コース相性良好",
+        "近況良好", "級別傾向強い", "1号艇有利", "インやや強め",
+    ]
+    support_count = sum(1 for w in strong_support_words if w in reason_set)
+
+    if support_count >= 4:
+        score += 1.00
+    elif support_count == 3:
+        score += 0.75
+    elif support_count == 2:
+        score += 0.45
+    elif support_count == 1:
+        score += 0.12
+    else:
+        score -= 0.25
+
+    if first_head == 1:
+        score += 0.70
+        if "1号艇有利" in reason_set and support_count >= 2:
+            score += 0.20
+    elif first_head == 2:
+        score += 0.35
+    elif first_head == 3:
+        score += 0.18
+    elif first_head == 4:
+        score -= 0.12
+    elif first_head in {5, 6}:
+        score -= 0.75
+    else:
+        score -= 0.50
+
+    if unique_top3_heads == 1:
+        score += 0.28
+    elif unique_top3_heads == 2:
+        score += 0.12
+    elif unique_top3_heads >= 3:
+        score -= 0.32
+
+    if outer_head_count >= 3:
+        score -= 0.58
+    elif outer_head_count >= 2:
+        score -= 0.34
+
+    if "中枠攻め候補" in reason_set and support_count <= 2:
+        score -= 0.22
+    if "攻めやや注意" in reason_set and support_count <= 2:
+        score -= 0.18
+
+    if not triplets:
+        score -= 1.00
+
+    if score >= 2.55:
+        label = "base土台◎"
+    elif score >= 1.25:
+        label = "base土台○"
+    elif score >= 0.20:
+        label = "base保留"
+    else:
+        label = "base危険"
+
+    notes = []
+    if first_head:
+        notes.append(f"頭{first_head}")
+    if support_count:
+        notes.append(f"支え{support_count}")
+    if unique_top3_heads >= 3:
+        notes.append("頭散り")
+    if outer_head_count >= 2:
+        notes.append("外頭多め")
+
+    return {
+        "label": label,
+        "score": round(score, 2),
+        "reason_text": "/".join(notes[:3]),
+    }
+
+
 def generate_base_ai_selection(boat_stats, class_history_map, extra_stats=None, venue="", jcd="", player_names_map=None):
     lane_scores = {lane: 0.0 for lane in range(1, 7)}
     extra_stats = infer_extra_stats(boat_stats, class_history_map, extra_stats)
@@ -1755,6 +1998,8 @@ def generate_base_ai_selection(boat_stats, class_history_map, extra_stats=None, 
         if motor2 is not None and motor2 >= 42:
             lane_scores[lane] += 0.10
 
+    raw_lane_scores = dict(lane_scores)
+
     sorted_lanes = sorted(lane_scores.items(), key=lambda x: (-x[1], x[0]))
     top_lanes = [lane for lane, _ in sorted_lanes]
     top_score = sorted_lanes[0][1] if sorted_lanes else 0.0
@@ -1771,55 +2016,52 @@ def generate_base_ai_selection(boat_stats, class_history_map, extra_stats=None, 
     ai_rating = score_to_ai_rating_base(base_score)
     base_selection = build_base_triplets(sorted_lanes, top_lanes[0] if top_lanes else 1, head_adv, second_adv)
 
-    reasons = []
-    head_lane = top_lanes[0] if top_lanes else None
-    if head_lane:
-        s = boat_stats.get(head_lane, {})
-        ex = extra_stats.get(head_lane, {}) if extra_stats else {}
-        ch = class_history_map.get(head_lane, {})
-        head_true_strength = calc_true_strength_score(s, ch, ex)
-        head_b2_exception = calc_b2_exception_bonus(s, ch, ex, head_true_strength)
-        head_local_bonus = calc_local_specialist_bonus(s)
-        head_home_bonus = calc_home_branch_bonus(s, jcd)
-        head_elite_label = elite_racer_label((player_names_map or {}).get(head_lane, ""))
-
-        if head_elite_label:
-            reasons.append(head_elite_label)
-        if head_true_strength >= 1.10 or (s.get("national_win") or 0) >= 6.2:
-            reasons.append("地力上位")
-        elif (s.get("national_win") or 0) >= 6.0:
-            reasons.append("選手力上位")
-        if head_b2_exception >= 0.12:
-            reasons.append("B2でも地力上位")
-        if head_local_bonus >= 0.10:
-            reasons.append("当地巧者")
-        elif (s.get("local_win") or 0) >= 5.8:
-            reasons.append("当地相性良好")
-        if head_home_bonus >= 0.06:
-            reasons.append("地元水面")
-        if (s.get("motor2") or 0) >= 42:
-            reasons.append("モーター良好")
-        if (ex.get("avg_st") or 9) <= 0.140:
-            reasons.append("ST良好")
-        if (ex.get("course_rate") or 0) >= 60:
-            reasons.append("コース相性良好")
-        if (ex.get("recent_avg") or 9) <= 2.3 or (ex.get("recent_top3") or 0) >= 72:
-            reasons.append("近況良好")
-        if class_history_score(ch) >= 1.0:
-            reasons.append("級別傾向強い")
-        if head_lane == 1:
-            reasons.append("1号艇有利")
-        elif head_lane in {3, 4}:
-            reasons.append("中枠攻め候補")
+    reasons = build_base_head_reasons(
+        top_lanes[0] if top_lanes else None,
+        boat_stats,
+        class_history_map,
+        extra_stats=extra_stats,
+        jcd=jcd,
+        player_names_map=player_names_map,
+    )
 
     if venue_bias.get("reason") and head_adv >= 0.30:
         reasons.append(venue_bias["reason"])
+
+    base_reason_text = " / ".join(dict.fromkeys(reasons[:7]))
+    base_quality = analyze_base_quality_label(base_score, base_selection, reasons)
+    base_quality_label = str(base_quality.get("label") or "").strip()
+    if base_quality_label:
+        base_reason_text = f"{base_quality_label} / {base_reason_text}" if base_reason_text else base_quality_label
+
+    raw_sorted_lanes = sorted(raw_lane_scores.items(), key=lambda x: (-x[1], x[0]))
+    raw_top_lanes = [lane for lane, _ in raw_sorted_lanes]
+    raw_top_score = raw_sorted_lanes[0][1] if raw_sorted_lanes else 0.0
+    raw_second_score = raw_sorted_lanes[1][1] if len(raw_sorted_lanes) > 1 else raw_top_score - 0.2
+    raw_third_score = raw_sorted_lanes[2][1] if len(raw_sorted_lanes) > 2 else raw_second_score - 0.1
+    raw_score = raw_top_score + (raw_second_score * 0.42) + (raw_third_score * 0.18)
+    raw_reasons = build_base_head_reasons(
+        raw_top_lanes[0] if raw_top_lanes else None,
+        boat_stats,
+        class_history_map,
+        extra_stats=extra_stats,
+        jcd=jcd,
+        player_names_map=player_names_map,
+    )
+    base_raw = analyze_base_raw_label(raw_score, raw_reasons)
+    base_raw_label = str(base_raw.get("label") or "").strip()
+    raw_reason_text = " / ".join(dict.fromkeys(raw_reasons[:6]))
+    if base_raw_label:
+        raw_reason_text = f"{base_raw_label} / {raw_reason_text}" if raw_reason_text else base_raw_label
 
     return {
         "base_ai_score": round(base_score, 2),
         "base_ai_rating": ai_rating,
         "base_ai_selection": base_selection,
-        "base_reason_text": " / ".join(dict.fromkeys(reasons[:7])),
+        "base_reason_text": base_reason_text,
+        "base_raw_score": round(raw_score, 2),
+        "base_raw_label": base_raw_label,
+        "base_raw_reason_text": raw_reason_text,
     }
 
 
@@ -1963,6 +2205,9 @@ def make_base_candidate(row, beforeinfo_cache, racelist_cache, candidate_source=
         "base_ai_rating": base_ai["base_ai_rating"],
         "base_ai_selection": base_ai["base_ai_selection"],
         "base_reason_text": base_ai["base_reason_text"],
+        "base_raw_score": base_ai.get("base_raw_score", 0),
+        "base_raw_label": base_ai.get("base_raw_label", ""),
+        "base_raw_reason_text": base_ai.get("base_raw_reason_text", ""),
         "base_updated_at": jst_now_str(),
     }
     return candidate
@@ -2022,99 +2267,59 @@ def build_all_race_seed_rows(active_jcds, deadlines_cache, all_rating_map=None):
 
 
 def build_candidates():
-    log("[collector_version] collector_base_v10_37_all_race_ai")
+    log("[collector_version] collector_base_v10_39_base_quality")
     log("========== build_candidates start ==========")
     log(f"now={jst_now().strftime('%Y-%m-%d %H:%M:%S JST')}")
-    log(
-        "[shadow_ai_config] "
-        f"enabled={ENABLE_SHADOW_AI} "
-        f"min_score={SHADOW_AI_MIN_SCORE} "
-        f"max={SHADOW_AI_MAX_CANDIDATES} "
-        f"skip_official_duplicates={SHADOW_AI_SKIP_OFFICIAL_DUPLICATES} "
-        f"all_race_ai={ENABLE_ALL_RACE_AI}"
-    )
+    log("[official_all_config] source=official_all ratings=★1〜★5 one_row_per_race")
 
+    # 公式★1〜★5を全部拾い、1レース1行で保存する。
+    # 画面側で「公式候補」「裏AI候補」「全レース検証」を分類するため、
+    # collector側では official_star / shadow_ai / all_race_ai に分けない。
     all_rating_rows = parse_rating_pages(ALL_OFFICIAL_RATINGS)
-    all_rating_map = {}
+
+    dedup = {}
     for row in all_rating_rows:
         jcd = row.get("jcd") or NAME_JCD_MAP.get(row.get("venue", ""), "")
         race_no = int(row.get("race_no") or 0)
-        if jcd and race_no:
-            all_rating_map[(jcd, race_no)] = row
-
-    raw_rows = [row for row in all_rating_rows if row.get("rating") in OFFICIAL_PICKUP_RATINGS]
-
-    dedup = {}
-    for row in raw_rows:
-        key = (row["venue"], row["race_no"])
+        if not jcd or race_no <= 0:
+            continue
+        key = (jcd, race_no)
         if key not in dedup:
+            row["jcd"] = jcd
+            row["race_no"] = race_no
+            row["candidate_source"] = "official_all"
             dedup[key] = row
-    official_rows = list(dedup.values())
-    log(f"[dedup_summary] official_count={len(official_rows)} all_rating_count={len(all_rating_rows)}")
 
-    official_needed_jcds = set()
-    official_key_set = set()
-    for row in official_rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+    official_all_rows = list(dedup.values())
+    log(f"[official_all_seed_summary] rating_rows={len(all_rating_rows)} unique={len(official_all_rows)}")
+
+    needed_jcds = set()
+    for row in official_all_rows:
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(row.get("venue", ""), "")
         if jcd:
-            official_needed_jcds.add(jcd)
-            official_key_set.add((jcd, int(row["race_no"])))
+            needed_jcds.add(jcd)
 
-    deadline_target_jcds = set(official_needed_jcds)
-    if ENABLE_SHADOW_AI or ENABLE_ALL_RACE_AI:
-        # 裏AI候補/全レース検証は公式★4/★5に出ていない開催場も見るため、締切表だけ全場確認する。
-        # 実際に開催がある場だけ、後続のracelist/beforeinfo対象にする。
-        deadline_target_jcds.update(JCD_NAME_MAP.keys())
-
-    deadlines_cache = fetch_deadlines_parallel(deadline_target_jcds)
-    deadlines_cache = fill_missing_deadlines(official_rows, deadlines_cache)
-
-    active_jcds = {
-        jcd for jcd, deadlines in deadlines_cache.items()
-        if any(str(v or "").strip() for v in (deadlines or {}).values())
-    }
-    if not (ENABLE_SHADOW_AI or ENABLE_ALL_RACE_AI):
-        active_jcds = set()
-
-    needed_jcds = set(official_needed_jcds)
-    if ENABLE_SHADOW_AI or ENABLE_ALL_RACE_AI:
-        needed_jcds.update(active_jcds)
-
+    deadlines_cache = fetch_deadlines_parallel(needed_jcds)
+    deadlines_cache = fill_missing_deadlines(official_all_rows, deadlines_cache)
     racelist_cache = fetch_racelist_parallel(needed_jcds) if USE_RACELIST else {}
 
-    filtered_official_rows = []
-    official_keys = set()
-    for row in official_rows:
+    filtered_rows = []
+    for row in official_all_rows:
         venue = row["venue"]
         race_no = int(row["race_no"])
-        jcd = row["jcd"] or NAME_JCD_MAP.get(venue, "")
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(venue, "")
         if not jcd:
             continue
         deadline = deadlines_cache.get(jcd, {}).get(race_no, "")
+        if not deadline:
+            continue
         row["time"] = deadline
-        row["candidate_source"] = "official_star"
-        filtered_official_rows.append(row)
-        official_keys.add((jcd, race_no))
-
-    shadow_seed_rows = build_shadow_seed_rows(active_jcds, deadlines_cache, official_keys, all_rating_map=all_rating_map)
-    all_race_seed_rows = build_all_race_seed_rows(active_jcds, deadlines_cache, all_rating_map=all_rating_map)
-    log(
-        f"[shadow_seed_summary] active_jcds={len(active_jcds)} "
-        f"seed_rows={len(shadow_seed_rows)} official_skip={len(official_keys)}"
-    )
-    log(f"[all_race_seed_summary] seed_rows={len(all_race_seed_rows)}")
+        row["candidate_source"] = "official_all"
+        filtered_rows.append(row)
 
     all_keys = set()
-    for row in filtered_official_rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if jcd:
-            all_keys.add((jcd, int(row["race_no"])))
-    for row in shadow_seed_rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
-        if jcd:
-            all_keys.add((jcd, int(row["race_no"])))
-    for row in all_race_seed_rows:
-        jcd = row["jcd"] or NAME_JCD_MAP.get(row["venue"], "")
+    for row in filtered_rows:
+        jcd = row.get("jcd") or NAME_JCD_MAP.get(row.get("venue", ""), "")
         if jcd:
             all_keys.add((jcd, int(row["race_no"])))
 
@@ -2123,61 +2328,17 @@ def build_candidates():
         log_beforeinfo_summary(beforeinfo_cache, all_keys)
 
     results = []
-
-    for row in filtered_official_rows:
+    for row in filtered_rows:
         candidate = make_base_candidate(
             row,
             beforeinfo_cache,
             racelist_cache,
-            candidate_source="official_star",
+            candidate_source="official_all",
         )
         results.append(candidate)
 
-    shadow_candidates_all = []
-    for row in shadow_seed_rows:
-        candidate = make_base_candidate(
-            row,
-            beforeinfo_cache,
-            racelist_cache,
-            candidate_source="shadow_ai",
-        )
-        if is_shadow_candidate_quality_ok(candidate):
-            shadow_candidates_all.append(candidate)
-
-    shadow_candidates_all.sort(
-        key=lambda x: (
-            -safe_float(x.get("base_ai_score"), 0),
-            to_minutes(x["time"]) if x.get("time") else 9999,
-            x["venue"],
-            x["race_no_num"],
-        )
-    )
-    shadow_candidates = shadow_candidates_all[:max(0, SHADOW_AI_MAX_CANDIDATES)]
-    results.extend(shadow_candidates)
-
-    all_race_candidates = []
-    for row in all_race_seed_rows:
-        candidate = make_base_candidate(
-            row,
-            beforeinfo_cache,
-            racelist_cache,
-            candidate_source="all_race_ai",
-        )
-        all_race_candidates.append(candidate)
-    results.extend(all_race_candidates)
-
-    log(
-        f"[shadow_ai_summary] scored={len(shadow_candidates_all)} "
-        f"kept={len(shadow_candidates)} "
-        f"min_score={SHADOW_AI_MIN_SCORE}"
-    )
-    log(f"[all_race_ai_summary] kept={len(all_race_candidates)}")
-
-    results.sort(key=lambda x: (to_minutes(x["time"]) if x["time"] else 9999, x["venue"], x["race_no_num"], x.get("candidate_source", "")))
-    official_count = sum(1 for x in results if x.get("candidate_source") == "official_star")
-    shadow_count = sum(1 for x in results if x.get("candidate_source") == "shadow_ai")
-    all_race_count = sum(1 for x in results if x.get("candidate_source") == "all_race_ai")
-    log(f"build_candidates final_count={len(results)} official={official_count} shadow_ai={shadow_count} all_race_ai={all_race_count}")
+    results.sort(key=lambda x: (to_minutes(x["time"]) if x.get("time") else 9999, x["venue"], x["race_no_num"]))
+    log(f"build_candidates final_count={len(results)} official_all={len(results)}")
     log("========== build_candidates end ==========")
     return results
 
@@ -2193,12 +2354,12 @@ def split_races_for_post(races):
     all_race_ai 追加後は送信件数が多くなるため、Render側の500/タイムアウトを避ける目的で分割送信する。
     official_star → shadow_ai → all_race_ai の順で送る。
     """
-    order = ["official_star", "shadow_ai", "all_race_ai"]
+    order = ["official_all", "official_star", "shadow_ai", "all_race_ai"]
     grouped = {src: [] for src in order}
     others = []
 
     for race in races:
-        src = str((race or {}).get("candidate_source") or "official_star").strip() or "official_star"
+        src = str((race or {}).get("candidate_source") or "official_all").strip() or "official_all"
         if src in grouped:
             grouped[src].append(race)
         else:
@@ -2232,7 +2393,7 @@ def send_to_render(races):
         payload = {"races": chunk}
         source_counts = {}
         for race in chunk:
-            src = str((race or {}).get("candidate_source") or "official_star").strip() or "official_star"
+            src = str((race or {}).get("candidate_source") or "official_all").strip() or "official_all"
             source_counts[src] = source_counts.get(src, 0) + 1
 
         last_err = None
