@@ -36,6 +36,14 @@ OFFICIAL_RATING_FILTER_OPTIONS = [
     ("★☆☆☆☆", "公式★1のみ"),
 ]
 
+BASE_QUALITY_FILTER_OPTIONS = [
+    ("", "土台すべて"),
+    ("base土台◎", "base土台◎"),
+    ("base土台○", "base土台○"),
+    ("base保留", "base保留"),
+    ("base危険", "base危険"),
+]
+
 CARD_SELECT_COLUMNS = '''
     id,
     race_date,
@@ -1052,6 +1060,14 @@ def render_official_rating_filter_options(current_value):
         html += f'<option value="{value}" {selected}>{label}</option>'
     return html
 
+def render_base_quality_filter_options(current_value):
+    current = str(current_value or "").strip()
+    html = ""
+    for value, label in BASE_QUALITY_FILTER_OPTIONS:
+        selected = "selected" if value == current else ""
+        html += f'<option value="{value}" {selected}>{label}</option>'
+    return html
+
 
 def safe_redirect_path(path, default="/"):
     s = str(path or "").strip()
@@ -1559,13 +1575,18 @@ def get_race_by_id(race_id):
     return row
 
 
-def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", show_shadow=False, show_all_race=False):
+def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_rating_filter="pickup", base_quality_filter="", show_shadow=False, show_all_race=False):
     ensure_db_initialized()
 
-    official_rating_filter = str(official_rating_filter or "★★★★★").strip() or "★★★★★"
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
     if official_rating_filter not in official_rating_values:
         official_rating_filter = "pickup"
+
+    base_quality_filter = str(base_quality_filter or "").strip()
+    base_quality_values = {value for value, _label in BASE_QUALITY_FILTER_OPTIONS}
+    if base_quality_filter not in base_quality_values:
+        base_quality_filter = ""
 
     where_clauses = [
         "race_date = %s",
@@ -1573,34 +1594,35 @@ def get_filtered_today_races(show_closed=False, ai_rating_filter="", official_ra
     ]
     params = [today_text()]
 
-    if official_rating_filter == "pickup":
-        official_rating_sql = "rating IN (%s, %s)"
-        official_rating_params = ["★★★★★", "★★★★☆"]
-    else:
-        official_rating_sql = "rating = %s"
-        official_rating_params = [official_rating_filter]
-
-    source_clauses = []
     if show_all_race:
-        # 新方式: official_all が公式★1〜5の全レース母集団。
-        # 旧方式の all_race_ai も過去データ互換で残す。
-        source_clauses.append("candidate_source IN ('official_all', 'all_race_ai')")
+        source_sql = "candidate_source IN ('official_all', 'official_star', 'shadow_ai', 'all_race_ai')"
     else:
-        # 通常表示: 公式★4/★5など、公式評価フィルターに合うもの。
-        source_clauses.append(f"(candidate_source IN ('official_all', 'official_star') AND {official_rating_sql})")
-        params.extend(official_rating_params)
-        # 裏AI候補は常時表示する。
-        # 新方式の裏AI: 公式★1〜3 かつ AI★★★★★。
-        source_clauses.append("(candidate_source = 'official_all' AND rating IN ('★★★☆☆','★★☆☆☆','★☆☆☆☆') AND COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, '')) = 'AI★★★★★')")
-        # 旧方式の裏AIも過去データ互換で表示。
-        source_clauses.append("candidate_source = 'shadow_ai'")
-    where_clauses.append("(" + " OR ".join(source_clauses) + ")")
+        source_sql = "candidate_source IN ('official_all', 'official_star')"
+    where_clauses.append(source_sql)
+
+    if official_rating_filter == "pickup":
+        where_clauses.append("rating IN (%s, %s)")
+        params.extend(["★★★★★", "★★★★☆"])
+    else:
+        where_clauses.append("rating = %s")
+        params.append(official_rating_filter)
 
     if ai_rating_filter:
         where_clauses.append(
             "COALESCE(NULLIF(final_ai_rating, ''), NULLIF(base_ai_rating, ''), NULLIF(ai_rating, '')) = %s"
         )
         params.append(ai_rating_filter)
+
+    if base_quality_filter:
+        where_clauses.append(
+            "CASE "
+            "WHEN COALESCE(latest_reason_text, '') LIKE '%%base土台◎%%' OR COALESCE(base_reason_text, '') LIKE '%%base土台◎%%' THEN 'base土台◎' "
+            "WHEN COALESCE(latest_reason_text, '') LIKE '%%base土台○%%' OR COALESCE(base_reason_text, '') LIKE '%%base土台○%%' THEN 'base土台○' "
+            "WHEN COALESCE(latest_reason_text, '') LIKE '%%base保留%%' OR COALESCE(base_reason_text, '') LIKE '%%base保留%%' THEN 'base保留' "
+            "WHEN COALESCE(latest_reason_text, '') LIKE '%%base危険%%' OR COALESCE(base_reason_text, '') LIKE '%%base危険%%' THEN 'base危険' "
+            "ELSE '' END = %s"
+        )
+        params.append(base_quality_filter)
 
     if not show_closed:
         where_clauses.append("time >= %s")
@@ -1954,12 +1976,6 @@ def build_card_html(r, is_history=False, race_date=""):
     elif selected_count > 0:
         card_class += " card-purchased"
 
-    source_value = normalize_candidate_source(r.get("candidate_source"))
-    if is_shadow_like_row(r):
-        card_class += " card-source-shadow"
-    elif source_value == "all_race_ai" or (source_value == "official_all" and not is_pickup_official_rating(r.get("rating"))):
-        card_class += " card-source-all-race"
-
     rank_for_class = str(r.get("final_rank") or "").strip()
     if rank_for_class == "買い強め":
         card_class += " card-rank-strong"
@@ -2067,16 +2083,6 @@ def build_card_html(r, is_history=False, race_date=""):
         race_no_num=r.get("race_no_num", 0),
     )
 
-    source_value = normalize_candidate_source(r.get("candidate_source"))
-    if is_shadow_like_row(r):
-        source_badge_html = '<span class="source-badge source-badge-shadow">裏AI候補・検証用</span>'
-    elif source_value == "all_race_ai":
-        source_badge_html = '<span class="source-badge source-badge-all-race">全レース検証・買わない</span>'
-    elif source_value == "official_all" and not is_pickup_official_rating(r.get("rating")):
-        source_badge_html = '<span class="source-badge source-badge-all">全レース検証</span>'
-    else:
-        source_badge_html = '<span class="source-badge source-badge-official">公式候補</span>'
-
     base_quality_badge_html = render_base_quality_badge(
         r.get("latest_reason_text", ""),
         r.get("base_reason_text", ""),
@@ -2123,7 +2129,6 @@ def build_card_html(r, is_history=False, race_date=""):
       </div>
 
       <div class="badge-row">
-        {source_badge_html}
         {base_quality_badge_html}
         <span class="rating">{display_text(r.get('rating'), '公式評価なし')}</span>
         <span class="ai-rating">{display_ai_rating}</span>
@@ -2366,7 +2371,7 @@ def make_csv_response(rows, filename):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
-def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="★★★★★", show_shadow=False, show_all_race=False):
+def render_home(races, summary, message_type="", message_text="", show_closed=False, ai_rating_filter="", official_rating_filter="pickup", base_quality_filter="", show_shadow=False, show_all_race=False):
     updated_str = summary["last_imported_at"] if summary["last_imported_at"] else "未更新"
     if message_text:
         message_class = "message-success" if message_type == "success" else "message-error"
@@ -2374,15 +2379,14 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
     else:
         message_html = ""
     checked_show_closed = "checked" if show_closed else ""
-    checked_show_shadow = "checked" if show_shadow else ""
     checked_show_all_race = "checked" if show_all_race else ""
     ai_rating_options_html = render_ai_rating_filter_options(ai_rating_filter)
-    official_rating_filter = str(official_rating_filter or "★★★★★").strip() or "★★★★★"
+    official_rating_filter = str(official_rating_filter or "pickup").strip() or "pickup"
     official_rating_options_html = render_official_rating_filter_options(official_rating_filter)
+    base_quality_options_html = render_base_quality_filter_options(base_quality_filter)
     cards_html = ''.join([build_safe_card_html(r) for r in races]) if races else '<div class="empty">条件に合う候補はありません</div>'
     external_line = f'<div class="sub"><strong>公開URL:</strong> <a href="{EXTERNAL_URL}">{EXTERNAL_URL}</a></div>' if EXTERNAL_URL else ''
     filter_status_text = "締切後も表示中" if show_closed else "締切前のみ表示中"
-    filter_shadow_text = "裏AI候補も常時表示"
     filter_all_race_text = "全レース検証も表示中" if show_all_race else "全レース検証は非表示"
     filter_ai_text = ai_rating_filter if ai_rating_filter else "すべて"
     official_label_map = {
@@ -2394,6 +2398,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
         "★☆☆☆☆": "公式★1のみ",
     }
     filter_official_text = official_label_map.get(official_rating_filter, "公式★5+★4")
+    filter_base_quality_text = base_quality_filter if base_quality_filter else "土台すべて"
     content = f'''
     <div class="app-shell">
       <div class="topbar">
@@ -2411,7 +2416,7 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
       <div class="header hero hero-strong">
         <div class="title">今日の買い候補</div>
         <div class="sub">評価：公式★5+★4 / 券種：3連単 / 締切予定時刻が早い順</div>
-        <div class="sub">現在の絞り込み: {filter_status_text} / {filter_shadow_text} / {filter_all_race_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text}</div>
+        <div class="sub">現在の絞り込み: {filter_status_text} / {filter_all_race_text} / 公式評価 {filter_official_text} / AI評価 {filter_ai_text} / {filter_base_quality_text}</div>
         {external_line}
         {message_html}
         <div class="daily-rule-panel">
@@ -2434,9 +2439,6 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
               </label>
             </div>
             <div class="filter-item filter-item-wide">
-              <div class="filter-static-note">裏AI候補は常時表示</div>
-            </div>
-            <div class="filter-item filter-item-wide">
               <label class="filter-check">
                 <input type="checkbox" name="show_all_race" value="1" {checked_show_all_race}>
                 全レース検証も表示
@@ -2449,6 +2451,10 @@ def render_home(races, summary, message_type="", message_text="", show_closed=Fa
             <div class="filter-item">
               <label for="ai_rating">AI評価で絞る</label>
               <select name="ai_rating" id="ai_rating">{ai_rating_options_html}</select>
+            </div>
+            <div class="filter-item">
+              <label for="base_quality">土台で絞る</label>
+              <select name="base_quality" id="base_quality">{base_quality_options_html}</select>
             </div>
             <div class="filter-actions">
               <button type="submit" class="filter-btn">フィルター適用</button>
@@ -3976,20 +3982,23 @@ def healthz():
 @app.route("/")
 def index():
     show_closed = request.args.get("show_closed", "").strip() == "1"
-    show_shadow = True  # 裏AI候補は常時表示
     show_all_race = request.args.get("show_all_race", "").strip() == "1"
     ai_rating_filter = request.args.get("ai_rating", "").strip()
-    official_rating_filter = request.args.get("official_rating", "★★★★★").strip() or "★★★★★"
+    official_rating_filter = request.args.get("official_rating", "pickup").strip() or "pickup"
+    base_quality_filter = request.args.get("base_quality", "").strip()
     if ai_rating_filter not in AI_RATING_OPTIONS:
         ai_rating_filter = ""
     official_rating_values = {value for value, _label in OFFICIAL_RATING_FILTER_OPTIONS}
     if official_rating_filter not in official_rating_values:
         official_rating_filter = "pickup"
+    base_quality_values = {value for value, _label in BASE_QUALITY_FILTER_OPTIONS}
+    if base_quality_filter not in base_quality_values:
+        base_quality_filter = ""
     races = get_filtered_today_races(
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
-        show_shadow=show_shadow,
+        base_quality_filter=base_quality_filter,
         show_all_race=show_all_race,
     )
     summary = get_summary_by_date(today_text())
@@ -4001,7 +4010,7 @@ def index():
         show_closed=show_closed,
         ai_rating_filter=ai_rating_filter,
         official_rating_filter=official_rating_filter,
-        show_shadow=show_shadow,
+        base_quality_filter=base_quality_filter,
         show_all_race=show_all_race,
     )
 
@@ -4033,9 +4042,7 @@ def save():
     if not is_not_started(race["time"]):
         redirect_params.append("show_closed=1")
     source_for_redirect = normalize_candidate_source(race.get("candidate_source"))
-    if source_for_redirect == "shadow_ai":
-        redirect_params.append("show_shadow=1")
-    elif source_for_redirect == "all_race_ai":
+    if source_for_redirect == "all_race_ai":
         redirect_params.append("show_all_race=1")
     redirect_base = "/" + (("?" + "&".join(redirect_params)) if redirect_params else "")
     sep = "&" if "?" in redirect_base else "?"
