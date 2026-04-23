@@ -2616,16 +2616,22 @@ def augment_final_triplets_with_addons(
     base_hold_strength=0.0,
     signal_strength=0.0,
     official_selection="",
-    max_total=9,
+    max_total=6,
 ):
     """
-    購入候補を最大9点まで拡張する。
-      1〜6点目: これまで通りのAI6点
-      7点目: 同頭の2着3着逆目 最大1点
-      8点目: base穴戻し 最大1点
-      9点目: 公式薄目 最大1点
+    v10.56:
+    追加候補7〜9点は使わず、AI6点のみを返す。
+    旧アドオン関数は検証用に残すが、max_total<=6 の時は呼ばない。
     """
     core = append_unique_triplets(core_items or [], [], max_len=6)
+    if int(max_total or 6) <= 6:
+        return {
+            "items": core[:6],
+            "reverse_addons": [],
+            "base_addons": [],
+            "official_addons": [],
+            "label_text": "",
+        }
     reverse_addons = build_reverse_addon_candidates(core, scored_rows, role_maps, limit=1)
     after_reverse = append_unique_triplets(core, reverse_addons, max_len=max_total)
 
@@ -4557,7 +4563,7 @@ def generate_top_triplets(
     official_selection="",
     race_no=0,
 ):
-    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material, base_info=base_info, race_no=0)
+    role_maps = role_maps or build_role_score_maps(venue, exhibition_info, weather_info, foot_material, base_info=base_info, race_no=race_no)
     scenario_material = scenario_material or build_turn_scenario_material(
         venue, exhibition_info, weather_info, foot_material, role_maps
     )
@@ -4759,7 +4765,7 @@ def generate_top_triplets(
         base_hold_strength=base_hold_strength,
         signal_strength=signal_strength,
         official_selection=official_selection,
-        max_total=9,
+        max_total=6,
     )
     final_items = addon_result["items"]
 
@@ -4772,7 +4778,7 @@ def generate_top_triplets(
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_quality={base_quality_label} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
-        f"official_weight_off=1 official_addon={len(addon_result.get('official_addons') or [])} "
+        f"official_weight_off=1 ai6_only=1 official_addon={len(addon_result.get('official_addons') or [])} "
         f"addons={addon_result.get('label_text','')} "
         f"base={base_triplets[:3]} official={raw_official_triplets[:3]} final={final_items}"
     )
@@ -4838,7 +4844,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_v10_55_buyband_guard")
+    log("[collector_version] collector_v10_56_ai6_only")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -5214,8 +5220,6 @@ def build_candidates():
             race_no=race_no,
         )
         final_selection_items = selection_triplets(final_ai_selection)
-        if len(final_selection_items) > 6:
-            latest_reason_parts.append(f"追加候補:{' / '.join(final_selection_items[6:9])}")
         final_ai_score = stabilize_final_ai_score(
             base_ai_score,
             analyzed["raw_final_ai_score"],
