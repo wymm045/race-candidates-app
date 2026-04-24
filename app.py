@@ -4,6 +4,7 @@ import re
 import json
 import csv
 import io
+import html as html_lib
 from urllib.parse import quote
 
 import psycopg2
@@ -1028,6 +1029,197 @@ def render_detail_material_chips(detail_text):
     chips = "".join([f'<div class="detail-chip">{item}</div>' for item in items])
     return f'<div class="detail-chip-wrap">{chips}</div>'
 
+def parse_preinfo_materials(reason_text):
+    """
+    v10.59 表示専用。
+    collector_v10.58 が latest_reason_text に混ぜる
+    チルト/部品交換/安定板/ピットレポートを、DB列追加なしで見やすく分ける。
+    保存・買い目・凍結処理には一切触らない。
+    """
+    s = str(reason_text or "").strip()
+    data = {
+        "tilt": "",
+        "tilt_high": "",
+        "parts": "",
+        "propeller": "",
+        "stabilizer": False,
+        "pit": "",
+    }
+    if not s:
+        return data
+
+    if "安定板使用" in s:
+        data["stabilizer"] = True
+
+    def clean_piece(value):
+        value = str(value or "").strip()
+        value = re.sub(r"\s+", " ", value)
+        return value.strip(" /｜|")
+
+    m = re.search(r"チルト高:([^/]+)", s)
+    if m:
+        data["tilt_high"] = clean_piece(m.group(1))
+
+    m = re.search(r"チルト:([^/]+)", s)
+    if m:
+        data["tilt"] = clean_piece(m.group(1))
+
+    m = re.search(r"部品交換:([^/]+)", s)
+    if m:
+        data["parts"] = clean_piece(m.group(1))
+
+    m = re.search(r"新ペラ:([^/]+)", s)
+    if m:
+        data["propeller"] = clean_piece(m.group(1))
+
+    m = re.search(r"ピット:([^\n]+)", s)
+    if m:
+        pit = clean_piece(m.group(1))
+        pit = re.split(r"\s+/\s+(?:base土台|足:|整備:|チルト|部品交換|安定板)", pit)[0]
+        data["pit"] = pit[:160]
+
+    return data
+
+
+def _split_lane_groups(raw):
+    """
+    "1:-0.5,2:0.0" や "6:ピストン,リング" をlaneごとに分ける表示専用ヘルパー。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    matches = list(re.finditer(r"(?:^|[,/\s])([1-6])\s*[:：]", text))
+    groups = []
+    for i, m in enumerate(matches):
+        lane = int(m.group(1))
+        value_start = m.end()
+        value_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        value = text[value_start:value_end].strip(" ,/｜|")
+        if value:
+            groups.append((lane, value))
+    return groups
+
+
+def _format_tilt_text(raw):
+    groups = _split_lane_groups(raw)
+    if not groups:
+        return str(raw or "").strip()
+    parts = []
+    for lane, value in groups[:6]:
+        v = str(value).strip()
+        if v in {"0", "+0"}:
+            v = "0.0"
+        parts.append(f"{lane}号艇 {v}")
+    return " / ".join(parts)
+
+
+def _format_tilt_high_text(raw):
+    groups = _split_lane_groups(raw)
+    if not groups:
+        return str(raw or "").strip()
+    parts = []
+    for lane, value in groups[:4]:
+        v = str(value).strip()
+        if not v.startswith("-") and not v.startswith("+") and v not in {"0", "0.0"}:
+            v = "+" + v
+        parts.append(f"{lane}号艇 {v}")
+    return " / ".join(parts)
+
+
+def _format_parts_text(raw):
+    groups = _split_lane_groups(raw)
+    if not groups:
+        return str(raw or "").strip().replace(",", "・")
+    parts = []
+    for lane, value in groups[:4]:
+        body = str(value).strip()
+        body = re.sub(r"\s*[,、]\s*", "・", body)
+        body = re.sub(r"・+", "・", body).strip("・")
+        if len(body) > 42:
+            body = body[:42] + "…"
+        parts.append(f"{lane}号艇 {body}")
+    return " / ".join(parts)
+
+
+def _format_pit_text(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    groups = []
+    for part in re.split(r"\s*/\s*", text):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        lane_part, body = part.split(":", 1)
+        try:
+            lane = int(lane_part.strip())
+        except Exception:
+            continue
+        labels = []
+        for token in re.split(r"[|｜]", body):
+            t = token.strip()
+            if not t:
+                continue
+            mark = ""
+            if t.startswith("+"):
+                mark = "○"
+                t = t[1:].strip()
+            elif t.startswith("-") or t.startswith("▲"):
+                mark = "△"
+                t = t[1:].strip()
+            labels.append(f"{t}{mark}" if mark else t)
+        if labels:
+            groups.append(f"{lane}号艇 " + "・".join(labels[:3]))
+    if groups:
+        return " / ".join(groups[:4])
+    return text[:160]
+
+
+def render_preinfo_materials_html(reason_text):
+    data = parse_preinfo_materials(reason_text)
+    chips = []
+
+    def esc(value):
+        return html_lib.escape(str(value or ""), quote=True)
+
+    def add_chip(cls, label, value="", hint=""):
+        label_html = esc(label)
+        value_html = esc(value)
+        hint_html = esc(hint)
+        hint_part = f'<span class="preinfo-chip-hint">{hint_html}</span>' if hint_html else ""
+        if value_html:
+            chips.append(
+                f'<span class="preinfo-chip {cls}">'
+                f'<span class="preinfo-chip-label">{label_html}</span>'
+                f'<span class="preinfo-chip-value">{value_html}</span>'
+                f'{hint_part}'
+                f'</span>'
+            )
+        else:
+            chips.append(
+                f'<span class="preinfo-chip {cls}">'
+                f'<span class="preinfo-chip-label">{label_html}</span>'
+                f'{hint_part}'
+                f'</span>'
+            )
+
+    if data.get("stabilizer"):
+        add_chip("preinfo-chip-stabilizer", "安定板あり", hint="内寄り注意・外は少し割引")
+    if data.get("tilt"):
+        add_chip("preinfo-chip-tilt", "チルト一覧", _format_tilt_text(data["tilt"]))
+    if data.get("tilt_high"):
+        add_chip("preinfo-chip-tilt-high", "伸び注意", _format_tilt_high_text(data["tilt_high"]), hint="高チルト")
+    if data.get("parts"):
+        add_chip("preinfo-chip-parts", "整備変更", _format_parts_text(data["parts"]), hint="良化/悪化は要確認")
+    if data.get("propeller"):
+        add_chip("preinfo-chip-parts", "新ペラ", _format_parts_text(data["propeller"]), hint="変化あり")
+    if data.get("pit"):
+        add_chip("preinfo-chip-pit", "ピット気配", _format_pit_text(data["pit"]), hint="○良さげ・△不安")
+
+    if not chips:
+        return '<div class="detail-chip-empty">未取得</div>'
+
+    return f'<div class="preinfo-chip-wrap">{"".join(chips)}</div>'
 
 def final_rank_badge(rank_text):
     s = (rank_text or "").strip()
@@ -2051,6 +2243,7 @@ def build_card_html(r, is_history=False, race_date=""):
         or ""
     )
     display_ai_detail_text = display_text(r.get("latest_reason_text"), "") or display_text(r.get("base_reason_text"), "")
+    preinfo_materials_html = render_preinfo_materials_html(r.get("latest_reason_text", ""))
     render_r = dict(r)
     render_r["ai_selection"] = display_ai_selection
     selection_compare_html = render_selection_compare_html(render_r, race_id_key)
@@ -2189,6 +2382,7 @@ def build_card_html(r, is_history=False, race_date=""):
 
           <details class="detail-accordion">
             <summary>展示・水面・選手材料を開く</summary>
+            <div class="row"><span class="label">直前追加</span><span class="value">{preinfo_materials_html}</span></div>
             <div class="row"><span class="label">水面気象</span><span class="value">{weather_summary_html}</span></div>
             <div class="row row-player-rank"><span class="label">選手・材料</span><span class="value">{player_rank_summary_html}</span></div>
             <div class="row"><span class="label">展示タイム</span><span class="value">{exhibition_time_html}</span></div>
@@ -2842,6 +3036,16 @@ def render_layout(title, body_html):
       .player-evidence-chip-neutral{background:#f2f4f7;border-color:#d0d5dd;color:#475467}
       .picked-chip-wrap,.ex-chip-wrap,.lane-score-wrap,.detail-chip-wrap,.weather-chip-wrap{display:flex;gap:8px;flex-wrap:wrap}
       .picked-chip,.ex-chip,.lane-score-chip,.detail-chip,.weather-chip{padding:6px 8px;border-radius:8px;background:#f8fafc;border:1px solid #eaecf0}
+      .preinfo-chip-wrap{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+      .preinfo-chip{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:14px;border:1px solid #eaecf0;background:#f8fafc;font-size:12px;font-weight:800;line-height:1.3;max-width:100%;white-space:normal}
+      .preinfo-chip-hint{font-size:11px;font-weight:700;opacity:.72}
+      .preinfo-chip-label{white-space:nowrap}
+      .preinfo-chip-value{font-weight:700;overflow-wrap:anywhere}
+      .preinfo-chip-tilt{background:#eef4ff;border-color:#cfe0ff;color:#175cd3}
+      .preinfo-chip-tilt-high{background:#fff6e5;border-color:#f5deb3;color:#b54708}
+      .preinfo-chip-parts{background:#fef3f2;border-color:#fecdca;color:#b42318}
+      .preinfo-chip-stabilizer{background:#f4ebff;border-color:#e0d2ff;color:#6941c6}
+      .preinfo-chip-pit{background:#ecfdf3;border-color:#abefc6;color:#027a48}
       .picked-chip{white-space:nowrap}
       .weather-chip{font-weight:700;color:#344054}
       .weather-chip-windtype{background:#eef4ff;color:#175cd3;border-color:#cfe0ff}
