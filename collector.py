@@ -8,8 +8,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_v10_57_ai6_base_guard.py
-# v10.57: AI6点固定のまま、本買い帯(公式★5×AI5×base土台○×4R以降)だけbase上位2点をガード付きで残しやすくする。
+# collector_v10_58_preinfo_pit_tilt_fix3.py
+# v10.58 fix3: v10.57をベースに、チルト/部品交換/安定板/ピットレポートを取得。
+# fix3: チルトは「展示タイム直後のチルト値」または「チルト列の小数表記」だけ採用し、艇番/進入/着順の1/2/3を誤取得しない。
+#         まずは弱補正+理由表示。AI6点固定・追加候補なしは維持。
 
 JST = timezone(timedelta(hours=9))
 
@@ -178,6 +180,11 @@ RESULT_REPAIR_LIMIT = int(os.environ.get("RESULT_REPAIR_LIMIT", "48"))
 ENABLE_ALL_RACE_LIVE = os.environ.get("ENABLE_ALL_RACE_LIVE", "0").strip() == "1"
 ALL_RACE_RESULT_PENDING_LIMIT = max(0, int(os.environ.get("ALL_RACE_RESULT_PENDING_LIMIT", "80")))
 
+# v10.58: 明日から導入する直前材料。
+# beforeinfoと同じ公式ページ周辺から取れるものだけを軽く使う。
+ENABLE_EQUIPMENT_INFO = os.environ.get("ENABLE_EQUIPMENT_INFO", "1").strip() == "1"
+ENABLE_PIT_REPORT = os.environ.get("ENABLE_PIT_REPORT", "1").strip() == "1"
+
 
 def is_recent_past_race(hhmm, lookback_minutes=RESULT_LOOKBACK_MINUTES):
     # 日付をまたいで前日分を修復する場合、時刻差がマイナスになってしまうので
@@ -255,6 +262,11 @@ def build_official_url(jcd, race_no=1):
 def build_beforeinfo_url(jcd, race_no):
     qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
     return f"https://boatrace.jp/owpc/pc/race/beforeinfo?{qs}"
+
+
+def build_pitreport_url(jcd, race_no):
+    qs = urlencode({"hd": today_str(), "jcd": jcd, "rno": race_no})
+    return f"https://boatrace.jp/owpc/pc/race/pitreport?{qs}"
 
 
 def build_result_url(jcd, race_no):
@@ -938,8 +950,366 @@ def parse_start_info_from_lines(lines):
     }
 
 
-def build_foot_material(exhibition_info, start_info, weather_info=None):
+
+TILT_ALLOWED_TEXTS = {
+    "-1.0", "-0.5", "0.0", "+0.5", "0.5", "+1.0", "1.0", "+1.5", "1.5", "+2.0", "2.0", "+2.5", "2.5", "+3.0", "3.0",
+}
+
+
+def normalize_tilt_token(raw):
+    s = str(raw or "").strip().replace("−", "-").replace("－", "-")
+    if s in {"-.5", "-0.5"}:
+        return "-0.5"
+    if s in {"+.5", "+0.5", "0.5", ".5"}:
+        return "0.5"
+    # 艇番・進入・着順の 1/2/3 をチルトとして拾わないため、整数単体は採用しない。
+    if re.fullmatch(r"[+-]?\d", s):
+        return ""
+    if not re.fullmatch(r"[+-]?\d\.\d", s):
+        return ""
+    if s.startswith("+"):
+        s = s[1:]
+    return s if s in {x.replace("+", "") for x in TILT_ALLOWED_TEXTS} else ""
+
+
+def extract_tilt_value(text):
+    """チルト値だけを安全に拾う。整数単体の1/2/3は艇番・進入誤取得防止のため禁止。"""
+    s = str(text or "").replace("−", "-").replace("－", "-")
+    candidates = []
+    for raw in re.findall(r"(?<!\d)([+-]?\d?\.\d)(?!\d)", s):
+        token = normalize_tilt_token(raw)
+        if not token:
+            continue
+        try:
+            v = float(token)
+        except Exception:
+            continue
+        if -1.0 <= v <= 3.0 and abs(v * 2 - round(v * 2)) < 0.001:
+            candidates.append(v)
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def extract_tilt_after_exhibition_time(text):
+    """
+    beforeinfoの艇別行は「展示タイム(6.xx) の直後にチルト(-0.5/0.0/0.5...)」が出る。
+    この並びだけを採用し、前走成績の進入1.0/2.0等は拾わない。
+    """
+    s = str(text or "").replace("−", "-").replace("－", "-")
+    # 展示タイム 6.20〜8.50 の直後30文字だけを見る
+    for m in re.finditer(r"(?<!\d)([6-8]\.\d{2})(?!\d)", s):
+        try:
+            exhibition_time = float(m.group(1))
+        except Exception:
+            continue
+        if not is_exhibition_time_value(exhibition_time):
+            continue
+        tail = s[m.end(): m.end() + 30]
+        tm = re.search(r"(?<!\d)([+-]?\d?\.\d)(?!\d)", tail)
+        if not tm:
+            continue
+        token = normalize_tilt_token(tm.group(1))
+        if not token:
+            continue
+        try:
+            v = float(token)
+        except Exception:
+            continue
+        if -1.0 <= v <= 3.0 and abs(v * 2 - round(v * 2)) < 0.001:
+            return v
+    return None
+
+
+PART_KEYWORDS = [
+    "ピストン", "リング", "ピストンリング", "シリンダ", "シリンダー",
+    "キャリア", "キャリアボデー", "ギヤ", "ギア", "ギヤケース",
+    "電気", "電気一式", "キャブ", "キャブレタ", "シャフト", "クランク",
+    "プロペラ", "ペラ", "新プロペラ", "新ペラ",
+]
+
+
+def normalize_part_text(text):
+    s = str(text or "").strip()
+    if not s or s in {"-", "—", "なし", "無し"}:
+        return ""
+    hits = []
+    for word in PART_KEYWORDS:
+        if word in s and word not in hits:
+            hits.append(word)
+    if not hits:
+        return ""
+    joined = ",".join(hits)
+    joined = joined.replace("ピストン,ピストンリング", "ピストンリング")
+    joined = joined.replace("ギヤ,ギヤケース", "ギヤケース")
+    joined = joined.replace("プロペラ,新プロペラ", "新プロペラ")
+    joined = joined.replace("ペラ,新ペラ", "新ペラ")
+    return joined
+
+
+def parse_equipment_info_from_soup(soup, lines=None):
+    """
+    公式beforeinfoからチルト/部品交換/プロペラ新/安定板を拾う。
+    v10.58 fix3:
+      - チルト列または展示タイム直後の小数チルト値だけ採用
+      - 行頭の艇番/コース番号/前走進入の1/2/3をチルト値として誤取得しない
+      - fallbackは「展示タイム→チルト」の並び、または「チルト」ラベル近辺だけ読む
+    """
+    lines = lines or normalize_lines_from_soup(soup)
+    page_text = " ".join(lines)
+    equipment = {
+        "tilt_map": {},
+        "parts_map": {},
+        "propeller_map": {},
+        "stabilizer": bool("安定板" in page_text),
+        "raw_text": "",
+    }
+
+    def extract_labeled_tilt(text):
+        s = str(text or "").replace("−", "-").replace("－", "-")
+        # 「チルト 0」「チルト:-0.5」「チルト　0.5」のようなラベル付きだけ拾う。
+        m = re.search(r"チルト\s*[:：]?\s*(-?\d(?:\.\d)?)", s)
+        if not m:
+            return None
+        return extract_tilt_value(m.group(1))
+
+    def find_lane_from_cells(texts):
+        # 原則、最初の数セルだけを見る。行中の部品番号などを艇番扱いしない。
+        for txt in texts[:3]:
+            m = re.fullmatch(r"\s*([1-6])\s*", str(txt or ""))
+            if m:
+                return int(m.group(1))
+        joined_head = " ".join([str(x or "") for x in texts[:3]])
+        m = re.match(r"\s*([1-6])\b", joined_head)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def normalize_header(text):
+        return re.sub(r"\s+", "", str(text or ""))
+
+    # 1) table単位で「チルト」「部品交換」「プロペラ」列を特定して読む。
+    #    ここで列を特定しないまま全セルから数値を拾うと、
+    #    艇番の 1/2/3 をチルト値として誤取得するため禁止。
+    for table in soup.find_all("table"):
+        header_texts = []
+        header_cells = []
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["td", "th"], recursive=False)
+            if not cells:
+                continue
+            texts = [c.get_text(" ", strip=True) for c in cells]
+            joined = " ".join(texts)
+            if "チルト" in joined or "部品交換" in joined or "プロペラ" in joined:
+                header_texts = texts
+                header_cells = cells
+                break
+
+        if not header_texts:
+            continue
+
+        tilt_idx = None
+        parts_idx = None
+        prop_idx = None
+        for idx, txt in enumerate(header_texts):
+            h = normalize_header(txt)
+            if "チルト" in h:
+                tilt_idx = idx
+            if "部品交換" in h:
+                parts_idx = idx
+            if "プロペラ" in h:
+                prop_idx = idx
+
+        if tilt_idx is None and parts_idx is None and prop_idx is None:
+            continue
+
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["td", "th"], recursive=False)
+            if not cells:
+                continue
+            texts = [c.get_text(" ", strip=True) for c in cells]
+            row_text = " ".join(texts)
+            if row_text == " ".join(header_texts):
+                continue
+
+            lane = find_lane_from_cells(texts)
+            if lane is None:
+                continue
+
+            # チルト列だけを読む。列ズレ対策として「展示タイム直後のチルト値」も見る。
+            # 整数単体の 1/2/3 は艇番・進入誤取得防止のため extract_tilt_value 側で不採用。
+            tilt = None
+            if tilt_idx is not None and tilt_idx < len(texts):
+                tilt = extract_tilt_value(texts[tilt_idx])
+            if tilt is None:
+                tilt = extract_tilt_after_exhibition_time(row_text)
+            if tilt is None:
+                tilt = extract_labeled_tilt(row_text)
+            if tilt is not None:
+                equipment["tilt_map"][lane] = tilt
+
+            # 部品交換列があればそこを優先。無ければ行全体からキーワードだけ拾う。
+            part_text = ""
+            if parts_idx is not None and parts_idx < len(texts):
+                part_text = normalize_part_text(texts[parts_idx])
+            if not part_text:
+                part_text = normalize_part_text(row_text)
+            if part_text:
+                equipment["parts_map"][lane] = part_text
+
+            prop_text = ""
+            if prop_idx is not None and prop_idx < len(texts):
+                prop_text = texts[prop_idx]
+            if "新プロペラ" in prop_text or "新ペラ" in prop_text or "新プロペラ" in row_text or "新ペラ" in row_text:
+                equipment["propeller_map"][lane] = "新ペラ"
+
+    # 2) tableで拾えなかった場合だけ、lines fallback。
+    #    ここも「チルト」ラベルがある行/近辺だけを対象にし、艇番をチルトとして拾わない。
+    if len(equipment["tilt_map"]) < 3 or len(equipment["parts_map"]) < 1:
+        lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
+        for idx, lane in lane_positions:
+            seg = lines[idx: idx + 25]
+            joined = " ".join(seg)
+
+            if lane not in equipment["tilt_map"]:
+                tilt = extract_tilt_after_exhibition_time(joined)
+                # ラベル付きのときだけ補助的に読む
+                if tilt is None and "チルト" in joined:
+                    tilt = extract_labeled_tilt(joined)
+                    if tilt is None:
+                        # チルトという単語の後ろ20文字だけ見る。ただし整数単体は採用しない。
+                        m = re.search(r"チルト(.{0,20})", joined)
+                        if m:
+                            tilt = extract_tilt_value(m.group(1))
+                if tilt is not None:
+                    equipment["tilt_map"][lane] = tilt
+
+            if lane not in equipment["parts_map"]:
+                part_text = normalize_part_text(joined)
+                if part_text:
+                    equipment["parts_map"][lane] = part_text
+
+            if lane not in equipment["propeller_map"] and ("新プロペラ" in joined or "新ペラ" in joined):
+                equipment["propeller_map"][lane] = "新ペラ"
+
+    reason_parts = []
+    if equipment["stabilizer"]:
+        reason_parts.append("安定板使用")
+    if equipment["tilt_map"]:
+        tilt_bits = [f"{lane}:{equipment['tilt_map'][lane]:g}" for lane in sorted(equipment["tilt_map"])]
+        reason_parts.append("チルト:" + ",".join(tilt_bits[:6]))
+    if equipment["parts_map"]:
+        part_bits = [f"{lane}:{equipment['parts_map'][lane]}" for lane in sorted(equipment["parts_map"])]
+        reason_parts.append("部品交換:" + ",".join(part_bits[:4]))
+    if equipment["propeller_map"]:
+        prop_bits = [f"{lane}:{equipment['propeller_map'][lane]}" for lane in sorted(equipment["propeller_map"])]
+        reason_parts.append("ペラ:" + ",".join(prop_bits[:4]))
+    equipment["raw_text"] = " / ".join(reason_parts[:4])
+    return equipment
+
+PIT_POSITIVE_WORDS = ["良い", "いい", "悪くない", "上向", "上向き", "伸びる", "余裕", "力強", "スムーズ", "押す", "反応", "合っている"]
+PIT_NEGATIVE_WORDS = ["重い", "悪い", "弱い", "足りない", "劣勢", "鈍い", "不安", "合ってない", "乗りづら", "流れる", "下がる"]
+PIT_CATEGORIES = {
+    "伸び": ["伸び", "直線"],
+    "出足": ["出足", "出ていく", "押し"],
+    "行き足": ["行き足", "行足", "起こし"],
+    "回り足": ["回り足", "ターン", "回って", "旋回", "乗り心地"],
+    "ピット離れ": ["ピット離れ", "ピット"],
+}
+
+
+def score_pit_comment(comment):
+    s = str(comment or "")
+    if not s:
+        return 0.0, []
+    tags = []
+    score = 0.0
+    for label, keys in PIT_CATEGORIES.items():
+        if not any(k in s for k in keys):
+            continue
+        pos = any(w in s for w in PIT_POSITIVE_WORDS)
+        neg = any(w in s for w in PIT_NEGATIVE_WORDS)
+        if pos and not neg:
+            tags.append(f"+{label}")
+            score += 0.035
+        elif neg and not pos:
+            tags.append(f"-{label}")
+            score -= 0.040
+        else:
+            tags.append(label)
+    return clamp(score, -0.12, 0.12), tags[:4]
+
+
+def parse_pitreport_info_from_html(html):
+    soup = BeautifulSoup(html or "", "html.parser")
+    info = {"lane_scores": {lane: 0.0 for lane in range(1, 7)}, "tag_map": {}, "reason_text": ""}
+    if not html:
+        return info
+
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if not cells:
+            continue
+        texts = [c.get_text(" ", strip=True) for c in cells]
+        row_text = " ".join(texts)
+        lane = None
+        for txt in texts[:3]:
+            if re.fullmatch(r"[1-6]", str(txt or "").strip()):
+                lane = int(str(txt).strip())
+                break
+        if lane is None:
+            m = re.match(r"\s*([1-6])\b", row_text)
+            if m:
+                lane = int(m.group(1))
+        if lane is None:
+            continue
+        score, tags = score_pit_comment(row_text)
+        if tags:
+            info["lane_scores"][lane] += score
+            info["tag_map"].setdefault(lane, [])
+            for t in tags:
+                if t not in info["tag_map"][lane]:
+                    info["tag_map"][lane].append(t)
+
+    if not info["tag_map"]:
+        lines = normalize_lines_from_soup(soup)
+        lane_positions = [(idx, int(line)) for idx, line in enumerate(lines) if re.fullmatch(r"[1-6]", line)]
+        for idx, lane in lane_positions:
+            seg = " ".join(lines[idx: idx + 20])
+            score, tags = score_pit_comment(seg)
+            if tags:
+                info["lane_scores"][lane] += score
+                info["tag_map"][lane] = tags
+
+    reason_bits = []
+    for lane in sorted(info["tag_map"]):
+        tags = info["tag_map"].get(lane) or []
+        if tags:
+            reason_bits.append(f"{lane}:{'|'.join(tags[:3])}")
+    if reason_bits:
+        info["reason_text"] = "ピット:" + " / ".join(reason_bits[:4])
+    return info
+
+
+def fetch_pitreport_info(jcd, race_no):
+    if not ENABLE_PIT_REPORT:
+        return {"lane_scores": {lane: 0.0 for lane in range(1, 7)}, "tag_map": {}, "reason_text": ""}
+    url = build_pitreport_url(jcd, race_no)
+    try:
+        html = fetch_html(url, timeout=(5, 10), max_retries=1)
+    except Exception as e:
+        log(f"[pitreport_skip] jcd={jcd} race_no={race_no} err={e}")
+        return {"lane_scores": {lane: 0.0 for lane in range(1, 7)}, "tag_map": {}, "reason_text": ""}
+    info = parse_pitreport_info_from_html(html)
+    if info.get("reason_text"):
+        log(f"[pitreport_ok] jcd={jcd} race_no={race_no} {info.get('reason_text')}")
+    return info
+
+
+def build_foot_material(exhibition_info, start_info, weather_info=None, equipment_info=None, pitreport_info=None):
     weather_info = weather_info or {}
+    equipment_info = equipment_info or {}
+    pitreport_info = pitreport_info or {}
     times = exhibition_info.get("times", []) if exhibition_info else []
     ranks = exhibition_info.get("ranks", {}) if exhibition_info else {}
     st_map = start_info.get("st_map", {}) if start_info else {}
@@ -1069,6 +1439,64 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         for lane in [5, 6]:
             lane_scores[lane] -= abs(water_state_score) * 0.18
 
+    # v10.58: チルト/部品交換/安定板/ピットレポートを弱く反映。
+    # 強い売買判断ではなく、base上位を消すかどうかの確認材料に寄せる。
+    tilt_map = equipment_info.get("tilt_map", {}) or {}
+    parts_map = equipment_info.get("parts_map", {}) or {}
+    propeller_map = equipment_info.get("propeller_map", {}) or {}
+    if equipment_info.get("stabilizer"):
+        reasons.append("安定板使用")
+        lane_scores[1] += 0.025
+        lane_scores[2] += 0.010
+        lane_scores[5] -= 0.010
+        lane_scores[6] -= 0.020
+
+    tilt_reason = []
+    for lane, tilt in sorted(tilt_map.items()):
+        try:
+            lane = int(lane)
+            tilt = float(tilt)
+        except Exception:
+            continue
+        if tilt >= 1.5:
+            lane_scores[lane] += 0.035 if lane in {4, 5, 6} else 0.010
+            tilt_reason.append(f"{lane}:{tilt:g}")
+        elif tilt >= 1.0:
+            lane_scores[lane] += 0.020 if lane in {4, 5, 6} else 0.005
+            tilt_reason.append(f"{lane}:{tilt:g}")
+        elif tilt <= -0.5:
+            lane_scores[lane] += 0.008 if lane in {1, 2} else 0.000
+    if tilt_reason:
+        reasons.append("チルト高:" + ",".join(tilt_reason[:4]))
+
+    if parts_map:
+        reasons.append("部品交換:" + ",".join([f"{lane}" for lane in sorted(parts_map)[:4]]))
+        for lane in parts_map:
+            try:
+                lane = int(lane)
+            except Exception:
+                continue
+            lane_scores[lane] -= 0.018
+
+    if propeller_map:
+        reasons.append("新ペラ:" + ",".join([str(lane) for lane in sorted(propeller_map)[:4]]))
+        for lane in propeller_map:
+            try:
+                lane = int(lane)
+            except Exception:
+                continue
+            lane_scores[lane] -= 0.010
+
+    pit_lane_scores = pitreport_info.get("lane_scores", {}) or {}
+    for lane, pit_score in pit_lane_scores.items():
+        try:
+            lane_scores[int(lane)] += clamp(float(pit_score or 0), -0.08, 0.08)
+        except Exception:
+            pass
+    pit_reason = str(pitreport_info.get("reason_text") or "").strip()
+    if pit_reason:
+        reasons.append(pit_reason)
+
     sorted_lane_scores = sorted(lane_scores.items(), key=lambda x: x[1], reverse=True)
     best_lane, best_score = sorted_lane_scores[0]
     second_score = sorted_lane_scores[1][1] if len(sorted_lane_scores) >= 2 else 0.0
@@ -1102,7 +1530,7 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         merged_reasons.append(entry_reason_text)
     merged_reasons.extend(top_lane_reasons)
     unique_reasons = list(dict.fromkeys([x for x in merged_reasons if x]))
-    reason_text = " / ".join(unique_reasons[:4])
+    reason_text = " / ".join(unique_reasons[:6])
 
     return {
         "lane_scores": lane_scores,
@@ -1118,6 +1546,8 @@ def build_foot_material(exhibition_info, start_info, weather_info=None):
         "pulled_back_lanes": pulled_back_lanes,
         "entry_severity": entry_severity,
         "entry_reason_text": entry_reason_text,
+        "equipment_info": equipment_info,
+        "pitreport_info": pitreport_info,
     }
 
 
@@ -1146,6 +1576,8 @@ def parse_beforeinfo_for_key(jcd, race_no):
             "entry_severity": 0.0,
             "entry_reason_text": "",
         },
+        "equipment": {"tilt_map": {}, "parts_map": {}, "propeller_map": {}, "stabilizer": False, "raw_text": ""},
+        "pitreport": {"lane_scores": {lane: 0.0 for lane in range(1, 7)}, "tag_map": {}, "reason_text": ""},
     }
     try:
         html = fetch_html(beforeinfo_url)
@@ -1163,6 +1595,11 @@ def parse_beforeinfo_for_key(jcd, race_no):
 
     weather_info = parse_weather_info_from_lines(lines)
     start_info = parse_start_info_from_lines(lines)
+    equipment_info = parse_equipment_info_from_soup(soup, lines) if ENABLE_EQUIPMENT_INFO else empty_info["equipment"]
+    pitreport_info = fetch_pitreport_info(jcd, race_no) if ENABLE_PIT_REPORT else empty_info["pitreport"]
+
+    if equipment_info.get("raw_text"):
+        log(f"[equipment_ok] jcd={jcd} race_no={race_no} {equipment_info.get('raw_text')}")
 
     return (jcd, race_no), {
         "exhibition": {
@@ -1171,6 +1608,8 @@ def parse_beforeinfo_for_key(jcd, race_no):
         },
         "weather": weather_info,
         "start_info": start_info,
+        "equipment": equipment_info,
+        "pitreport": pitreport_info,
     }
 
 
@@ -5040,7 +5479,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_v10_57_ai6_base_guard")
+    log("[collector_version] collector_v10_58_preinfo_pit_tilt_fix3")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
@@ -5308,7 +5747,13 @@ def build_candidates():
                 for k in ["weather", "wind_speed", "wave_height", "wind_type", "wind_dir"]
             )
             if has_exhibition or has_weather:
-                foot_material = build_foot_material(exhibition_info, start_info, weather_info)
+                foot_material = build_foot_material(
+                    exhibition_info,
+                    start_info,
+                    weather_info,
+                    beforeinfo.get("equipment", {}),
+                    beforeinfo.get("pitreport", {}),
+                )
                 candidate.update({
                     "exhibition": exhibition_info.get("times", []),
                     "exhibition_rank": exhibition_rank_text_from_map(exhibition_info.get("ranks", {})),
@@ -5338,7 +5783,13 @@ def build_candidates():
         weather_info = beforeinfo.get("weather", {})
         start_info = beforeinfo.get("start_info", {"st_map": {}, "st_flag_map": {}})
 
-        foot_material = build_foot_material(exhibition_info, start_info, weather_info)
+        foot_material = build_foot_material(
+            exhibition_info,
+            start_info,
+            weather_info,
+            beforeinfo.get("equipment", {}),
+            beforeinfo.get("pitreport", {}),
+        )
         signal_metrics = calculate_latest_signal_metrics(exhibition_info, foot_material)
         analyzed = analyze_latest(
             base_ai_score,
@@ -5392,6 +5843,12 @@ def build_candidates():
             latest_reason_parts.append("base危険で買い上げ抑制")
         if analyzed["latest_reason_text"]:
             latest_reason_parts.append(f"直前:{analyzed['latest_reason_text']}")
+        equipment_text = str((beforeinfo.get("equipment", {}) or {}).get("raw_text") or "").strip()
+        if equipment_text:
+            latest_reason_parts.append(f"整備:{equipment_text}")
+        pit_text = str((beforeinfo.get("pitreport", {}) or {}).get("reason_text") or "").strip()
+        if pit_text:
+            latest_reason_parts.append(pit_text)
         if signal_metrics.get("signal_text"):
             latest_reason_parts.append(signal_metrics["signal_text"])
         if base_hold_strength >= 0.18 and float(signal_metrics.get("signal_strength", 0) or 0) < 0.35:
