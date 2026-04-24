@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 
-# collector_latest_v10_47_add_buy_candidates.py
-# v10.46: 展示Fを検出し、F艇の展示STを好気配加点から除外。理由に「展示F:○注意」を表示。
+# collector_v10_57_ai6_base_guard.py
+# v10.57: AI6点固定のまま、本買い帯(公式★5×AI5×base土台○×4R以降)だけbase上位2点をガード付きで残しやすくする。
 
 JST = timezone(timedelta(hours=9))
 
@@ -4356,6 +4356,188 @@ def add_basic_form_triplets(
     return dedup
 
 
+
+def is_main_buy_band_base_guard_target(base_info=None, race_no=0):
+    """
+    v10.57:
+    明日の本買い帯だけ、base上位2点をAI6点内に残しやすくする対象判定。
+    買い広げではなく、公式★5 × base土台○ × base AI★★★★★相当 × 4R以降に限定する。
+    """
+    base_info = base_info or {}
+    rating = str(base_info.get("rating") or "").strip()
+    base_quality = extract_base_quality_label(base_info)
+    base_ai_rating = str(base_info.get("base_ai_rating") or "").strip()
+    base_ai_score = safe_float(base_info.get("base_ai_score"), 0.0)
+    race_no_num = normalize_race_no_value(race_no or base_info.get("race_no_num") or base_info.get("race_no") or 0)
+    is_ai5 = (base_ai_rating == "AI★★★★★") or (base_ai_score >= 2.6)
+    return rating == "★★★★★" and base_quality == "base土台○" and is_ai5 and race_no_num >= 4
+
+
+def is_base_triplet_guard_rejected(
+    tri,
+    role_maps=None,
+    exhibition_info=None,
+    foot_material=None,
+    signal_metrics=None,
+):
+    """
+    base上位を戻す時の安全ガード。
+    展示/ST/進入で明確に悪い筋は、base上位でもAI6点へ無理に戻さない。
+    """
+    parsed = parse_triplet_lanes(tri)
+    if not parsed:
+        return True
+    a, b, c = parsed
+
+    role_maps = role_maps or {}
+    exhibition_info = exhibition_info or {}
+    foot_material = foot_material or {}
+    signal_metrics = signal_metrics or {}
+
+    lane_map = role_maps.get("lane", {}) or {}
+    head_map = role_maps.get("head", {}) or {}
+    second_map = role_maps.get("second", {}) or {}
+    third_map = role_maps.get("third", {}) or {}
+    st_map = foot_material.get("st_map", {}) or {}
+    f_lanes = set(get_st_flag_lanes(foot_material, flag="F"))
+    course_map = foot_material.get("course_map", {}) or {}
+    pulled_back_lanes = set(foot_material.get("pulled_back_lanes", []) or [])
+
+    # 頭が直前でかなり否定されている筋は戻さない
+    if float(head_map.get(a, 0) or 0) < -0.18:
+        return True
+    if float(lane_map.get(a, 0) or 0) <= -0.30:
+        return True
+    if float(second_map.get(b, 0) or 0) <= -0.24:
+        return True
+    if float(third_map.get(c, 0) or 0) <= -0.30:
+        return True
+
+    # 5・6頭は、ST/展示/進入の強い根拠が弱ければ戻さない
+    if is_outer_head_too_loose(a, exhibition_info, foot_material, lane_map):
+        return True
+
+    # 展示Fは頭・2着では戻さない。3着も他評価が弱ければ戻さない。
+    if a in f_lanes or b in f_lanes:
+        return True
+    if c in f_lanes and float(lane_map.get(c, 0) or 0) < 0.08:
+        return True
+
+    fastest_time = None
+    float_times = []
+    for lane in range(1, 7):
+        t = get_exhibition_time_by_lane(exhibition_info, lane)
+        if t is not None:
+            float_times.append((lane, t))
+    if len(float_times) == 6:
+        fastest_time = min(v for _lane, v in float_times)
+
+    def lane_time_gap(lane):
+        if fastest_time is None:
+            return None
+        t = get_exhibition_time_by_lane(exhibition_info, lane)
+        if t is None:
+            return None
+        return t - fastest_time
+
+    # 頭・2着が展示でかなり遅い筋は戻さない
+    gap_a = lane_time_gap(a)
+    gap_b = lane_time_gap(b)
+    gap_c = lane_time_gap(c)
+    if gap_a is not None and gap_a >= 0.14:
+        return True
+    if gap_b is not None and gap_b >= 0.16:
+        return True
+    if gap_c is not None and gap_c >= 0.20 and float(third_map.get(c, 0) or 0) < 0.02:
+        return True
+
+    st_a = st_map.get(a)
+    st_b = st_map.get(b)
+    st_c = st_map.get(c)
+    if isinstance(st_a, (int, float)) and a not in f_lanes and float(st_a) >= 0.22:
+        return True
+    if isinstance(st_b, (int, float)) and b not in f_lanes and float(st_b) >= 0.23:
+        return True
+    if isinstance(st_c, (int, float)) and c not in f_lanes and float(st_c) >= 0.26 and float(third_map.get(c, 0) or 0) < 0.02:
+        return True
+
+    # 進入で下げた艇を頭に戻すのは危険
+    if a in pulled_back_lanes and course_map.get(a, a) > a and float(lane_map.get(a, 0) or 0) < 0.08:
+        return True
+
+    return False
+
+
+def ensure_main_buy_band_base_top2_guarded(
+    top,
+    scored_rows,
+    base_triplets,
+    base_info=None,
+    race_no=0,
+    role_maps=None,
+    exhibition_info=None,
+    foot_material=None,
+    signal_metrics=None,
+):
+    """
+    v10.57:
+    本買い帯だけ、base上位2点をAI6点内に最低1〜2点残す。
+    ただし、直前材料で明確に否定されたbase筋は戻さない。
+    """
+    if not top or not base_triplets:
+        return top
+    if not is_main_buy_band_base_guard_target(base_info=base_info, race_no=race_no):
+        return top
+
+    selected = append_unique_triplets(top, [], max_len=6)
+    score_map = {tri: score for tri, score in (scored_rows or [])}
+    base_core = [tri for tri in append_unique_triplets(base_triplets[:2], []) if tri in score_map]
+    if not base_core:
+        return selected
+
+    safe_base_core = [
+        tri for tri in base_core
+        if not is_base_triplet_guard_rejected(
+            tri,
+            role_maps=role_maps,
+            exhibition_info=exhibition_info,
+            foot_material=foot_material,
+            signal_metrics=signal_metrics,
+        )
+    ]
+    if not safe_base_core:
+        log(f"[base_top2_guard_skip] reason=all_rejected base_core={base_core}")
+        return selected
+
+    target_keep = min(2, len(safe_base_core))
+    if len([tri for tri in selected if tri in safe_base_core]) >= target_keep:
+        return selected
+
+    protected = set(safe_base_core)
+    inserted = []
+    for tri in safe_base_core:
+        if len([x for x in selected if x in safe_base_core]) >= target_keep:
+            break
+        if tri in selected:
+            continue
+
+        # 末尾側から、base上位/すでに入れた筋ではないものを差し替える
+        replace_idx = None
+        for idx in range(len(selected) - 1, -1, -1):
+            if selected[idx] not in protected:
+                replace_idx = idx
+                break
+        if replace_idx is None:
+            break
+        selected[replace_idx] = tri
+        inserted.append(tri)
+
+    dedup = append_unique_triplets(selected, [], max_len=6)
+    if inserted:
+        log(f"[base_top2_guard_keep] inserted={inserted} safe_base_core={safe_base_core} final={dedup}")
+    return dedup
+
+
 def ensure_base_triplets_present(top, scored_rows, base_triplets, min_keep=1):
     if not top or not base_triplets or min_keep <= 0:
         return top
@@ -4750,6 +4932,19 @@ def generate_top_triplets(
 
     top = ensure_base_triplets_present(top, scored, base_triplets, min_keep=min_base_keep)
 
+    # v10.57: 買い広げではなく、本買い帯だけbase上位2点をガード付きでAI6点内に残す。
+    top = ensure_main_buy_band_base_top2_guarded(
+        top,
+        scored,
+        base_triplets,
+        base_info=base_info,
+        race_no=race_no,
+        role_maps=role_maps,
+        exhibition_info=exhibition_info,
+        foot_material=foot_material,
+        signal_metrics=signal_metrics,
+    )
+
     core = []
     for tri in top:
         if tri not in core:
@@ -4775,7 +4970,7 @@ def generate_top_triplets(
     kept_official_count = len([tri for tri in final_items if tri in raw_official_triplets])
 
     log(
-        f"[selection_regen_v10_47_addons] venue={venue} "
+        f"[selection_regen_v10_57_base_guard] venue={venue} "
         f"scenario={scenario_material.get('scenario_text','')} factor={scenario_factor} hold={base_hold_strength} "
         f"base_quality={base_quality_label} "
         f"base_keep={kept_base_count}/{len(base_triplets[:6]) if base_triplets else 0} "
@@ -4845,7 +5040,7 @@ def extract_base_official_selection(base_info):
 
 
 def build_candidates():
-    log("[collector_version] collector_v10_56_ai6_only")
+    log("[collector_version] collector_v10_57_ai6_base_guard")
     log(
         f"[light_mode] ONLY_UPCOMING_HOURS={ONLY_UPCOMING_HOURS} "
         f"SKIP_PAST_RACES={SKIP_PAST_RACES} "
