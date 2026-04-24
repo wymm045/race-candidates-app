@@ -2904,6 +2904,7 @@ def build_role_score_maps(venue, exhibition_info, weather_info=None, foot_materi
 
     course_order = (foot_material or {}).get("course_order", []) or []
     course_map = (foot_material or {}).get("course_map", {}) or {}
+    entry_change = bool((foot_material or {}).get("entry_change"))
     pre_move_lanes = (foot_material or {}).get("pre_move_lanes", []) or []
     pulled_back_lanes = (foot_material or {}).get("pulled_back_lanes", []) or []
     if course_map:
